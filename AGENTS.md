@@ -11,7 +11,7 @@ Cada regla dice de dónde sale:
 - **[Kit]**: kit del Pilar 1 (`Kit-TPI-Pilar1-Minero-CUDA.zip`). No se negocia, lo corrige la cátedra.
 - **[Grupo]**: decisión del grupo. Está en `docs/decisiones.docx`. Se puede cambiar, pero lo decide el grupo, no la IA.
 
-Lo que todavía no está decidido está en `docs/dudas.docx`. **La IA no decide esas dudas por su cuenta**: propone opciones y pregunta.
+Lo que todavía no está decidido está en la sección "Pendiente" de `pilar2/README.md`. **La IA no decide esas dudas por su cuenta**: propone opciones y pregunta.
 
 ---
 
@@ -122,7 +122,7 @@ Es un **pool de minería colaborativo**: todos minan el mismo bloque, cada uno e
 
 ## 6. Cómo tiene que trabajar la IA
 
-- Antes de proponer algo, leer `docs/decisiones.docx` y `docs/dudas.docx` (o `docs/arquitectura.html` si no puede leer Word).
+- Antes de proponer algo, leer `docs/decisiones.docx` y la sección "Pendiente" de `pilar2/README.md`.
 - No reabrir decisiones ya tomadas sin avisar. Si algo parece mal, decirlo y explicar por qué, sin cambiarlo por su cuenta.
 - No agregar componentes nuevos (otra cola, otra base, un frontend, etc.) sin preguntar.
 - Explicar los comandos antes de correrlos, sobre todo los que tocan la nube (`tofu apply`, `kubectl delete`, `gcloud`).

@@ -1,7 +1,7 @@
 """Decisiones del pool (P5) como funciones puras, para testearlas sin Redis ni RabbitMQ.
 
 Base: examples/pool_scaler.py del starter del Pilar 3.
-OJO, duda 4 abierta (docs/dudas.docx): las fórmulas finales (PREFIX_GPU / PREFIX_CPU_ONLY,
+OJO, duda 4 abierta (ver "Pendiente" en pilar2/README.md): las fórmulas finales (PREFIX_GPU / PREFIX_CPU_ONLY,
 rango = hashrate x 5 s, mineros CPU con o sin GPU viva) se deciden midiendo. Por ahora se usan
 las perillas del starter, que son las que cambia loadtest/matrix.sh.
 """

@@ -1,8 +1,7 @@
 # Pilar 2 · Sistema distribuido (RabbitMQ + Redis + coordinator + pool + gateway + mineros)
 
 Pool de minería **colaborativo**: todos los mineros trabajan sobre el mismo bloque, cada uno en un
-rango de nonces distinto. El detalle de cada decisión está en `docs/decisiones.docx` y lo que
-falta decidir en `docs/dudas.docx`.
+rango de nonces distinto. El detalle de cada decisión está en `docs/decisiones.docx`.
 
 ## Cómo ejecutarlo (local, con Docker)
 
@@ -133,7 +132,7 @@ Así el gateway y el coordinator ni se enteran de quién minó, y el binario CUD
 `mining:current` (candidato que se mina), `tx:status` (dónde está cada tx, para `GET /transactions/{id}`)
 y `leases:deadline` (ZSET que recorre el reaper). Hay que pasarlas a `decisiones.docx`.
 
-## Pendiente (dudas abiertas, ver `docs/dudas.docx`)
+## Pendiente (dudas abiertas)
 
 - **Duda 4** (fórmulas del pool): hoy el rango es `16^largo_prefijo × POOL_FRAGMENT_PERCENT` (la
   perilla que mueve `matrix.sh`) y los mineros CPU = 0 si hay GPU viva. Se ajusta después de medir.
