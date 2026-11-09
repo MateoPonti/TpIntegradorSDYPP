@@ -1,0 +1,47 @@
+# CPU miners outside Google Cloud. They talk only to the HTTP gateway:
+# ask for a task, send the result, send a keep-alive. The token comes from
+# the gateway-auth Secret, created in the k3s by Pipeline 4 or by hand:
+#   kubectl -n tpi-miners create secret generic gateway-auth \
+#     --from-literal=miner-token="$MINER_TOKEN"
+# The replica count is owned by the autoscaler (KEDA or your own loop).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: miner-cpu
+  namespace: tpi-miners
+spec:
+  selector:
+    matchLabels:
+      app: miner-cpu
+  template:
+    metadata:
+      labels:
+        app: miner-cpu
+    spec:
+      # A miner can die mid task: the gateway lease expires and the task
+      # goes back to the queue (TASK_LEASE_SECONDS in GKE).
+      terminationGracePeriodSeconds: 10
+      containers:
+        - name: miner
+          image: MINER_IMAGE
+          envFrom:
+            - configMapRef:
+                name: miners-config
+          env:
+            - name: MINER_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: MINER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: gateway-auth
+                  key: miner-token
+          resources:
+            # Leave room for the rest of your machine: the k3s is your PC.
+            requests:
+              cpu: 500m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 256Mi

@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: miners-config
+  namespace: tpi-miners
+data:
+  # Public URL of the gateway Service in GKE (kubectl -n tpi get svc gateway).
+  GATEWAY_URL: http://GATEWAY_IP
+  MINER_KIND: cpu

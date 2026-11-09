@@ -1,0 +1,107 @@
+# Coordinator (NCT) + public API. Two replicas as the TPI requires: that
+# means two processes may try to close the same block. Solve it (Redis lock
+# with SET NX PX, or a single leader) and explain it in the README.
+# The HPA below scales it with the load of section 3.3 (never below 2).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: coordinator
+  namespace: tpi
+spec:
+  # No "replicas" field: the HPA owns it (minReplicas: 2). With the field,
+  # every kubectl apply would reset the size the HPA chose.
+  selector:
+    matchLabels:
+      app: coordinator
+  template:
+    metadata:
+      labels:
+        app: coordinator
+    spec:
+      nodeSelector:
+        role: apps
+      containers:
+        - name: coordinator
+          image: REGISTRY/coordinator:latest
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: tpi-config
+          env:
+            - name: RABBITMQ_URL
+              valueFrom:
+                secretKeyRef:
+                  name: rabbitmq-auth
+                  key: url
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: redis-auth
+                  key: password
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: coordinator
+  namespace: tpi
+spec:
+  type: LoadBalancer
+  selector:
+    app: coordinator
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: coordinator
+  namespace: tpi
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: coordinator
+  minReplicas: 2
+  maxReplicas: 5
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 120
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: coordinator
+  namespace: tpi
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: coordinator

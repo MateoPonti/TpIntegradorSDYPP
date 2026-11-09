@@ -1,0 +1,18 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - config.yaml
+  - coordinator.yaml
+  - pool.yaml
+  - gateway.yaml
+# Pipeline 3 rewrites these tags with the commit SHA it just pushed.
+images:
+  - name: REGISTRY/coordinator
+    newName: REGISTRY/coordinator
+    newTag: latest
+  - name: REGISTRY/pool
+    newName: REGISTRY/pool
+    newTag: latest
+  - name: REGISTRY/gateway
+    newName: REGISTRY/gateway
+    newTag: latest

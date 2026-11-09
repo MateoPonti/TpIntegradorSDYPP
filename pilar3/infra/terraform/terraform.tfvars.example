@@ -1,0 +1,5 @@
+project_id  = "my-tpi-project"
+region      = "us-central1"
+zone        = "us-central1-a"
+name        = "tpi"
+github_repo = "my-group/tpi-blockchain"

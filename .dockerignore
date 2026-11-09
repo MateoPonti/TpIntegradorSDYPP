@@ -1,0 +1,10 @@
+# Las imágenes se construyen desde la raíz: solo entra lo que copian los Dockerfile.
+.git
+.github
+docs
+pilar3
+**/__pycache__
+**/.pytest_cache
+**/logs
+**/build
+**/.env

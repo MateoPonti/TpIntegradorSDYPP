@@ -1,0 +1,12 @@
+# never commit state, plans, tfvars or credentials
+.terraform/
+*.tfstate
+*.tfstate.*
+tfplan
+terraform.tfvars
+.env
+*.json.key
+*-key.json
+__pycache__/
+results.csv
+charts/

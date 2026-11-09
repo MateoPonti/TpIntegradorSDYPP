@@ -1,0 +1,134 @@
+{
+  "hash": [
+    {
+      "input": "",
+      "md5": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    {
+      "input": "a",
+      "md5": "0cc175b9c0f1b6a831c399e269772661"
+    },
+    {
+      "input": "abc",
+      "md5": "900150983cd24fb0d6963f7d28e17f72"
+    },
+    {
+      "input": "message digest",
+      "md5": "f96b697d7cb7938d525a2f31aaf161d0"
+    },
+    {
+      "input": "abcdefghijklmnopqrstuvwxyz",
+      "md5": "c3fcd3d76192e4007dfb496cca67e13b"
+    }
+  ],
+  "mining": [
+    {
+      "name": "d1-small",
+      "base": "00000000000000000000000000000000bloque 1 · A->B:10",
+      "prefix": "0",
+      "from": 0,
+      "to": 1000,
+      "has_solution": true,
+      "lowest_nonce": 14
+    },
+    {
+      "name": "d2-small",
+      "base": "00000000000000000000000000000000bloque 1 · A->B:10",
+      "prefix": "00",
+      "from": 0,
+      "to": 5000,
+      "has_solution": true,
+      "lowest_nonce": 250
+    },
+    {
+      "name": "d3",
+      "base": "00000000000000000000000000000000bloque 1 · A->B:10",
+      "prefix": "000",
+      "from": 0,
+      "to": 100000,
+      "has_solution": true,
+      "lowest_nonce": 8910
+    },
+    {
+      "name": "d4",
+      "base": "00000000000000000000000000000000bloque 1 · A->B:10",
+      "prefix": "0000",
+      "from": 0,
+      "to": 1000000,
+      "has_solution": true,
+      "lowest_nonce": 232720
+    },
+    {
+      "name": "d4-offset",
+      "base": "00000000000000000000000000000000bloque 1 · A->B:10",
+      "prefix": "0000",
+      "from": 5000000,
+      "to": 6000000,
+      "has_solution": true,
+      "lowest_nonce": 5022013
+    },
+    {
+      "name": "custom-prefix",
+      "base": "00000000000000000000000000000000bloque 1 · A->B:10",
+      "prefix": "abc",
+      "from": 0,
+      "to": 200000,
+      "has_solution": true,
+      "lowest_nonce": 1844
+    },
+    {
+      "name": "long-base-d3",
+      "base": "00000c8f1c2a6e0b8c7e2f5d9a1b3c4dbloque 42 · tx;tx;tx;tx;tx;tx;tx;tx;tx;tx;tx;tx;tx;tx;tx;tx;tx;tx;tx;tx;",
+      "prefix": "000",
+      "from": 0,
+      "to": 100000,
+      "has_solution": true,
+      "lowest_nonce": 313
+    },
+    {
+      "name": "utf8-base",
+      "base": "ñandú·ü00000000000000000000000000000000bloque 1 · A->B:10",
+      "prefix": "00",
+      "from": 0,
+      "to": 5000,
+      "has_solution": true,
+      "lowest_nonce": 10
+    },
+    {
+      "name": "big-nonces",
+      "base": "00000000000000000000000000000000bloque 1 · A->B:10",
+      "prefix": "000",
+      "from": 4294967000,
+      "to": 4295100000,
+      "has_solution": true,
+      "lowest_nonce": 4294974008
+    },
+    {
+      "name": "none-in-range",
+      "base": "00000000000000000000000000000000bloque 1 · A->B:10",
+      "prefix": "000000",
+      "from": 0,
+      "to": 2000,
+      "has_solution": false,
+      "lowest_nonce": null
+    },
+    {
+      "name": "single-nonce-miss",
+      "base": "00000000000000000000000000000000bloque 1 · A->B:10",
+      "prefix": "0",
+      "from": 7,
+      "to": 7,
+      "has_solution": false,
+      "lowest_nonce": null
+    },
+    {
+      "name": "single-nonce-hit",
+      "base": "00000000000000000000000000000000bloque 1 · A->B:10",
+      "prefix": "0",
+      "from": 14,
+      "to": 14,
+      "has_solution": true,
+      "lowest_nonce": 14
+    }
+  ]
+}

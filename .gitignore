@@ -1,0 +1,34 @@
+# Secretos: nunca al repo (gitleaks corre en el CI igual)
+.env
+*.env
+!.env.example
+*.json.key
+*-key.json
+credentials*.json
+
+# OpenTofu / Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+tfplan
+terraform.tfvars
+
+# Build y Python
+build/
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+
+# Logs y resultados de mediciones
+logs/
+*.log
+results.csv
+charts/
+
+# Editor / SO
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store

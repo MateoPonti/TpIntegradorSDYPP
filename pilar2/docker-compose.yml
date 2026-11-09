@@ -1,0 +1,84 @@
+# Pilar 2 completo en local: RabbitMQ + Redis (AOF) + coordinator x2 + pool x2 + gateway x2 + mineros CPU.
+#   cd pilar2 && cp .env.example .env && docker compose up -d --build
+#   API:      http://127.0.0.1:18080 y :18081 (las dos réplicas del coordinator)
+#   Gateway:  http://127.0.0.1:18180 y :18181 (acá se conecta el minero GPU de la PC)
+#   RabbitMQ: http://127.0.0.1:15672
+# Cada réplica es un servicio aparte con su puerto fijo: "replicas: 2" con un rango de
+# puertos tiene una carrera en Compose y a veces deja una réplica sin publicar.
+# Las credenciales de .env son SOLO para local. En GKE salen de GitHub Secrets (Pipeline 2).
+x-service: &service
+  build:
+    context: ..
+    dockerfile: pilar2/services/Dockerfile
+  restart: unless-stopped
+  depends_on:
+    rabbitmq: { condition: service_healthy }
+    redis: { condition: service_healthy }
+  environment: &env
+    RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
+    REDIS_HOST: redis
+    REDIS_PASSWORD: ${REDIS_PASSWORD}
+    MINER_TOKEN: ${MINER_TOKEN}
+    DIFFICULTY_PREFIX: ${DIFFICULTY_PREFIX:-00000}
+    POOL_FRAGMENT_PERCENT: ${POOL_FRAGMENT_PERCENT:-10}
+    MIN_DIFFICULTY_WITHOUT_GPU: ${MIN_DIFFICULTY_WITHOUT_GPU:-4}
+    MAX_TX_PER_BLOCK: ${MAX_TX_PER_BLOCK:-1000}
+    BLOCK_TIMEOUT_SECONDS: ${BLOCK_TIMEOUT_SECONDS:-10}
+    POOL_PERIOD_SECONDS: ${POOL_PERIOD_SECONDS:-15}
+    TASK_LEASE_SECONDS: ${TASK_LEASE_SECONDS:-60}
+
+services:
+  rabbitmq:
+    image: rabbitmq:4-management
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
+    ports: ["15672:15672"]
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
+      interval: 10s
+      retries: 12
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec", "--requirepass", "${REDIS_PASSWORD}"]
+    volumes: ["redis-data:/data"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "--no-auth-warning", "ping"]
+      interval: 5s
+      retries: 12
+
+  coordinator: &coordinator
+    <<: *service
+    build: { context: .., dockerfile: pilar2/services/Dockerfile, args: { SERVICE: coordinator } }
+    ports: ["18080:8080"]
+  coordinator-2:
+    <<: *coordinator
+    ports: ["18081:8080"]
+
+  pool:
+    <<: *service
+    build: { context: .., dockerfile: pilar2/services/Dockerfile, args: { SERVICE: pool } }
+    deploy: { replicas: 2 }
+
+  gateway: &gateway
+    <<: *service
+    build: { context: .., dockerfile: pilar2/services/Dockerfile, args: { SERVICE: gateway } }
+    ports: ["18180:8080"]
+  gateway-2:
+    <<: *gateway
+    ports: ["18181:8080"]
+
+  # En el TP real los mineros CPU van en el k3s local (pilar3/k3s-local). Acá están para probar en local.
+  miner-cpu:
+    build: { context: .., dockerfile: pilar2/services/miners/cpu/Dockerfile }
+    restart: unless-stopped
+    depends_on: [gateway]
+    deploy:
+      replicas: ${CPU_MINERS:-2}
+    environment:
+      GATEWAY_URL: http://gateway:8080
+      MINER_TOKEN: ${MINER_TOKEN}
+
+volumes:
+  redis-data:

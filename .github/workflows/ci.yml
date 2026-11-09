@@ -1,0 +1,35 @@
+# Runs on every push and PR: secrets scan + tests. If gitleaks finds a
+# hardcoded secret the pipeline fails (TPI security requirement).
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  gitleaks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # scan the whole history, not only the last commit
+      - uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Repos owned by a GitHub organization also need GITLEAKS_LICENSE (free key).
+
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install -r pilar3/requirements-dev.txt -r pilar2/services/requirements.txt
+      - name: Tests del Pilar 2 (unitarios; el de integración se saltea sin TPI_E2E_URL)
+        run: pytest -q pilar2/tests
+      - name: Tests del starter del Pilar 3
+        run: pytest -q pilar3/tests

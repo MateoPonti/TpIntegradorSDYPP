@@ -1,0 +1,64 @@
+# Pipeline 3: builds each application image, pushes it to Artifact Registry
+# tagged with the commit SHA and rolls it out. The miners are NOT built here:
+# they never run in GCP (see Pipeline 4). Never deploy ":latest": you
+# lose the ability to know what is running and to roll back.
+name: 3-apps
+
+on:
+  push:
+    branches: [main]
+    paths: ["pilar2/services/**", "pilar3/k8s/apps/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  REGISTRY: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/tpi
+
+jobs:
+  build:
+    # Se saltea hasta que carguen las variables de GCP en GitHub (ver pilar3/README.md)
+    if: vars.GCP_WIF_PROVIDER != ''
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [coordinator, pool, gateway]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOYER_SA }}
+      - uses: google-github-actions/setup-gcloud@v3
+      - run: gcloud auth configure-docker ${{ vars.GCP_REGION }}-docker.pkg.dev --quiet
+      - run: |
+          docker build -f pilar2/services/Dockerfile --build-arg SERVICE=${{ matrix.service }} \
+            -t "$REGISTRY/${{ matrix.service }}:${{ github.sha }}" .
+          docker push "$REGISTRY/${{ matrix.service }}:${{ github.sha }}"
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v7
+      - uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOYER_SA }}
+      - uses: google-github-actions/setup-gcloud@v3
+      - uses: google-github-actions/get-gke-credentials@v3
+        with:
+          cluster_name: ${{ vars.GKE_CLUSTER }}
+          location: ${{ vars.GKE_ZONE }}
+      - name: Pin images to this commit
+        working-directory: pilar3/k8s/apps
+        run: |
+          sed -i "s#newName: REGISTRY/#newName: $REGISTRY/#; s#newTag: latest#newTag: ${{ github.sha }}#" kustomization.yaml
+      - run: |
+          kubectl apply -k pilar3/k8s/apps
+          for d in coordinator pool gateway; do
+            kubectl -n tpi rollout status deployment/$d --timeout=300s
+          done

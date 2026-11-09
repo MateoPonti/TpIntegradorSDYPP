@@ -1,0 +1,41 @@
+# Option a) KEDA (https://keda.sh) in the k3s, installed once with Helm:
+#   helm repo add kedacore https://kedacore.github.io/charts
+#   helm install keda kedacore/keda --namespace keda --create-namespace
+#
+# The metrics-api scaler polls GET {GATEWAY_URL}/scaling, reads the field
+# desired_cpu_miners that the pool computes (0 while a GPU miner is alive) and,
+# with targetValue 1, sets replicas = desired_cpu_miners (between min and max).
+# RabbitMQ is private in GKE, so the queue length reaches the k3s through
+# this signal, not through the KEDA rabbitmq scaler.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: miner-cpu
+  namespace: tpi-miners
+spec:
+  scaleTargetRef:
+    name: miner-cpu
+  minReplicaCount: 0
+  maxReplicaCount: 8
+  pollingInterval: 15
+  cooldownPeriod: 120
+  triggers:
+    - type: metrics-api
+      metadata:
+        url: http://GATEWAY_IP/scaling
+        valueLocation: desired_cpu_miners
+        targetValue: "1"
+        authMode: bearer
+      authenticationRef:
+        name: gateway-bearer
+---
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: gateway-bearer
+  namespace: tpi-miners
+spec:
+  secretTargetRef:
+    - parameter: token
+      name: gateway-auth
+      key: miner-token

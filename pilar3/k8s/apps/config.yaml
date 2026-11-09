@@ -1,0 +1,29 @@
+# Non-secret parameters of the experiments of section 3.3. Change them here
+# (or with kubectl patch) instead of rebuilding images.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tpi-config
+  namespace: tpi
+data:
+  REDIS_HOST: redis.tpi.svc.cluster.local
+  DIFFICULTY_PREFIX: "000"
+  POOL_FRAGMENT_PERCENT: "10"
+  GPU_KEEPALIVE_TIMEOUT_SECONDS: "15"
+  MIN_DIFFICULTY_WITHOUT_GPU: "2"
+  # Scaling signal the pool publishes for the CPU miners of the group k3s
+  # (served by the gateway at GET /scaling). No miner runs in GKE.
+  CPU_MINERS_MAX: "8"
+  TASKS_PER_CPU_MINER: "20"
+  # A task handed out by the gateway and not answered in this time goes back
+  # to the queue (external miners die without warning: Colab, laptops).
+  TASK_LEASE_SECONDS: "60"
+  # --- Agregadas por el grupo (decisiones.docx) ---
+  # Armado del bloque: MAX_TX_PER_BLOCK tx o BLOCK_TIMEOUT_SECONDS desde la primera pendiente.
+  MAX_TX_PER_BLOCK: "1000"
+  BLOCK_TIMEOUT_SECONDS: "10"
+  BLOCK_POLL_SECONDS: "1"        # duda 5 (propuesta)
+  POOL_PERIOD_SECONDS: "15"
+  TASK_MAX_ATTEMPTS: "3"         # al 3er préstamo vencido la tarea va a mining.dlq
+  GATEWAY_HEALTH_URL: http://gateway.tpi.svc.cluster.local/health   # para GET /status
+  LOG_DIR: /tmp/logs

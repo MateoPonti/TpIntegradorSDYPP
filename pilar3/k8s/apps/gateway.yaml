@@ -1,0 +1,120 @@
+# HTTP gateway for the external miners (CPU in the group k3s, GPU in a PC,
+# Colab or the course GPU cluster). No miner runs in GKE: the GCP free trial
+# forbids crypto mining and has no GPUs. The gateway is the only door:
+#   GET  /tasks/next   hands out a task (it consumes RabbitMQ on the miner behalf)
+#   POST /results      receives a solution and forwards it to the coordinator
+#   POST /keepalive    miner heartbeat (type cpu|gpu), written to Redis
+#   GET  /scaling      scaling signal published by the pool (used by KEDA
+#                      or by your own autoscaler in the k3s)
+# Every call carries "Authorization: Bearer <token>" (Secret gateway-auth).
+# RabbitMQ and Redis stay private.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: tpi
+spec:
+  # No "replicas" field: the HPA owns it (minReplicas: 2). With the field,
+  # every kubectl apply would reset the size the HPA chose.
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      nodeSelector:
+        role: apps
+      containers:
+        - name: gateway
+          image: REGISTRY/gateway:latest
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: tpi-config
+          env:
+            - name: RABBITMQ_URL
+              valueFrom:
+                secretKeyRef:
+                  name: rabbitmq-auth
+                  key: url
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: redis-auth
+                  key: password
+            - name: MINER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: gateway-auth
+                  key: miner-token
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          resources:
+            # requests are mandatory: the HPA computes utilization against them
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway
+  namespace: tpi
+spec:
+  type: LoadBalancer
+  selector:
+    app: gateway
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: gateway
+  namespace: tpi
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: gateway
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    scaleDown:
+      # Miners poll in bursts: without a window the HPA flaps between blocks.
+      stabilizationWindowSeconds: 120
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: gateway
+  namespace: tpi
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: gateway

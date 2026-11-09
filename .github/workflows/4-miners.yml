@@ -1,0 +1,64 @@
+# Pipeline 4: the external CPU miners. TPI Google Cloud policy: no miner runs
+# in GCP, so this pipeline does not touch the Google project at all.
+#   1. build: builds pilar2/services/miners/cpu and pushes it to GitHub Container
+#      Registry (ghcr.io) tagged with the commit SHA. Make the package public
+#      (Package settings > Change visibility): the k3s pulls it without a key.
+#   2. deploy (optional): runs on a SELF-HOSTED runner installed on the machine
+#      that hosts the group k3s (label k3s-local) and applies k3s-local/.
+#      The autoscaler (KEDA or examples/local_autoscaler.py) adjusts the
+#      replicas at runtime from the pool signal served by the gateway.
+# Public repo + self-hosted runner: only workflow_dispatch here, and in
+# Settings > Actions require approval for workflows from outside collaborators,
+# so nobody can run code on your machine through a pull request.
+# Without a runner, deploy by hand with the commands of the README.
+name: 4-miners
+
+on:
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: "Also deploy to the group k3s (needs the self-hosted runner)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.name.outputs.image }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: name
+        run: echo "image=ghcr.io/${GITHUB_REPOSITORY,,}/miner-cpu" >> "$GITHUB_OUTPUT"
+      - run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - run: |
+          docker build -f pilar2/services/miners/cpu/Dockerfile -t "${{ steps.name.outputs.image }}:${{ github.sha }}" .
+          docker push "${{ steps.name.outputs.image }}:${{ github.sha }}"
+
+  deploy:
+    if: inputs.deploy
+    needs: build
+    runs-on: [self-hosted, k3s-local]
+    environment: production
+    steps:
+      - uses: actions/checkout@v7
+      - name: Token for the gateway (idempotent, value never printed)
+        env:
+          MINER_TOKEN: ${{ secrets.MINER_TOKEN }}
+        run: |
+          kubectl apply -f pilar3/k3s-local/namespace.yaml
+          kubectl -n tpi-miners create secret generic gateway-auth \
+            --from-literal=miner-token="$MINER_TOKEN" \
+            --dry-run=client -o yaml | kubectl apply -f -
+      - name: Pin the image and the gateway URL
+        working-directory: pilar3/k3s-local
+        run: |
+          sed -i "s#ghcr.io/OWNER/REPO/miner-cpu#${{ needs.build.outputs.image }}#; s#newTag: latest#newTag: ${{ github.sha }}#" kustomization.yaml
+          sed -i "s#http://GATEWAY_IP#${{ vars.GATEWAY_URL }}#" config.yaml keda-scaledobject.yaml
+      - run: |
+          kubectl apply -k pilar3/k3s-local
+          kubectl -n tpi-miners get deploy,scaledobject

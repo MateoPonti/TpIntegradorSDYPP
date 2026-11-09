@@ -1,0 +1,18 @@
+# CPU miners in the group's LOCAL k3s (the one from TP3 Parte 0), never in GCP.
+# Apply with the k3s kubeconfig, not with the GKE one:
+#   kubectl --kubeconfig ~/.kube/k3s.yaml apply -k k3s-local
+# Pipeline 4 rewrites OWNER/REPO, the tag and GATEWAY_URL before applying.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
+  - config.yaml
+  - miner-cpu.yaml
+  # Pick ONE autoscaling option (see README):
+  #   a) keda-scaledobject.yaml: KEDA reads GET /scaling from the gateway
+  #   b) examples/local_autoscaler.py: your own loop running kubectl scale
+  - keda-scaledobject.yaml
+images:
+  - name: MINER_IMAGE
+    newName: ghcr.io/OWNER/REPO/miner-cpu
+    newTag: latest

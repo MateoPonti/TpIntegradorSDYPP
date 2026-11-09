@@ -1,0 +1,62 @@
+# Pipeline 2: RabbitMQ and Redis on the infra node pool. Credentials come
+# from GitHub Secrets and become Kubernetes Secrets here, including the token
+# the external miners present to the gateway. RabbitMQ and Redis stay private:
+# the miners (outside GCP) only reach the gateway.
+name: 2-base-services
+
+on:
+  push:
+    branches: [main]
+    paths: ["pilar3/k8s/base/**", "pilar3/k8s/infra/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    # Se saltea hasta que carguen las variables de GCP en GitHub (ver pilar3/README.md)
+    if: vars.GCP_WIF_PROVIDER != ''
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v7
+      - uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOYER_SA }}
+      - uses: google-github-actions/setup-gcloud@v3
+      - uses: google-github-actions/get-gke-credentials@v3
+        with:
+          cluster_name: ${{ vars.GKE_CLUSTER }}
+          location: ${{ vars.GKE_ZONE }}
+
+      - name: Namespace
+        run: kubectl apply -k pilar3/k8s/base
+
+      - name: Secrets (idempotent, values never printed)
+        env:
+          RABBIT_USER: ${{ secrets.RABBITMQ_USER }}
+          RABBIT_PASS: ${{ secrets.RABBITMQ_PASSWORD }}
+          REDIS_PASS: ${{ secrets.REDIS_PASSWORD }}
+          MINER_TOKEN: ${{ secrets.MINER_TOKEN }}
+        run: |
+          kubectl -n tpi create secret generic rabbitmq-auth \
+            --from-literal=username="$RABBIT_USER" \
+            --from-literal=password="$RABBIT_PASS" \
+            --from-literal=url="amqp://$RABBIT_USER:$RABBIT_PASS@rabbitmq.tpi.svc.cluster.local:5672/" \
+            --dry-run=client -o yaml | kubectl apply -f -
+          kubectl -n tpi create secret generic redis-auth \
+            --from-literal=password="$REDIS_PASS" \
+            --dry-run=client -o yaml | kubectl apply -f -
+          kubectl -n tpi create secret generic gateway-auth \
+            --from-literal=miner-token="$MINER_TOKEN" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: RabbitMQ and Redis
+        run: |
+          kubectl apply -k pilar3/k8s/infra
+          kubectl -n tpi rollout status statefulset/rabbitmq --timeout=300s
+          kubectl -n tpi rollout status statefulset/redis --timeout=300s
+
