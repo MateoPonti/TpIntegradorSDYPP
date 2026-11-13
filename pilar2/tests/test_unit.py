@@ -96,6 +96,14 @@ def test_miner_hashrate_uses_delivered_work():
     assert decision.miner_hashrate([], None, 7.0, None, False, now, 300) == (7.0, "declarado")
 
 
+def test_found_early_results_do_not_measure_speed():
+    # Prefijo corto: encontró a los 3.000 hashes, pero el motor tardó 0,5 s en arrancar -> 6 kH/s falso.
+    now = 1000.0
+    early = [{"hashes": 3000, "engine_seconds": 0.5, "seconds": 0.7, "ts": now - 5, "found": True}]
+    assert decision.miner_rates(early, now, 300) is None
+    assert decision.miner_hashrate(early, {"hashrate": 1.4e6}, 0, None, False, now, 300) == (1.4e6, "calibracion")
+
+
 def test_zombie_and_quarantined_miners_do_not_count():
     now = 1000.0
     results = [{"hashes": 2_000_000, "engine_seconds": 1.0, "seconds": 1.5, "ts": now - 100}]

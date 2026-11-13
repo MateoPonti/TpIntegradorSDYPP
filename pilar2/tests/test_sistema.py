@@ -36,6 +36,8 @@ def post(path: str, body) -> tuple[int, dict]:
             return resp.status, json.load(resp)
     except urllib.error.HTTPError as exc:
         return exc.code, json.load(exc)
+    except (urllib.error.URLError, ConnectionError, TimeoutError) as exc:
+        return 0, {"error": str(exc)}  # se cortó mientras se reiniciaba un pod: send_ok reintenta
 
 
 def get(path: str) -> dict:

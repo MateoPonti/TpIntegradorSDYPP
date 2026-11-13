@@ -284,7 +284,7 @@ async def finish_canary(lease: dict, res: dict) -> None:
 async def record_result(lease: dict, res: dict) -> None:
     """Hashrate real: el motor informa sus segundos; el de punta a punta lo mide el gateway."""
     r, miner = state["r"], lease["miner_id"]
-    entry = {"hashes": int(res.get("hashes") or 0),
+    entry = {"hashes": int(res.get("hashes") or 0), "found": bool(res.get("found")),
              "engine_seconds": float(res.get("engine_seconds") or res.get("seconds") or 0),
              "seconds": round(time.time() - lease["since"], 3), "ts": time.time()}
     await r.lpush(keys.miner_results(miner), json.dumps(entry))

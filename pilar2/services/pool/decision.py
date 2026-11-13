@@ -52,8 +52,11 @@ def miner_rates(results: list[dict], now: float, window: float) -> tuple[float, 
     """(velocidad del motor, rendimiento efectivo) con los resultados de la ventana, o None si no hay.
 
     Motor = hashes / segundos minando. Efectivo = hashes / segundos de punta a punta (red y arranque).
+    Solo cuentan las tareas que recorrieron el rango entero ("no encontré"): con un prefijo corto el nonce
+    aparece a los pocos miles de hashes y el arranque del motor domina el tiempo, así que esa tarea daría un
+    hashrate bajísimo, el prefijo no subiría nunca y el pool quedaría trabado ahí.
     """
-    recent = [x for x in results if now - x["ts"] <= window and x.get("hashes")]
+    recent = [x for x in results if now - x["ts"] <= window and x.get("hashes") and not x.get("found")]
     if not recent:
         return None
     hashes = sum(x["hashes"] for x in recent)
