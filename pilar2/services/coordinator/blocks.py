@@ -16,7 +16,7 @@ import uuid
 import aio_pika
 from prometheus_client import Counter, Gauge, Histogram
 
-from tpi_common import keys, pow, rabbit
+from tpi_common import keys, pow, quarantine, rabbit
 from tpi_common.config import DIFFICULTY_PREFIX, env_float, env_int, env_str
 from tpi_common.logs import log
 from tpi_common.store import alive_workers
@@ -30,6 +30,7 @@ MODE = env_str("DIFFICULTY_MODE", "auto")
 TARGET = env_float("BLOCK_TARGET_SECONDS", 10)
 REARM_FACTOR = env_float("REARM_FACTOR", 6)          # rearmar si va a tardar más de 6 x el objetivo
 REARM_MIN_AGE = env_float("REARM_MIN_AGE_SECONDS", 20)  # y el bloque lleva al menos esto (no oscilar)
+QUARANTINE_SECONDS = env_int("QUARANTINE_SECONDS", 300)
 DEFAULT_RANGE_SIZE = env_int("DEFAULT_RANGE_SIZE", 1_000_000)  # si todavía no hay pool:plan
 TASKS_PER_MINER = env_int("TASKS_PER_MINER_BATCH", 2)  # tamaño de tanda = mineros vivos x esto
 GENESIS_USERS = env_int("GENESIS_USERS", 97)  # user-0..user-96, como bench.py
@@ -42,6 +43,7 @@ BLOCK_SECONDS = Histogram("block_seconds", "Tiempo desde que se arma el bloque h
 RESULTS = Counter("results_total", "Resultados recibidos", ["status"])
 TASKS_PUBLISHED = Counter("tasks_published_total", "Tareas publicadas en mining.tasks")
 REARMED = Counter("blocks_rearmed_total", "Bloques rearmados con un prefijo más corto (cayó el hashrate)")
+QUARANTINED = Counter("quarantined_total", "Mineros puestos en cuarentena", ["reason"])
 BLOCK_TXS = Histogram("block_transactions", "Transacciones por bloque (sin las de premio)",
                       buckets=(1, 10, 50, 100, 250, 500, 1000, 2500, 5000, 10000))
 
@@ -295,9 +297,20 @@ class Chain:
         if not res.get("found"):
             await self._add_share(cur["index"], res.get("worker"), hi - lo + 1)
             return "empty"
-        nonce = int(res["nonce"])
-        if not (lo <= nonce <= hi) or not pow.verify(cur["base"], cur["prefix"], nonce, res["hash"]):
-            log(self.logger, "resultado inválido", worker=res.get("worker"), nonce=nonce)
+        try:
+            nonce = int(res.get("nonce"))
+        except (TypeError, ValueError):
+            nonce = -1  # "encontré" sin un nonce que sea un número: inválido
+        if not (lo <= nonce <= hi) or not pow.verify(cur["base"], cur["prefix"], nonce, str(res.get("hash", ""))):
+            # Un "encontré" que no verifica es la prueba más clara de un motor roto (o de un tramposo):
+            # cuarentena, no cobra el bloque, y su rango y sus "no encontré" los hace otro minero.
+            worker = res.get("worker")
+            if worker:
+                n = await quarantine.penalize(self.r, self.exchange, cur, worker, "resultado_invalido",
+                                              QUARANTINE_SECONDS, extra=[(lo, hi)])
+                QUARANTINED.labels("resultado_invalido").inc()
+                log(self.logger, "resultado inválido: minero en cuarentena", worker=worker, nonce=nonce,
+                    rangos_republicados=n)
             return "invalid"
         await self._add_share(cur["index"], res.get("worker"), nonce - lo + 1)
         return await self._seal_block(cur, res, nonce)

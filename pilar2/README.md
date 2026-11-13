@@ -100,7 +100,8 @@ Así el gateway y el coordinator ni se enteran de quién minó, y el binario CUD
 | Endpoint | Qué hace |
 |---|---|
 | `GET /tasks/next?miner_id=&kind=` | Saca una tarea de `mining.tasks`, la presta (`lease:<task_id>`) y la devuelve. `204` si no hay o si el minero está en cuarentena. La primera de cada minero es la **calibración** y 1 de cada `CANARY_EVERY` es un **canario**. |
-| `POST /tasks/{task_id}/renew` | El agente pregunta entre tramo y tramo. Renueva el préstamo, o `410` si el bloque ya se cerró. |
+| `POST /tasks/{task_id}/renew` | El agente pregunta entre tramo y tramo. Renueva el préstamo, o `410` si el bloque ya se cerró o el minero está en cuarentena (en ese caso la tarea vuelve a la cola). |
+| `POST /tasks/{task_id}/release` | "No pude": el agente devuelve la tarea cuando se le rompe el motor. Vuelve a la cola al instante (sin esperar los 60 s) y cuenta como falla. `410` si el préstamo ya no existe. |
 | `POST /results` | Publica el resultado en `mining.results` (el coordinator lo verifica de nuevo). |
 | `POST /keepalive` | `{miner_id, type: cpu\|gpu, hashrate, account?}` → `worker:<id>` con TTL 15 s y `miner:<id>:account` (cuenta de cobro, 1 día). |
 | `GET /scaling` | Señal del pool para KEDA. `503` si el pool no la renovó. |
@@ -152,8 +153,17 @@ Así el gateway y el coordinator ni se enteran de quién minó, y el binario CUD
 - **Canarios:** 1 de cada `CANARY_EVERY` (20) tareas es un rango de un bloque ya sellado que contiene su nonce.
   Si el minero contesta "no encontré", está roto o miente: **cuarentena** (`QUARANTINE_SECONDS`), su trabajo
   de ese bloque no cobra y sus rangos "no encontré" se re-publican. También va a cuarentena con
-  `QUARANTINE_AFTER_EXPIRED` préstamos vencidos seguidos. Nada de esto mina en GCP: el canario se arma con datos
-  guardados y se verifica con un solo MD5.
+  `QUARANTINE_AFTER_EXPIRED` préstamos vencidos seguidos (o devueltos con `release`). Nada de esto mina en GCP:
+  el canario se arma con datos guardados y se verifica con un solo MD5.
+- **Fallas** (13/11): no hay un "falló" que el minero mande; el sistema las detecta solo.
+  - Un **"encontré" que no verifica** (MD5 o rango) lo detecta el coordinator: cuarentena, no cobra el bloque, y
+    ese rango y sus "no encontré" se re-publican.
+  - Con **cuarentena por préstamos vencidos** (se colgó, no mintió) lo que ya terminó sigue valiendo; solo deja de
+    recibir tareas. La lógica común está en `tpi_common/quarantine.py`.
+  - Un minero en cuarentena tampoco puede renovar ni entregar "no encontré" (`410`): ese rango lo hace otro.
+  - Un minero **zombie** (keep-alive sin entregar trabajo) no cuenta como vivo: si es una GPU colgada, el pool
+    pide mineros CPU apenas le vence la tarea, sin esperar a la cuarentena.
+  - Si se le rompe el motor, el agente no se muere: devuelve la tarea con `release` y sigue.
 - **Premio proporcional** (13/11): `BLOCK_REWARD_CENTS` por bloque, repartido según los nonces que completó
   cada minero antes del sellado (el tamaño de rango que fijó el coordinator, no los `hashes` que informa).
   Se paga con tx `sender="recompensa"` → la **cuenta de cobro** del minero al principio del bloque siguiente; el

@@ -48,6 +48,12 @@ def desired_cpu_miners(gpu_alive: int, has_work: bool, idle_seconds: float, max_
     return 0
 
 
+def counts_as_alive(miner: dict) -> bool:
+    """Cuenta como minero vivo (para el prefijo, el tamaño de rango y si hay GPU) solo si no está en
+    cuarentena ni es un zombie (keep-alive sin entregar trabajo)."""
+    return not miner["quarantined"] and miner["source"] != "zombie"
+
+
 def miner_rates(results: list[dict], now: float, window: float) -> tuple[float, float] | None:
     """(velocidad del motor, rendimiento efectivo) con los resultados de la ventana, o None si no hay.
 

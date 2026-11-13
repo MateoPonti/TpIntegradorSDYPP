@@ -7,7 +7,8 @@ contrato CLI del kit del Pilar 1 (--base --prefix --from --to -> una línea JSON
   * CPU: pilar1/cpu/miner_cpu.py         (imagen miner-cpu en el k3s local, nunca en GCP)
 
 Ciclo: keep-alive cada 5 s (hilo aparte) -> GET /tasks/next -> motor por tramos -> entre tramo y
-tramo POST /tasks/<id>/renew (410 = abandonar) -> POST /results.
+tramo POST /tasks/<id>/renew (410 = abandonar) -> POST /results. Si el motor falla, POST
+/tasks/<id>/release (la tarea vuelve a la cola) y sigue con la próxima.
 
     GATEWAY_URL=http://<ip> MINER_TOKEN=... MINER_KIND=gpu MINER_ID=pc-mateo MINER_ACCOUNT=mateo \
       python agent.py -- ../../../pilar1/build/miner_gpu
@@ -113,7 +114,18 @@ class Miner:
                     log.error("token rechazado por el gateway")
                 time.sleep(idle)
                 continue
-            outcome = self.mine(task)
+            try:
+                outcome = self.mine(task)
+            except Exception as exc:  # noqa: BLE001 - motor roto, JSON raro, red caída a mitad de la tarea
+                # En vez de morir y dejar la tarea colgada 60 s, la devuelve: vuelve a la cola al instante.
+                # El gateway lo cuenta como falla (a las 3 seguidas, cuarentena).
+                log.error("tarea %s falló: %s", task["task_id"][:8], exc)
+                try:
+                    self.gw.call("POST", f"/tasks/{task['task_id']}/release")
+                except OSError:
+                    pass  # si tampoco llega al gateway, el préstamo vence solo
+                time.sleep(max(idle, 2))
+                continue
             if outcome == "abandoned":
                 log.info("tarea %s abandonada: el bloque ya se cerró", task["task_id"][:8])
 

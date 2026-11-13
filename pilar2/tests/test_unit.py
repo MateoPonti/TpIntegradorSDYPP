@@ -102,6 +102,15 @@ def test_miner_hashrate_uses_delivered_work():
     assert decision.miner_hashrate([], None, 7.0, None, False, now, 300) == (7.0, "declarado")
 
 
+def test_zombie_gpu_does_not_count_as_alive():
+    # Si la GPU colgada contara como viva, el pool pediría 0 mineros CPU y nadie minaría.
+    assert decision.counts_as_alive({"quarantined": False, "source": "motor"})
+    assert not decision.counts_as_alive({"quarantined": False, "source": "zombie"})
+    assert not decision.counts_as_alive({"quarantined": True, "source": "cuarentena"})
+    signal_cpu = decision.desired_cpu_miners(gpu_alive=0, has_work=True, idle_seconds=0, max_miners=8, idle_limit=60)
+    assert signal_cpu == 8
+
+
 def test_found_early_results_do_not_measure_speed():
     # Prefijo corto: encontró a los 3.000 hashes, pero el motor tardó 0,5 s en arrancar -> 6 kH/s falso.
     now = 1000.0

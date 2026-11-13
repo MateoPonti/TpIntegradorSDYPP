@@ -69,7 +69,9 @@ async def measure(r, workers: list[dict], now: float) -> list[dict]:
 async def tick(r, channel) -> None:
     now = time.time()
     miners = await measure(r, await store.alive_workers(r), now)
-    active = [m for m in miners if not m["quarantined"]]
+    # Un minero zombie (manda keep-alive pero dejó vencer su tarea) no cuenta como vivo: si fuera una GPU,
+    # el pool seguiría pidiendo 0 mineros CPU y nadie minaría hasta que entrara en cuarentena (~3 min).
+    active = [m for m in miners if decision.counts_as_alive(m)]
     gpu = [m for m in active if m["kind"] == "gpu"]
     cpu = [m for m in active if m["kind"] == "cpu"]
     total = sum(m["hashrate"] for m in active)

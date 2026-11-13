@@ -1,7 +1,8 @@
 """Gateway HTTP: la única puerta de los mineros (que están FUERA de GCP, detrás de NAT).
 
   GET  /tasks/next             saca una tarea de mining.tasks y se la presta al minero (204 si no hay)
-  POST /tasks/{task_id}/renew  "¿sigo?": renueva el préstamo, o 410 si el bloque ya se cerró
+  POST /tasks/{task_id}/renew  "¿sigo?": renueva el préstamo, o 410 si el bloque ya se cerró o está en cuarentena
+  POST /tasks/{task_id}/release "no pude": la tarea vuelve a la cola al instante (se le rompió el motor)
   POST /results                publica el resultado en mining.results
   POST /keepalive              SET worker:<id> EX 15 (Redis no se expone a Internet)
   GET  /scaling                señal del pool para KEDA del k3s
@@ -30,7 +31,7 @@ import uuid
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 from prometheus_client import Counter
 
-from tpi_common import keys, pow, rabbit, store
+from tpi_common import keys, pow, quarantine, rabbit, store
 from tpi_common.config import POD_NAME, WORKER_TTL_SECONDS, env_int, env_str
 from tpi_common.logs import log, setup_logging
 from tpi_common.web import install_common_routes
@@ -58,7 +59,8 @@ KEEPALIVES = Counter("keepalives_total", "Keep-alives recibidos", ["kind"])
 CALIBRATIONS = Counter("calibrations_total", "Tareas de calibración terminadas", ["kind", "class"])
 CANARIES = Counter("canaries_total", "Canarios resueltos", ["result"])
 QUARANTINED = Counter("quarantined_total", "Mineros puestos en cuarentena", ["reason"])
-REPUBLISHED = Counter("tasks_republished_total", "Rangos re-publicados porque el minero falló un canario")
+REPUBLISHED = Counter("tasks_republished_total", "Rangos re-publicados de mineros en cuarentena")
+RELEASED = Counter("tasks_released_total", "Tareas devueltas por el minero (se le rompió el motor)")
 
 state: dict = {"solved": set()}
 
@@ -87,10 +89,32 @@ async def current_block_id() -> str | None:
     return cur["block_id"] if cur else None
 
 
-async def put_in_quarantine(miner_id: str, reason: str) -> None:
-    await state["r"].set(keys.quarantine(miner_id), reason, ex=QUARANTINE_SECONDS)
+async def put_in_quarantine(miner_id: str, reason: str, extra: list[tuple[int, int]] = (),
+                            distrust: bool = True) -> None:
+    """Cuarentena (tpi_common.quarantine). `distrust`: además no cobra el bloque y se re-publican sus rangos."""
+    n = await quarantine.penalize(state["r"], state["exchange"], await current_block(), miner_id, reason,
+                                  QUARANTINE_SECONDS, extra, distrust)
     QUARANTINED.labels(reason).inc()
-    log(logger, "minero en cuarentena", miner_id=miner_id, reason=reason, seconds=QUARANTINE_SECONDS)
+    REPUBLISHED.inc(n)
+    log(logger, "minero en cuarentena", miner_id=miner_id, reason=reason, seconds=QUARANTINE_SECONDS,
+        rangos_republicados=n)
+
+
+async def give_back(lease: dict, why: str) -> None:
+    """La tarea vuelve a la cola con un intento más (préstamo vencido o devuelta por el minero).
+    Al MAX_ATTEMPTS-ésimo va a la DLQ. Las de calibración y los canarios no vuelven."""
+    task = lease["task"]
+    if lease.get("special") or task["block_id"] != await current_block_id():
+        return  # bloque ya sellado o rearmado: no hace falta re-minar ese rango
+    task["attempts"] = task.get("attempts", 0) + 1
+    if task["attempts"] >= MAX_ATTEMPTS:
+        await state["dlx"].publish(rabbit.message(task), routing_key="dlq")
+        DLQ.inc()
+        log(logger, "tarea a la DLQ", task_id=task["task_id"], attempts=task["attempts"])
+    else:
+        await state["exchange"].publish(rabbit.message(task), routing_key="task.any")
+        REQUEUED.inc()
+        log(logger, f"{why}, tarea devuelta", task_id=task["task_id"], attempts=task["attempts"])
 
 
 async def reaper_loop() -> None:
@@ -100,7 +124,6 @@ async def reaper_loop() -> None:
         try:
             if not await r.set(keys.REAPER_LOCK, POD_NAME, nx=True, ex=REAPER_PERIOD * 2):
                 continue
-            current = await current_block_id()
             for task_id in await r.zrangebyscore(keys.LEASE_DEADLINES, 0, time.time()):
                 if not await r.zrem(keys.LEASE_DEADLINES, task_id):
                     continue  # otro lo tomó
@@ -108,22 +131,9 @@ async def reaper_loop() -> None:
                 if raw is None:
                     continue
                 lease = json.loads(raw)
-                task = lease["task"]
                 EXPIRED.inc()
                 await count_expired(lease["miner_id"])
-                if lease.get("special"):
-                    continue  # calibración o canario: no vuelven a la cola
-                if task["block_id"] != current:
-                    continue  # bloque ya sellado: no hace falta re-minar ese rango
-                task["attempts"] = task.get("attempts", 0) + 1
-                if task["attempts"] >= MAX_ATTEMPTS:
-                    await state["dlx"].publish(rabbit.message(task), routing_key="dlq")
-                    DLQ.inc()
-                    log(logger, "tarea a la DLQ", task_id=task_id, attempts=task["attempts"])
-                else:
-                    await state["exchange"].publish(rabbit.message(task), routing_key="task.any")
-                    REQUEUED.inc()
-                    log(logger, "préstamo vencido, tarea devuelta", task_id=task_id, attempts=task["attempts"])
+                await give_back(lease, "préstamo vencido")
         except Exception:  # noqa: BLE001
             logger.exception("error en el reaper")
 
@@ -135,7 +145,7 @@ async def count_expired(miner_id: str) -> None:
     streak = prev["streak"] + 1
     await r.set(keys.miner_expired(miner_id), json.dumps({"streak": streak, "ts": time.time()}), ex=3600)
     if streak >= QUARANTINE_AFTER and not await r.exists(keys.quarantine(miner_id)):
-        await put_in_quarantine(miner_id, "vencidos")
+        await put_in_quarantine(miner_id, "vencidos", distrust=False)  # se colgó, no mintió
 
 
 async def on_event(message) -> None:
@@ -241,8 +251,30 @@ async def renew(task_id: str):
         await r.zrem(keys.LEASE_DEADLINES, task_id)
         await r.delete(keys.lease(task_id))
         raise HTTPException(410, "el bloque ya se cerró")
+    if await r.exists(keys.quarantine(lease["miner_id"])):
+        # En cuarentena no sigue con lo que tenía: la tarea vuelve a la cola para otro minero.
+        await r.zrem(keys.LEASE_DEADLINES, task_id)
+        await r.delete(keys.lease(task_id))
+        await give_back(lease, "minero en cuarentena")
+        raise HTTPException(410, "minero en cuarentena")
     await r.zadd(keys.LEASE_DEADLINES, {task_id: time.time() + LEASE_SECONDS}, xx=True)
     return {"lease_seconds": LEASE_SECONDS}
+
+
+@app.post("/tasks/{task_id}/release", dependencies=[Depends(auth)])
+async def release(task_id: str):
+    """El minero devuelve la tarea porque no pudo terminarla (se le rompió el motor). Vuelve a la cola al
+    instante, sin esperar los 60 s del préstamo, y cuenta como una falla (a las 3 seguidas, cuarentena)."""
+    r = state["r"]
+    raw = await r.getdel(keys.lease(task_id))
+    await r.zrem(keys.LEASE_DEADLINES, task_id)
+    if raw is None:
+        raise HTTPException(410, "préstamo inexistente o vencido")
+    lease = json.loads(raw)
+    RELEASED.inc()
+    await count_expired(lease["miner_id"])
+    await give_back(lease, "tarea devuelta por el minero")
+    return {"released": True}
 
 
 async def finish_calibration(lease: dict, res: dict) -> None:
@@ -265,20 +297,7 @@ async def finish_canary(lease: dict, res: dict) -> None:
     if ok:
         return
     log(logger, "canario fallado", miner_id=miner, task_from=task["from"], task_to=task["to"])
-    await put_in_quarantine(miner, "canario")
-    cur = await current_block()
-    if cur is None:
-        return
-    r = state["r"]
-    await r.hdel(keys.block_shares(cur["index"]), miner)  # su trabajo de este bloque no cobra
-    key = keys.block_notfound(cur["block_id"], miner)
-    for raw in await r.lrange(key, 0, -1):  # lo que dijo "no encontré" puede tener la solución
-        rng = json.loads(raw)
-        again = {"v": 1, "task_id": uuid.uuid4().hex, "block_id": cur["block_id"], "base": cur["base"],
-                 "prefix": cur["prefix"], "from": rng["from"], "to": rng["to"], "attempts": 0}
-        await state["exchange"].publish(rabbit.message(again), routing_key="task.any")
-        REPUBLISHED.inc()
-    await r.delete(key)
+    await put_in_quarantine(miner, "canario")  # no cobra el bloque y sus "no encontré" van a otros
 
 
 async def record_result(lease: dict, res: dict) -> None:
@@ -309,10 +328,17 @@ async def post_result(request: Request):
     if lease and lease.get("special") == "canary":
         await finish_canary(lease, res)
         return Response(status_code=202)
-    if lease:
-        await record_result(lease, res)
     kind = lease["kind"] if lease else "cpu"
     cur = await current_block()
+    if not res["found"] and await r.exists(keys.quarantine(res["worker"])):
+        # Un "no encontré" de un minero en cuarentena no vale: no cobra y el rango lo hace otro.
+        # Un "encontré" sí se reenvía: el coordinator lo verifica con MD5.
+        if cur is not None and res["block_id"] == cur["block_id"]:
+            await quarantine.republish(state["exchange"], cur, res["from"], res["to"])
+            REPUBLISHED.inc()
+        raise HTTPException(410, "minero en cuarentena")
+    if lease:
+        await record_result(lease, res)
     if cur is None or res["block_id"] != cur["block_id"]:
         if cur is not None and str(res["block_id"]).startswith(f"{cur['index']}-"):
             # Bloque rearmado: el coordinator cuenta ese rango para el premio y lo descarta.
