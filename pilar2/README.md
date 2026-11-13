@@ -43,6 +43,8 @@ TPI_E2E_URL=http://35.223.237.60 TPI_K8S_CONTEXT=gke_tp3distribuidos_us-central1
 ```mermaid
 flowchart LR
   U[usuarios / bench.py] -->|POST /transactions| C[coordinator x2<br/>líder: coord:leader]
+  N[navegador] -->|frontend en /| C
+  K[KEDA del k3s] -->|GET /scaling| G
   C -->|task.any| X{{exchange blockchain}}
   X --> T[(mining.tasks)]
   T -->|basic_get + lease| G[gateway x2<br/>reaper]

@@ -69,6 +69,21 @@ real, su cuarentena y su premio (`GET /miners` del coordinator, y la tabla de mi
 Cada k3s tiene su propio KEDA, y todos leen la misma señal de `GET /scaling`: cada PC levanta hasta
 `CPU_MINERS_MAX` pods.
 
+Así se levantó el k3s de prueba el 13/11 (un cluster k3d propio, sin tocar los otros de la PC):
+
+```bash
+k3d cluster create tpi-mineros --agents 0 --k3s-arg "--disable=traefik@server:0"
+helm --kube-context k3d-tpi-mineros install keda kedacore/keda -n keda --create-namespace --wait
+docker build -f pilar2/services/miners/cpu/Dockerfile -t tpi/miner-cpu:<sha> . && k3d image import tpi/miner-cpu:<sha> -c tpi-mineros
+K="kubectl --context k3d-tpi-mineros"
+$K apply -f pilar3/k3s-local/namespace.yaml
+$K -n tpi-miners create secret generic gateway-auth --from-literal=miner-token="$MINER_TOKEN"
+$K kustomize pilar3/k3s-local | sed "s#ghcr.io/OWNER/REPO/miner-cpu:latest#tpi/miner-cpu:<sha>#" | $K apply -f -
+```
+
+Resultado: KEDA subió a 8 pods al haber trabajo sin GPU, cada uno calibró (~1,4 MH/s) y el pool subió solo al
+prefijo `000000` con 12,8 MH/s entre los 8. Para apagarlo: `k3d cluster stop tpi-mineros`.
+
 ---
 
 # Starter del Pilar 3 del TPI: GKE + OpenTofu + pool + escalabilidad
