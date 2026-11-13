@@ -1,0 +1,606 @@
+# Dashboard del TPI. El sidecar de Grafana (kube-prometheus-stack del TP3) carga cualquier ConfigMap
+# con la etiqueta grafana_dashboard, de cualquier namespace. Se genera con un script; para cambiarlo,
+# editar en Grafana, exportar el JSON y pegarlo acá.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tpi-dashboard
+  namespace: tpi
+  labels:
+    grafana_dashboard: "1"
+data:
+  tpi-blockchain.json: |
+    {
+     "uid": "tpi-blockchain",
+     "title": "TPI Blockchain",
+     "tags": [
+      "tpi"
+     ],
+     "timezone": "browser",
+     "schemaVersion": 39,
+     "refresh": "10s",
+     "time": {
+      "from": "now-1h",
+      "to": "now"
+     },
+     "panels": [
+      {
+       "id": 1,
+       "type": "stat",
+       "title": "Altura de la cadena (bloques sellados)",
+       "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+       },
+       "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 6,
+        "h": 4
+       },
+       "targets": [
+        {
+         "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+         },
+         "expr": "sum(blocks_sealed_total{namespace=\"tpi\"})",
+         "legendFormat": "bloques",
+         "refId": "A"
+        }
+       ],
+       "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+       },
+       "options": {
+        "legend": {
+         "displayMode": "list",
+         "placement": "bottom"
+        }
+       }
+      },
+      {
+       "id": 2,
+       "type": "stat",
+       "title": "Tx pendientes",
+       "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+       },
+       "gridPos": {
+        "x": 6,
+        "y": 0,
+        "w": 6,
+        "h": 4
+       },
+       "targets": [
+        {
+         "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+         },
+         "expr": "max(pending_transactions{namespace=\"tpi\"})",
+         "legendFormat": "pendientes",
+         "refId": "A"
+        }
+       ],
+       "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+       },
+       "options": {
+        "legend": {
+         "displayMode": "list",
+         "placement": "bottom"
+        }
+       }
+      },
+      {
+       "id": 3,
+       "type": "stat",
+       "title": "Prefijo actual (caracteres)",
+       "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+       },
+       "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 6,
+        "h": 4
+       },
+       "targets": [
+        {
+         "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+         },
+         "expr": "max(pool_prefix_length{namespace=\"tpi\"})",
+         "legendFormat": "prefijo",
+         "refId": "A"
+        }
+       ],
+       "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+       },
+       "options": {
+        "legend": {
+         "displayMode": "list",
+         "placement": "bottom"
+        }
+       }
+      },
+      {
+       "id": 4,
+       "type": "stat",
+       "title": "Mineros CPU pedidos a KEDA",
+       "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+       },
+       "gridPos": {
+        "x": 18,
+        "y": 0,
+        "w": 6,
+        "h": 4
+       },
+       "targets": [
+        {
+         "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+         },
+         "expr": "max(desired_cpu_miners{namespace=\"tpi\"})",
+         "legendFormat": "desired",
+         "refId": "A"
+        }
+       ],
+       "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+       },
+       "options": {
+        "legend": {
+         "displayMode": "list",
+         "placement": "bottom"
+        }
+       }
+      },
+      {
+       "id": 5,
+       "type": "timeseries",
+       "title": "Hashrate real por tipo (cuenta para el prefijo)",
+       "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+       },
+       "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 12,
+        "h": 8
+       },
+       "targets": [
+        {
+         "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+         },
+         "expr": "max by (kind) (hashrate_total{namespace=\"tpi\"})",
+         "legendFormat": "{{kind}}",
+         "refId": "A"
+        }
+       ],
+       "fieldConfig": {
+        "defaults": {
+         "unit": "hashes/s"
+        },
+        "overrides": []
+       },
+       "options": {
+        "legend": {
+         "displayMode": "list",
+         "placement": "bottom"
+        }
+       }
+      },
+      {
+       "id": 6,
+       "type": "timeseries",
+       "title": "Hashrate de cada minero",
+       "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+       },
+       "gridPos": {
+        "x": 12,
+        "y": 4,
+        "w": 12,
+        "h": 8
+       },
+       "targets": [
+        {
+         "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+         },
+         "expr": "max by (miner_id, source) (miner_hashrate{namespace=\"tpi\", source=~\"motor|efectivo|calibrated\"})",
+         "legendFormat": "{{miner_id}} {{source}}",
+         "refId": "A"
+        }
+       ],
+       "fieldConfig": {
+        "defaults": {
+         "unit": "hashes/s"
+        },
+        "overrides": []
+       },
+       "options": {
+        "legend": {
+         "displayMode": "list",
+         "placement": "bottom"
+        }
+       },
+       "description": "motor = solo minando; efectivo = de punta a punta (red y arranque); calibrated = la tarea de calibración"
+      },
+      {
+       "id": 7,
+       "type": "timeseries",
+       "title": "Prefijo y mineros vivos",
+       "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+       },
+       "gridPos": {
+        "x": 0,
+        "y": 12,
+        "w": 12,
+        "h": 8
+       },
+       "targets": [
+        {
+         "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+         },
+         "expr": "max(pool_prefix_length{namespace=\"tpi\"})",
+         "legendFormat": "largo del prefijo",
+         "refId": "A"
+        },
+        {
+         "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+         },
+         "expr": "max by (kind) (miners_alive{namespace=\"tpi\"})",
+         "legendFormat": "mineros {{kind}}",
+         "refId": "B"
+        }
+       ],
+       "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+       },
+       "options": {
+        "legend": {
+         "displayMode": "list",
+         "placement": "bottom"
+        }
+       }
+      },
+      {
+       "id": 8,
+       "type": "timeseries",
+       "title": "Tiempo por bloque (desde que se arma hasta que se sella)",
+       "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+       },
+       "gridPos": {
+        "x": 12,
+        "y": 12,
+        "w": 12,
+        "h": 8
+       },
+       "targets": [
+        {
+         "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+         },
+         "expr": "histogram_quantile(0.5, sum by (le) (rate(block_seconds_bucket{namespace=\"tpi\"}[10m])))",
+         "legendFormat": "mediana",
+         "refId": "A"
+        },
+        {
+         "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+         },
+         "expr": "histogram_quantile(0.9, sum by (le) (rate(block_seconds_bucket{namespace=\"tpi\"}[10m])))",
+         "legendFormat": "p90",
+         "refId": "B"
+        }
+       ],
+       "fieldConfig": {
+        "defaults": {
+         "unit": "s"
+        },
+        "overrides": []
+       },
+       "options": {
+        "legend": {
+         "displayMode": "list",
+         "placement": "bottom"
+        }
+       }
+      },
+      {
+       "id": 9,
+       "type": "timeseries",
+       "title": "Transacciones por segundo",
+       "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+       },
+       "gridPos": {
+        "x": 0,
+        "y": 20,
+        "w": 12,
+        "h": 8
+       },
+       "targets": [
+        {
+         "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+         },
+         "expr": "sum(rate(tx_accepted_total{namespace=\"tpi\"}[1m]))",
+         "legendFormat": "aceptadas",
+         "refId": "A"
+        },
+        {
+         "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+         },
+         "expr": "sum by (reason) (rate(tx_rejected_total{namespace=\"tpi\"}[1m]))",
+         "legendFormat": "rechazadas: {{reason}}",
+         "refId": "B"
+        }
+       ],
+       "fieldConfig": {
+        "defaults": {
+         "unit": "reqps"
+        },
+        "overrides": []
+       },
+       "options": {
+        "legend": {
+         "displayMode": "list",
+         "placement": "bottom"
+        }
+       }
+      },
+      {
+       "id": 10,
+       "type": "timeseries",
+       "title": "Bloques por minuto y rearmados",
+       "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+       },
+       "gridPos": {
+        "x": 12,
+        "y": 20,
+        "w": 12,
+        "h": 8
+       },
+       "targets": [
+        {
+         "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+         },
+         "expr": "sum(rate(blocks_sealed_total{namespace=\"tpi\"}[5m])) * 60",
+         "legendFormat": "bloques/min",
+         "refId": "A"
+        },
+        {
+         "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+         },
+         "expr": "sum(increase(blocks_rearmed_total{namespace=\"tpi\"}[5m]))",
+         "legendFormat": "rearmados (5 min)",
+         "refId": "B"
+        }
+       ],
+       "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+       },
+       "options": {
+        "legend": {
+         "displayMode": "list",
+         "placement": "bottom"
+        }
+       }
+      },
+      {
+       "id": 11,
+       "type": "timeseries",
+       "title": "Tareas: cola, préstamos vencidos y DLQ",
+       "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+       },
+       "gridPos": {
+        "x": 0,
+        "y": 28,
+        "w": 12,
+        "h": 8
+       },
+       "targets": [
+        {
+         "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+         },
+         "expr": "max(mining_tasks_ready{namespace=\"tpi\"})",
+         "legendFormat": "en la cola",
+         "refId": "A"
+        },
+        {
+         "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+         },
+         "expr": "sum(increase(leases_expired_total{namespace=\"tpi\"}[5m]))",
+         "legendFormat": "vencidos (5 min)",
+         "refId": "B"
+        },
+        {
+         "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+         },
+         "expr": "sum(increase(tasks_dlq_total{namespace=\"tpi\"}[5m]))",
+         "legendFormat": "a la DLQ (5 min)",
+         "refId": "C"
+        }
+       ],
+       "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+       },
+       "options": {
+        "legend": {
+         "displayMode": "list",
+         "placement": "bottom"
+        }
+       }
+      },
+      {
+       "id": 12,
+       "type": "timeseries",
+       "title": "Canarios y cuarentena",
+       "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+       },
+       "gridPos": {
+        "x": 12,
+        "y": 28,
+        "w": 12,
+        "h": 8
+       },
+       "targets": [
+        {
+         "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+         },
+         "expr": "sum by (result) (increase(canaries_total{namespace=\"tpi\"}[10m]))",
+         "legendFormat": "canarios {{result}}",
+         "refId": "A"
+        },
+        {
+         "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+         },
+         "expr": "sum by (reason) (increase(quarantined_total{namespace=\"tpi\"}[10m]))",
+         "legendFormat": "cuarentena {{reason}}",
+         "refId": "B"
+        }
+       ],
+       "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+       },
+       "options": {
+        "legend": {
+         "displayMode": "list",
+         "placement": "bottom"
+        }
+       }
+      },
+      {
+       "id": 13,
+       "type": "timeseries",
+       "title": "Resultados verificados por el coordinator",
+       "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+       },
+       "gridPos": {
+        "x": 0,
+        "y": 36,
+        "w": 12,
+        "h": 8
+       },
+       "targets": [
+        {
+         "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+         },
+         "expr": "sum by (status) (rate(results_total{namespace=\"tpi\"}[1m]))",
+         "legendFormat": "{{status}}",
+         "refId": "A"
+        }
+       ],
+       "fieldConfig": {
+        "defaults": {
+         "unit": "reqps"
+        },
+        "overrides": []
+       },
+       "options": {
+        "legend": {
+         "displayMode": "list",
+         "placement": "bottom"
+        }
+       }
+      },
+      {
+       "id": 14,
+       "type": "timeseries",
+       "title": "Tx por bloque",
+       "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+       },
+       "gridPos": {
+        "x": 12,
+        "y": 36,
+        "w": 12,
+        "h": 8
+       },
+       "targets": [
+        {
+         "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+         },
+         "expr": "histogram_quantile(0.5, sum by (le) (rate(block_transactions_bucket{namespace=\"tpi\"}[10m])))",
+         "legendFormat": "mediana",
+         "refId": "A"
+        }
+       ],
+       "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+       },
+       "options": {
+        "legend": {
+         "displayMode": "list",
+         "placement": "bottom"
+        }
+       }
+      }
+     ]
+    }

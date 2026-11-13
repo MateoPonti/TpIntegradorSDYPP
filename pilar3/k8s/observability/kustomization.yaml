@@ -3,3 +3,4 @@ kind: Kustomization
 resources:
   - monitores.yaml
   - alertas.yaml
+  - dashboard-tpi.yaml
