@@ -1,7 +1,7 @@
 # Ideas para sumar al TPI
 
 Lista de servicios propuestos el 13/11/2026, después de que el profe pidiera definir para qué sirve la blockchain
-y pensar servicios a nivel de sistema distribuido. **Nada de esto está decidido ni hecho**: son propuestas para
+y pensar servicios a nivel de sistema distribuido. **Nada de esto está decidido ni hecho** (los puntos que el grupo se comprometió a hacer están en `docs/contrato-1.md`): son propuestas para
 que el grupo elija. Lo que pide el enunciado (kernel CUDA, pruebas de carga del Pilar 3, informe) va antes.
 
 Hoy la blockchain es de **pagos con saldos** (modelo de cuentas): "A le paga X a B". Ver `decisiones.docx`.
