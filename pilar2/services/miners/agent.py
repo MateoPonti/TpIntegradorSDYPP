@@ -9,7 +9,7 @@ contrato CLI del kit del Pilar 1 (--base --prefix --from --to -> una línea JSON
 Ciclo: keep-alive cada 5 s (hilo aparte) -> GET /tasks/next -> motor por tramos -> entre tramo y
 tramo POST /tasks/<id>/renew (410 = abandonar) -> POST /results.
 
-    GATEWAY_URL=http://<ip> MINER_TOKEN=... MINER_KIND=gpu MINER_ID=pc-mateo \
+    GATEWAY_URL=http://<ip> MINER_TOKEN=... MINER_KIND=gpu MINER_ID=pc-mateo MINER_ACCOUNT=mateo \
       python agent.py -- ../../../pilar1/build/miner_gpu
 """
 from __future__ import annotations
@@ -59,12 +59,15 @@ class Miner:
     def __init__(self, gw: Gateway, cmd: list[str], miner_id: str, kind: str, chunk: int, keepalive: float):
         self.gw, self.cmd, self.id, self.kind, self.chunk, self.keepalive = gw, cmd, miner_id, kind, chunk, keepalive
         self.hashrate = 0.0
+        # Cuenta de cobro del premio: todos los workers de una persona pueden cobrar en la misma.
+        self.account = os.getenv("MINER_ACCOUNT") or None
         self.stop = threading.Event()
 
     def heartbeat_loop(self) -> None:
         while not self.stop.is_set():
             try:
-                self.gw.call("POST", "/keepalive", {"miner_id": self.id, "type": self.kind, "hashrate": self.hashrate})
+                self.gw.call("POST", "/keepalive", {"miner_id": self.id, "type": self.kind, "hashrate": self.hashrate,
+                                                    "account": self.account})
             except OSError as exc:
                 log.warning("keep-alive falló: %s", exc)
             self.stop.wait(self.keepalive)
@@ -148,7 +151,8 @@ def main() -> int:
     miner_id = os.getenv("MINER_ID") or f"{kind}-{socket.gethostname()}"
     setup_logs(miner_id)
     gw = Gateway(os.environ["GATEWAY_URL"], os.environ["MINER_TOKEN"])
-    log.info("minero %s (%s) contra %s, motor=%s", miner_id, kind, gw.url, " ".join(cmd))
+    log.info("minero %s (%s) contra %s, cobra en %s, motor=%s", miner_id, kind, gw.url,
+             os.getenv("MINER_ACCOUNT") or f"miner:{miner_id}", " ".join(cmd))
     Miner(gw, cmd, miner_id, kind, a.chunk, a.keepalive).run(a.idle)
     return 0
 

@@ -70,8 +70,9 @@ y las dos IPs fijas (`tofu output static_ips`). Las IPs van a ser otras: hay que
 
 Cada PC con un k3s corre el mismo Deployment (`k3s-local/`) contra el mismo gateway y con el **mismo
 `MINER_TOKEN`** (es un solo token para todos los mineros: lo crea quien despliega y está en el secret
-`gateway-auth`). Lo único que cambia por PC es `MINER_CLUSTER` en `k3s-local/config.yaml`: el id de cada
-minero queda `<MINER_CLUSTER>-<nombre del pod>`, y con ese id el gateway lleva su calibración, su hashrate
+`gateway-auth`). Lo único que cambia por PC es `MINER_CLUSTER` y `MINER_ACCOUNT` en `k3s-local/config.yaml`. El id de cada
+minero queda `<MINER_CLUSTER>-<nombre del pod>`, y todos los pods de esa PC cobran el premio en `MINER_ACCOUNT`
+(por ejemplo `mateo`; se ve su saldo en el frontend), y con ese id el gateway lleva su calibración, su hashrate
 real, su cuarentena y su premio (`GET /miners` del coordinator, y la tabla de mineros del frontend).
 Cada k3s tiene su propio KEDA, y todos leen la misma señal de `GET /scaling`: cada PC levanta hasta
 `CPU_MINERS_MAX` pods.

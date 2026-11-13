@@ -73,7 +73,7 @@
   <section>
     <h2>Saldo y estado de una tx</h2>
     <form id="bal">
-      <div class="row"><input name="user" placeholder="usuario (ej. user-1 o miner:pc-mateo)" required><button>Ver saldo</button></div>
+      <div class="row"><input name="user" placeholder="usuario o cuenta de cobro (ej. user-1, mateo)" required><button>Ver saldo</button></div>
     </form>
     <div class="out" id="balOut"></div>
     <form id="txq" style="margin-top:10px">
@@ -121,10 +121,10 @@ async function refreshStatus() {
 
 async function refreshMiners() {
   const ms = await get("/miners");
-  $("miners").innerHTML = "<tr><th>Minero</th><th>Tipo</th><th>Cuenta</th><th>Clase</th><th>Cuenta para el prefijo</th><th>Motor</th><th>Efectivo</th><th>Calibrado</th><th>Declarado</th></tr>" +
-    (ms.length ? ms.map((x) => `<tr><td class="mono">${esc(x.miner_id)}</td><td>${esc(x.kind)}</td><td>${x.quarantined ? '<span class="bad">cuarentena</span>' : esc(x.source)}</td>
+  $("miners").innerHTML = "<tr><th>Minero</th><th>Tipo</th><th>Cobra en</th><th>Fuente</th><th>Clase</th><th>Cuenta para el prefijo</th><th>Motor</th><th>Efectivo</th><th>Calibrado</th><th>Declarado</th></tr>" +
+    (ms.length ? ms.map((x) => `<tr><td class="mono">${esc(x.miner_id)}</td><td>${esc(x.kind)}</td><td class="mono">${esc(x.account)}</td><td>${x.quarantined ? '<span class="bad">cuarentena</span>' : esc(x.source)}</td>
       <td>${esc(x.class ?? "—")}</td><td>${rate(x.hashrate)}</td><td>${rate(x.motor)}</td><td>${rate(x.efectivo)}</td><td>${rate(x.calibrated)}</td><td>${rate(x.declared)}</td></tr>`).join("")
-      : '<tr><td colspan="9">No hay mineros conectados al gateway.</td></tr>');
+      : '<tr><td colspan="10">No hay mineros conectados al gateway.</td></tr>');
 }
 
 async function block(i) {

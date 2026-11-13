@@ -2,6 +2,7 @@
 # Requisitos: pilar1\build\miner_gpu.exe compilado (make ARCH=sm_61) y Python 3.10+.
 #   $env:GATEWAY_URL = "http://<ip-del-gateway>"   # local: http://127.0.0.1:18180
 #   $env:MINER_TOKEN = "..."                         # nunca commitearlo
+#   $env:MINER_ACCOUNT = "mateo"                     # cuenta de cobro del premio (opcional)
 #   .\pilar2\services\miners\gpu\run.ps1
 $ErrorActionPreference = "Stop"
 $root = Resolve-Path "$PSScriptRoot\..\..\..\.."

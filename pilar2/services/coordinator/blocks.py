@@ -21,7 +21,7 @@ from tpi_common.config import DIFFICULTY_PREFIX, env_float, env_int, env_str
 from tpi_common.logs import log
 from tpi_common.store import alive_workers
 
-from .reward import REWARD_SENDER, reward_transactions
+from .reward import REWARD_SENDER, miner_account, reward_transactions, shares_by_account
 
 MAX_TX_PER_BLOCK = env_int("MAX_TX_PER_BLOCK", 1000)
 BLOCK_WINDOW = env_float("BLOCK_WINDOW_SECONDS", 10)
@@ -186,7 +186,11 @@ class Chain:
         shares = await self.r.hgetall(keys.block_shares(prev_index))
         raw = await self.r.get(keys.block(prev_index))
         finder = json.loads(raw).get("miner") if raw else None
-        return reward_transactions(prev_index, shares, BLOCK_REWARD_CENTS, finder, round(time.time(), 3))
+        miners = list(shares) + ([finder] if finder else [])
+        accounts = {m: a for m in miners if (a := await self.r.get(keys.miner_account(m)))}
+        finder_account = (accounts.get(finder) or miner_account(finder)) if finder else None
+        return reward_transactions(prev_index, shares_by_account(shares, accounts), BLOCK_REWARD_CENTS,
+                                   finder_account, round(time.time(), 3))
 
     async def _assemble(self) -> dict | None:
         first = await self.r.lindex(keys.TX_PENDING, 0)

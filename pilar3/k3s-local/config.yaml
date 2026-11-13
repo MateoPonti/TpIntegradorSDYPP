@@ -9,3 +9,5 @@ data:
   MINER_KIND: cpu
   # Nombre de ESTA PC / cluster (cambiarlo en cada una): queda al principio del id de cada minero.
   MINER_CLUSTER: pc-mateo
+  # Cuenta donde cobran el premio TODOS los pods de esta PC (sus partes se suman). Cambiarla en cada una.
+  MINER_ACCOUNT: mateo

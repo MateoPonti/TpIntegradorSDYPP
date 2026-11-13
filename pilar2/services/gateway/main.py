@@ -333,9 +333,14 @@ async def keepalive(request: Request):
     body = await request.json()
     miner_id, kind = body.get("miner_id"), body.get("type")
     if not isinstance(miner_id, str) or kind not in ("cpu", "gpu"):
-        raise HTTPException(400, "se espera {miner_id, type: cpu|gpu, hashrate}")
-    value = {"miner_id": miner_id, "type": kind, "hashrate": float(body.get("hashrate") or 0), "ts": time.time()}
+        raise HTTPException(400, "se espera {miner_id, type: cpu|gpu, hashrate, account?}")
+    account = body.get("account") or f"miner:{miner_id}"
+    if not isinstance(account, str) or len(account) > 64 or account == "recompensa":
+        raise HTTPException(400, "account inválida")
+    value = {"miner_id": miner_id, "type": kind, "hashrate": float(body.get("hashrate") or 0),
+             "account": account, "ts": time.time()}
     await state["r"].set(keys.worker(miner_id), json.dumps(value), ex=WORKER_TTL_SECONDS)
+    await state["r"].set(keys.miner_account(miner_id), account, ex=86400)  # el premio se paga en el bloque siguiente
     KEEPALIVES.labels(kind).inc()
     return {"ttl": WORKER_TTL_SECONDS}
 

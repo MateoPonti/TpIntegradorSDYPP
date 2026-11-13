@@ -74,6 +74,12 @@ def miner_expired(miner_id: str) -> str:
     return f"miner:{miner_id}:expired"
 
 
+def miner_account(miner_id: str) -> str:
+    """STRING con TTL de 1 día: a qué cuenta se le paga el premio de ese minero (MINER_ACCOUNT del agente).
+    Dura más que el keep-alive porque el premio se paga en el bloque siguiente, y el pod ya puede no existir."""
+    return f"miner:{miner_id}:account"
+
+
 def quarantine(miner_id: str) -> str:
     """STRING con TTL: mientras exista, el gateway no le da tareas y su hashrate no cuenta."""
     return f"quarantine:{miner_id}"

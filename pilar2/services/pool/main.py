@@ -58,7 +58,8 @@ async def measure(r, workers: list[dict], now: float) -> list[dict]:
                                                json.loads(expired)["ts"] if expired else None,
                                                quarantined, now, WINDOW)
         rates = decision.miner_rates(results, now, WINDOW)
-        out.append({"miner_id": mid, "kind": w.get("type"), "hashrate": rate, "source": source,
+        out.append({"miner_id": mid, "kind": w.get("type"), "account": w.get("account") or f"miner:{mid}",
+                    "hashrate": rate, "source": source,
                     "motor": rates[0] if rates else None, "efectivo": rates[1] if rates else None,
                     "calibrated": calib["hashrate"] if calib else None, "class": calib["class"] if calib else None,
                     "declared": w.get("hashrate", 0), "quarantined": quarantined})

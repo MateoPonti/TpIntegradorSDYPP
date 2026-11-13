@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Minero GPU en Linux / Colab / cluster de la cátedra. NO es una imagen y nunca corre en GCP.
-#   GATEWAY_URL=http://<ip> MINER_TOKEN=... ./pilar2/services/miners/gpu/run.sh
+#   GATEWAY_URL=http://<ip> MINER_TOKEN=... MINER_ACCOUNT=mateo ./pilar2/services/miners/gpu/run.sh
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 bin="$here/../../../../pilar1/build/miner_gpu"

@@ -36,8 +36,8 @@ def check_rewards(block: dict, prev_block: dict | None) -> list[str]:
     errors = []
     if any(t.get("reward_for") != prev_block["index"] for t in rewards):
         errors.append("un premio no es del bloque anterior")
-    if any(not str(t["receiver"]).startswith("miner:") for t in rewards):
-        errors.append("un premio no va a una cuenta de minero")
+    if len({t["receiver"] for t in rewards}) != len(rewards):
+        errors.append("una cuenta cobra dos veces el mismo premio")
     if sum(t["amount"] for t in rewards) != prev_block.get("reward_cents", 0):
         errors.append("los premios no suman el reward_cents del bloque anterior")
     return errors

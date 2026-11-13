@@ -140,8 +140,17 @@ def test_reward_is_proportional_and_exact():
     assert reward.split_reward({}, 5000, None) == {}
 
 
+def test_reward_goes_to_payout_account():
+    # Dos pods de KEDA y la GPU de la misma persona cobran juntos; un minero sin cuenta cobra en miner:<id>.
+    shares = {"pc-mateo-pod-a": 10, "pc-mateo-pod-b": 30, "gpu-pc": 60, "otro": 100}
+    accounts = {"pc-mateo-pod-a": "mateo", "pc-mateo-pod-b": "mateo", "gpu-pc": "mateo"}
+    assert reward.shares_by_account(shares, accounts) == {"mateo": 100, "miner:otro": 100}
+    txs = reward.reward_transactions(3, reward.shares_by_account(shares, accounts), 5000, "mateo", ts=1.0)
+    assert [(t["receiver"], t["amount"]) for t in txs] == [("mateo", 2500), ("miner:otro", 2500)]
+
+
 def test_reward_transactions_and_verify_chain():
-    txs = reward.reward_transactions(3, {"pc": 10, "pod-1": 30}, 5000, "pod-1", ts=1.0)
+    txs = reward.reward_transactions(3, {"miner:pc": 10, "miner:pod-1": 30}, 5000, "miner:pod-1", ts=1.0)
     assert [t["receiver"] for t in txs] == ["miner:pc", "miner:pod-1"]
     prev = {"index": 3, "reward_cents": 5000}
     assert verify_chain.check_rewards({"transactions": txs}, prev) == []

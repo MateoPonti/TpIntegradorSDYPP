@@ -102,7 +102,7 @@ Así el gateway y el coordinator ni se enteran de quién minó, y el binario CUD
 | `GET /tasks/next?miner_id=&kind=` | Saca una tarea de `mining.tasks`, la presta (`lease:<task_id>`) y la devuelve. `204` si no hay o si el minero está en cuarentena. La primera de cada minero es la **calibración** y 1 de cada `CANARY_EVERY` es un **canario**. |
 | `POST /tasks/{task_id}/renew` | El agente pregunta entre tramo y tramo. Renueva el préstamo, o `410` si el bloque ya se cerró. |
 | `POST /results` | Publica el resultado en `mining.results` (el coordinator lo verifica de nuevo). |
-| `POST /keepalive` | `{miner_id, type: cpu\|gpu, hashrate}` → `worker:<id>` con TTL 15 s. |
+| `POST /keepalive` | `{miner_id, type: cpu\|gpu, hashrate, account?}` → `worker:<id>` con TTL 15 s y `miner:<id>:account` (cuenta de cobro, 1 día). |
 | `GET /scaling` | Señal del pool para KEDA. `503` si el pool no la renovó. |
 
 ## Mensajes (JSON, `"v": 1`)
@@ -113,7 +113,7 @@ Así el gateway y el coordinator ni se enteran de quién minó, y el binario CUD
 // result (gateway → mining.results)
 {"v":1,"task_id":"…","block_id":"3-1a2b3c4d","worker":"gpu-PC","from":0,"to":104857,"found":true,"nonce":48213,"hash":"00000…","hashes":48214,"seconds":0.21,"engine_seconds":0.01}
 // tx de premio (primera del bloque siguiente; sender reservado)
-{"tx_id":"reward-3-gpu-PC","sender":"recompensa","receiver":"miner:gpu-PC","amount":4500,"ts":…,"reward_for":3}
+{"tx_id":"reward-3-mateo","sender":"recompensa","receiver":"mateo","amount":4500,"ts":…,"reward_for":3}
 // block.solved (coordinator → block.events.<pod>)
 {"v":1,"block_id":"3-1a2b3c4d","index":3,"block_hash":"00000…"}
 ```
@@ -156,8 +156,11 @@ Así el gateway y el coordinator ni se enteran de quién minó, y el binario CUD
   guardados y se verifica con un solo MD5.
 - **Premio proporcional** (13/11): `BLOCK_REWARD_CENTS` por bloque, repartido según los nonces que completó
   cada minero antes del sellado (el tamaño de rango que fijó el coordinator, no los `hashes` que informa).
-  Se paga con tx `sender="recompensa"` → `miner:<id>` al principio del bloque siguiente; el resto del redondeo
-  va al que encontró el nonce. `verify_chain.py` comprueba que sumen el `reward_cents` del bloque anterior.
+  Se paga con tx `sender="recompensa"` → la **cuenta de cobro** del minero al principio del bloque siguiente; el
+  resto del redondeo va al que encontró el nonce. La cuenta de cobro es `MINER_ACCOUNT` del agente (por defecto
+  `miner:<id>`): los 8 pods de KEDA de una PC y su GPU, con `MINER_ACCOUNT=mateo`, suman sus partes y cobran
+  juntos en `mateo` (si no, cada pod cobraría en una cuenta que muere con él). `MINER_ID` sigue siendo único por
+  worker y sirve para las estadísticas. `verify_chain.py` comprueba que sumen el `reward_cents` del bloque anterior.
 - **Préstamos:** el gateway hace `basic_get` + ack y guarda `lease:<task_id>` + vencimiento en el
   ZSET `leases:deadline`. El reaper (una réplica, `gateway:reaper:lock`) devuelve lo vencido; al 3er
   intento va a `mining.dlq`, que **no se reprocesa sola** (métrica `tasks_dlq_total` + log).
