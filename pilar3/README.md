@@ -9,7 +9,8 @@
 - `k8s/apps/config.yaml` tiene además las variables del grupo (armado del bloque, reintentos, `GATEWAY_HEALTH_URL`).
 - `GET /scaling` lo sirve el **gateway** leyendo `pool:scaling` (duda 11, opción A, como trae el starter).
 - Los mineros GPU no tienen manifiesto: corren en la PC (`pilar2/services/miners/gpu/run.ps1`) o en Colab.
-- Pendiente: Prometheus + Grafana en GKE, y adaptar `bench.py` a `POST /transactions/bulk` en una copia
+- Prometheus + Grafana: los del TP3, con el dashboard "TPI Blockchain" (ver abajo).
+- Pendiente: adaptar `bench.py` a `POST /transactions/bulk` en una copia
   propia (el `bench.py`, `matrix.sh` y `plot.py` de la cátedra no se modifican).
 
 En los comandos de abajo, todo lo que dice `infra/terraform`, `k8s/` o `k3s-local/` está dentro de `pilar3/`.
@@ -27,6 +28,7 @@ en su propio namespace **`tpi`**. El TP3 sigue en el namespace `tp3`, sin cambio
 | Gateway de los mineros | `http://34.63.209.225` (IP fija `tpi-gateway`) |
 | Imágenes | `us-central1-docker.pkg.dev/tp3distribuidos/tp3/tpi-{coordinator,pool,gateway}:<sha>` |
 | Prometheus, Grafana y Loki | Los del TP3 (namespace `monitoring`). Leen nuestros pods con `k8s/observability/` |
+| Grafana | `http://136.80.214.178`, dashboard **TPI Blockchain** (usuario y clave en el secret `grafana-admin` de `monitoring`) |
 
 Diferencias con el starter, para que entre en ese cluster:
 - Los nodos tienen la etiqueta `pool=infra` / `pool=apps` y el taint `pool=infra` (no `role` / `dedicated`).
@@ -49,6 +51,11 @@ $K apply -k pilar3/k8s/observability                                  # PodMonit
 
 Los secrets (`rabbitmq-auth`, `redis-auth`, `gateway-auth`) se crearon con los valores de `pilar3/k8s/gke.env`,
 que está solo en la PC de quien desplegó (`.gitignore`). El `MINER_TOKEN` de ese archivo es el que usan los mineros.
+
+**Dashboard:** `k8s/observability/dashboard-tpi.yaml` es un ConfigMap con la etiqueta `grafana_dashboard`; el
+sidecar de Grafana lo carga solo. 14 paneles: altura, pendientes, prefijo, hashrate por tipo y por minero, tiempo
+por bloque, tx/s, bloques rearmados, cola, vencidos, DLQ, canarios, cuarentena y tx por bloque. Comparte el
+Grafana con el TP3, pero solo lee el namespace `tpi`.
 
 **Prometheus persistente:** `k8s/observability/prometheus-persistencia.yaml` le agrega al Prometheus del TP3
 un disco de 10 GB (`pd-standard`) y 30 días de retención, con `helm upgrade --reuse-values` (el comando está

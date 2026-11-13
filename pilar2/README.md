@@ -33,7 +33,8 @@ $env:GATEWAY_URL = "http://127.0.0.1:18180"; $env:MINER_TOKEN = "<el de .env>"
 ```bash
 python -m pytest -q pilar2/tests                                       # unitarios
 TPI_E2E_URL=http://127.0.0.1:18080 python -m pytest -q pilar2/tests     # + integración y doble gasto (compose levantado)
-# Caídas en GKE (mata un pod de cada servicio y verifica la cadena). Necesita un minero conectado:
+# Caídas en GKE (mata un pod de cada servicio y verifica la cadena). Necesita un minero conectado.
+# 13/11: 6/6 (doble gasto + coordinator, pool, gateway, RabbitMQ y Redis).
 TPI_E2E_URL=http://35.223.237.60 TPI_K8S_CONTEXT=gke_tp3distribuidos_us-central1-a_tp3 \
   python -m pytest -v pilar2/tests/test_sistema.py
 ```
@@ -136,7 +137,9 @@ Así el gateway y el coordinator ni se enteran de quién minó, y el binario CUD
   objetivo, el líder rearma el bloque: mismas tx y misma base, prefijo más corto, `block_id` nuevo (las tareas
   viejas se descartan solas).
 - **Hashrate real:** el que cada minero entrega en sus resultados (`hashes / engine_seconds`, ventana de 5 min),
-  no el que declara en el keep-alive. Un minero que dejó vencer un préstamo después de su último resultado
+  no el que declara en el keep-alive. Solo cuentan las tareas que recorrieron su rango entero: con un prefijo
+  corto el nonce aparece enseguida, el arranque del motor domina el tiempo y el prefijo quedaba trabado en 3
+  (lo encontró la prueba en GKE). Un minero que dejó vencer un préstamo después de su último resultado
   (zombie) o que está en cuarentena cuenta 0. Mientras no tiene resultados, vale su calibración.
 - **Rangos por tandas:** si en `mining.tasks` quedan menos tareas que mineros vivos, el líder
   publica otra tanda desde `block:<i>:next_from` (`INCRBY`, atómico). La cola es un colchón, no mide el trabajo.
