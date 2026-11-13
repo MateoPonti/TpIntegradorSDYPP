@@ -65,11 +65,10 @@ def normalize(body) -> dict:
     """Valida el formato y devuelve la tx tal como entra al bloque. sender == receiver se permite."""
     if not isinstance(body, dict):
         raise InvalidTx("se esperaba un objeto JSON")
-    tx_id = body.get("tx_id") or uuid.uuid4().hex  # opcional: permite reintentos idempotentes
-    if not isinstance(tx_id, str) or len(tx_id) > MAX_NAME:
-        raise InvalidTx("tx_id inválido")
+    # El tx_id lo genera siempre el servidor (decidido el 13/11): si lo eligiera el cliente podría
+    # adelantarse a uno de premio (reward-<i>-<cuenta>) o bloquearle ids a otro. Un tx_id que venga se ignora.
     return {
-        "tx_id": tx_id,
+        "tx_id": uuid.uuid4().hex,
         "sender": _name(body, "sender"),
         "receiver": _name(body, "receiver"),
         "amount": to_cents(body.get("amount")),

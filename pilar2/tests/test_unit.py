@@ -49,6 +49,12 @@ def test_normalize_bench_format():
     assert tx["amount"] == 5550 and tx["tx_id"] and tx["ts"] > 0
 
 
+def test_client_cannot_choose_tx_id():
+    # Si pudiera, se adelantaría al tx_id de un premio o le bloquearía ids a otro cliente.
+    tx = ledger.normalize({"sender": "u", "receiver": "v", "amount": 1, "tx_id": "reward-25-mateo"})
+    assert tx["tx_id"] != "reward-25-mateo"
+
+
 def test_normalize_allows_self_transfer_and_rejects_missing():
     assert ledger.normalize({"sender": "u", "receiver": "u", "amount": 1})["sender"] == "u"
     with pytest.raises(ledger.InvalidTx):
