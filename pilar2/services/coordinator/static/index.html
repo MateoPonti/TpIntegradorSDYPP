@@ -157,14 +157,14 @@ async function block(i) {
   return cache.get(i);
 }
 
-// Cadena: páginas de PAGE bloques, del más nuevo al más viejo. `top` = bloque más nuevo de la página
+// Cadena: páginas de PAGE bloques, del más nuevo al más viejo. `pageTop` = bloque más nuevo de la página
 // (null = seguir siempre el último). `selected` = bloque que se muestra en el detalle.
 const PAGE = 20;
-let height = 0, top = null, selected = null;
+let height = 0, pageTop = null, selected = null;
 const when = (b) => b.timestamp ? new Date(b.timestamp * 1000).toLocaleString("es-AR") : "génesis";
 
 async function refreshBlocks() {
-  const hi = Math.min(top ?? height - 1, height - 1), lo = Math.max(0, hi - PAGE + 1);
+  const hi = Math.min(pageTop ?? height - 1, height - 1), lo = Math.max(0, hi - PAGE + 1);
   const idx = [];
   for (let i = hi; i >= lo; i--) idx.push(i);
   const bs = await Promise.all(idx.map(block));
@@ -214,13 +214,13 @@ async function showBlock(i, scroll) {
 
 async function goTo(i) {
   if (!(i >= 0 && i < height)) return;
-  top = Math.min(height - 1, i + Math.floor(PAGE / 2));
+  pageTop = Math.min(height - 1, i + Math.floor(PAGE / 2));
   await refreshBlocks();
   await showBlock(i, true);
 }
 
-$("newer").onclick = () => { top = Math.min(height - 1, (top ?? height - 1) + PAGE); if (top >= height - 1) top = null; refreshBlocks(); };
-$("older").onclick = () => { top = Math.max(PAGE - 1, (top ?? height - 1) - PAGE); refreshBlocks(); };
+$("newer").onclick = () => { pageTop = Math.min(height - 1, (pageTop ?? height - 1) + PAGE); if (pageTop >= height - 1) pageTop = null; refreshBlocks(); };
+$("older").onclick = () => { pageTop = Math.max(PAGE - 1, (pageTop ?? height - 1) - PAGE); refreshBlocks(); };
 $("goto").onsubmit = (ev) => { ev.preventDefault(); goTo(Number(new FormData(ev.target).get("n"))); };
 
 // Cuentas: se piden cada 10 s (recorre todas las claves de saldo); el filtro se aplica en el navegador.
