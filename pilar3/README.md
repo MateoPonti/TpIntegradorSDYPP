@@ -52,6 +52,18 @@ $K apply -k pilar3/k8s/observability                                  # PodMonit
 Los secrets (`rabbitmq-auth`, `redis-auth`, `gateway-auth`) se crearon con los valores de `pilar3/k8s/gke.env`,
 que está solo en la PC de quien desplegó (`.gitignore`). El `MINER_TOKEN` de ese archivo es el que usan los mineros.
 
+**Resetear la cadena** (empezar de cero con un génesis nuevo; se hizo el 13/11 para limpiar las pruebas).
+Borra todo lo del TPI: bloques, saldos, préstamos, calibraciones y cuentas de los mineros. No toca el TP3
+(su Redis y su RabbitMQ son otros). No se puede borrar solo la plata: los saldos salen de la cadena.
+
+```bash
+set -a; . pilar3/k8s/gke.env; set +a
+K="kubectl --context gke_tp3distribuidos_us-central1-a_tp3 -n tpi"
+$K exec redis-0 -c redis -- redis-cli -a "$REDIS_PASSWORD" --no-auth-warning FLUSHALL
+for q in mining.tasks mining.results mining.dlq; do $K exec rabbitmq-0 -- rabbitmqctl -q purge_queue $q; done
+$K rollout restart deploy/coordinator deploy/pool deploy/gateway   # el coordinator crea el génesis al arrancar
+```
+
 **Dashboard:** `k8s/observability/dashboard-tpi.yaml` es un ConfigMap con la etiqueta `grafana_dashboard`; el
 sidecar de Grafana lo carga solo. 14 paneles: altura, pendientes, prefijo, hashrate por tipo y por minero, tiempo
 por bloque, tx/s, bloques rearmados, cola, vencidos, DLQ, canarios, cuarentena y tx por bloque. Comparte el

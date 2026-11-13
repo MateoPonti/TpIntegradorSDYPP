@@ -166,6 +166,12 @@ Así el gateway y el coordinator ni se enteran de quién minó, y el binario CUD
   intento va a `mining.dlq`, que **no se reprocesa sola** (métrica `tasks_dlq_total` + log).
 - **Saldos:** cuentas en centavos enteros. Disponible = `balance − pending_out`, reservado en Lua
   al aceptar la tx; al sellar se mueve el saldo. Génesis: 97 usuarios (`user-0..user-96`, como bench.py).
+  El `tx_id` lo genera siempre el servidor: si viene en el body se ignora (si no, alguien podría adelantarse
+  al id de un premio, `reward-<i>-<cuenta>`, o bloquearle ids a otro cliente).
+- **Génesis:** el bloque 0 lo crea el coordinator al arrancar (`ensure_genesis` en `coordinator/blocks.py`), con
+  un Lua que solo escribe si la cadena está vacía (las 2 réplicas lo intentan y gana una). No se mina:
+  `previous_hash` = 32 ceros, `prefix` vacío, nonce 0, timestamp 0 y 97 tx `genesis → user-i` de 1.000.000.
+  Es siempre igual, así que su hash también (`d2a7ee64…`).
   `recompensa` es un nombre reservado. `test_sistema.py` prueba el doble gasto con dos tx simultáneas.
 - **PoW:** `md5(previous_hash + tx_digest + str(nonce))`, `tx_digest` = SHA-256 del JSON canónico.
 - **Frontend:** una página estática servida por el coordinator en `/`, que usa la misma API pública
