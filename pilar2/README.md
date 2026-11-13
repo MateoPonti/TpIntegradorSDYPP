@@ -43,19 +43,19 @@ TPI_E2E_URL=http://35.223.237.60 TPI_K8S_CONTEXT=gke_tp3distribuidos_us-central1
 
 ```mermaid
 flowchart LR
-  U[usuarios / bench.py] -->|POST /transactions| C[coordinator x2<br/>líder: coord:leader]
+  U[usuarios / bench.py] -->|POST /transactions| C[coordinator 2 a 5, HPA<br/>líder: coord:leader]
   N[navegador] -->|frontend en /| C
   K[KEDA del k3s] -->|GET /scaling| G
   C -->|task.any| X{{exchange blockchain}}
   X --> T[(mining.tasks)]
-  T -->|basic_get + lease| G[gateway x2<br/>reaper]
+  T -->|basic_get + lease| G[gateway 2 a 6, HPA<br/>reaper]
   G -->|HTTP pull + Bearer| M1[miner-cpu<br/>k3s local]
   G -->|HTTP pull + Bearer| M2[wrapper + miner_gpu<br/>PC 1050 Ti]
   M1 & M2 -->|POST /results| G
   G -->|result.*| X --> R[(mining.results)] --> C
   C -->|block.solved| X --> E[(block.events.pod)] --> G
   T -.3 intentos.-> D[(mining.dlq)]
-  C & G & P[pool x2<br/>líder: pool:leader] --- RD[(Redis AOF)]
+  C & G & P[pool 2 fijas<br/>líder: pool:leader] --- RD[(Redis AOF)]
   P -->|pool:plan / pool:scaling| RD
 ```
 
