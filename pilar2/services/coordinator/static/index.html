@@ -88,6 +88,17 @@
   </section>
 
   <section class="wide">
+    <h2>Cuentas <span class="pill" id="accCount"></span></h2>
+    <div class="row" style="margin-bottom:8px">
+      <input id="accFilter" placeholder="buscar cuenta (ej. user-1, mateo)">
+      <select id="accType" style="flex:0 1 200px;font:inherit;padding:8px 10px;border-radius:7px;border:1px solid var(--line);background:var(--bg);color:var(--text)">
+        <option value="">todas</option><option value="minero">cuentas de cobro de mineros</option><option value="usuario">usuarios</option>
+      </select>
+    </div>
+    <div class="scroll" style="max-height:420px;overflow-y:auto"><table id="accounts"></table></div>
+  </section>
+
+  <section class="wide">
     <h2>Cadena de bloques <span class="pill">tocá un bloque para ver todas sus transacciones</span></h2>
     <div class="row" style="margin-bottom:8px">
       <button id="newer" type="button">← Más nuevos</button>
@@ -212,10 +223,30 @@ $("newer").onclick = () => { top = Math.min(height - 1, (top ?? height - 1) + PA
 $("older").onclick = () => { top = Math.max(PAGE - 1, (top ?? height - 1) - PAGE); refreshBlocks(); };
 $("goto").onsubmit = (ev) => { ev.preventDefault(); goTo(Number(new FormData(ev.target).get("n"))); };
 
+// Cuentas: se piden cada 10 s (recorre todas las claves de saldo); el filtro se aplica en el navegador.
+let accs = [], accTick = 0;
+function drawAccounts() {
+  const q = $("accFilter").value.trim().toLowerCase(), type = $("accType").value;
+  const shown = accs.filter((a) => (!q || a.user.toLowerCase().includes(q)) && (!type || a.type === type));
+  $("accCount").textContent = `${shown.length} de ${accs.length}`;
+  $("accounts").innerHTML = "<tr><th>Cuenta</th><th>Tipo</th><th>Saldo</th><th>Reservado</th><th>Disponible</th></tr>" +
+    (shown.length ? shown.map((a) => `<tr><td class="mono">${esc(a.user)}</td>
+      <td>${a.type === "minero" ? '<span class="ok">cobro de minero</span>' : "usuario"}</td>
+      <td>${money(a.balance_cents)}</td><td>${money(a.pending_out_cents)}</td><td>${money(a.available_cents)}</td></tr>`).join("")
+      : '<tr><td colspan="5">No hay cuentas que coincidan.</td></tr>');
+}
+async function refreshAccounts() {
+  if (accTick++ % 4) return;
+  accs = (await get("/accounts")).accounts;
+  drawAccounts();
+}
+$("accFilter").oninput = drawAccounts;
+$("accType").onchange = drawAccounts;
+
 async function refresh() {
   try {
     height = await refreshStatus();
-    await Promise.all([refreshMiners(), refreshBlocks()]);
+    await Promise.all([refreshMiners(), refreshBlocks(), refreshAccounts()]);
   } catch (e) {
     $("stats").innerHTML = `<div class="stat"><b class="bad">sin conexión</b><span>${esc(e.message)}</span></div>`;
   }

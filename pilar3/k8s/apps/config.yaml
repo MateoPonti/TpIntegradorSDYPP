@@ -41,6 +41,6 @@ data:
   MAX_TX_PER_BLOCK: "1000"
   BLOCK_POLL_SECONDS: "1"
   BLOCK_REWARD_CENTS: "5000"       # premio por bloque (50,00), repartido según los nonces completados
-  POOL_PERIOD_SECONDS: "15"
+  POOL_PERIOD_SECONDS: "5"        # cada 5 s, para que KEDA levante mineros enseguida
   GATEWAY_HEALTH_URL: http://gateway.tpi.svc.cluster.local/health   # para GET /status
   LOG_DIR: /tmp/logs

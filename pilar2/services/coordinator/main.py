@@ -127,6 +127,27 @@ async def get_balance(user: str):
     return {"user": user, "balance_cents": bal, "pending_out_cents": out, "available_cents": bal - out}
 
 
+@app.get("/accounts")
+async def accounts(limit: int = 1000):
+    """Todas las cuentas con saldo o con plata reservada. `tipo` dice si es la cuenta de cobro de un minero
+    (alguien la declaró como MINER_ACCOUNT, o es la de por defecto `miner:<id>`) o una cuenta de usuario."""
+    r = state["r"]
+    payout = {v async for k in r.scan_iter(match="miner:*:account", count=500) if (v := await r.get(k))}
+    names = {k.split(":", 1)[1] async for k in r.scan_iter(match="balance:*", count=1000)}
+    names |= {k.split(":", 1)[1] async for k in r.scan_iter(match="pending_out:*", count=1000)}
+    out = []
+    for name in names:
+        bal = int(await r.get(keys.balance(name)) or 0)
+        pend = int(await r.get(keys.pending_out(name)) or 0)
+        if bal == 0 and pend == 0:
+            continue
+        kind = "minero" if name in payout or name.startswith("miner:") else "usuario"
+        out.append({"user": name, "type": kind, "balance_cents": bal, "pending_out_cents": pend,
+                    "available_cents": bal - pend})
+    out.sort(key=lambda a: (a["type"] != "minero", -a["balance_cents"], a["user"]))
+    return {"count": len(out), "accounts": out[:max(1, min(limit, 5000))]}
+
+
 @app.get("/blocks/{index}")
 async def get_block(index: int):
     raw = await state["r"].get(keys.block(index))

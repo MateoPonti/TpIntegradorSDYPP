@@ -17,7 +17,7 @@ spec:
     name: miner-cpu
   minReplicaCount: 0
   maxReplicaCount: 8
-  pollingInterval: 15
+  pollingInterval: 5   # cada 5 s: la primera tx sin pods arranca en ~15-20 s
   cooldownPeriod: 120
   triggers:
     - type: metrics-api

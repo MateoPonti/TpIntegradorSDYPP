@@ -63,7 +63,7 @@ flowchart LR
 |---|---|---|
 | `services/tpi_common/` | Código compartido: PoW, claves de Redis, topología de RabbitMQ, logs, líder | (librería) |
 | `services/coordinator/` | NCT: valida tx, arma el bloque por ventanas, publica tareas por tandas, verifica, sella (Lua), reparte el premio y rearma si cae el hashrate. Sirve el frontend en `/` | GKE |
-| `services/pool/` | P5: cada 15 s mide el hashrate real y publica `pool:plan` (prefijo automático + rango), `pool:scaling` y `pool:miners` | GKE |
+| `services/pool/` | P5: cada 5 s mide el hashrate real y publica `pool:plan` (prefijo automático + rango), `pool:scaling` y `pool:miners` | GKE |
 | `services/gateway/` | Única puerta de los mineros: préstamos (lease), reaper, keep-alive, `/scaling`, calibración, canarios y cuarentena | GKE |
 | `services/miners/agent.py` | Agente compartido por los dos mineros (habla con el gateway) | — |
 | `services/miners/cpu/` | Imagen `miner-cpu` = agente + `pilar1/cpu/miner_cpu.py` | **k3s local** |
@@ -92,7 +92,7 @@ Así el gateway y el coordinator ni se enteran de quién minó, y el binario CUD
 ## API
 
 **Coordinator** (público): `POST /transactions` · `POST /transactions/bulk` · `GET /transactions/{id}` ·
-`GET /balances/{user}` · `GET /blocks/{i}` · `GET /chain` · `GET /status` · `GET /miners` · `GET /` (frontend) ·
+`GET /balances/{user}` · `GET /accounts` (todas las cuentas, usuarios y cobro de mineros) · `GET /blocks/{i}` · `GET /chain` · `GET /status` · `GET /miners` · `GET /` (frontend) ·
 `/health` `/metrics` `/logs`
 
 **Gateway** (todo con `Authorization: Bearer <MINER_TOKEN>`):

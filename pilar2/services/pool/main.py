@@ -20,7 +20,7 @@ from tpi_common.web import install_common_routes
 from . import decision
 
 logger = setup_logging("pool")
-PERIOD = env_float("POOL_PERIOD_SECONDS", 15)
+PERIOD = env_float("POOL_PERIOD_SECONDS", 5)
 FRAGMENT = env_float("POOL_FRAGMENT_PERCENT", 10)
 MODE = env_str("DIFFICULTY_MODE", "auto")  # auto | fixed (pruebas de carga con DIFFICULTY_PREFIX)
 TARGET = env_float("BLOCK_TARGET_SECONDS", 10)  # = la ventana: si un bloque tarda más, se hace fila

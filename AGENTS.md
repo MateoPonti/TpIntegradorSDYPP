@@ -83,7 +83,7 @@ Es un **pool de minería colaborativo**: todos minan el mismo bloque, cada uno e
 | Componente | Qué hace | Qué NO hace |
 |---|---|---|
 | **coordinator** | Valida las tx, arma el bloque, publica las tareas, verifica el resultado y sella. Un solo líder (`coord:leader`) arma y sella. | No mina. |
-| **pool** | Cada 15 s escribe `pool:plan` (prefijo + tamaño de rango) y `pool:scaling` (cuántos mineros CPU). Un solo líder (`pool:leader`). | No toca la cadena. |
+| **pool** | Cada 5 s escribe `pool:plan` (prefijo + tamaño de rango) y `pool:scaling` (cuántos mineros CPU). Un solo líder (`pool:leader`). | No toca la cadena. |
 | **gateway** | Es la **única puerta HTTP** de los mineros. Presta las tareas con lease en Redis; un reaper re-publica las vencidas. | No decide nada del bloque. |
 | **mineros** | Solo buscan el nonce en el rango que les dieron. | No ven saldos ni escriben la cadena. |
 
