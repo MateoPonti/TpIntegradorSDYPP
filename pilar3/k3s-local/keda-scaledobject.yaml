@@ -22,7 +22,7 @@ spec:
   triggers:
     - type: metrics-api
       metadata:
-        url: http://GATEWAY_IP/scaling
+        url: http://34.63.209.225/scaling
         valueLocation: desired_cpu_miners
         targetValue: "1"
         authMode: bearer

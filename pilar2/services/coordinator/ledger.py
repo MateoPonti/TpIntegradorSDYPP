@@ -9,6 +9,8 @@ from decimal import Decimal, InvalidOperation
 
 from tpi_common import keys
 
+from .reward import REWARD_SENDER
+
 MAX_AMOUNT_CENTS = 10**12  # tope: el Lua de sellado convierte números con %.14g
 MAX_NAME = 64
 
@@ -54,6 +56,8 @@ def _name(body: dict, field: str) -> str:
     v = body.get(field)
     if not isinstance(v, str) or not v or len(v) > MAX_NAME:
         raise InvalidTx(f"{field} inválido")
+    if v == REWARD_SENDER:
+        raise InvalidTx(f"{field} reservado para el premio de los mineros")
     return v
 
 

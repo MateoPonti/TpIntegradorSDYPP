@@ -49,3 +49,9 @@ variable "apps_max_nodes" {
   type        = number
   default     = 3
 }
+
+variable "node_disk_size_gb" {
+  description = "Boot disk of every node (pd-standard). Small, so the SSD quota never blocks the autoscaler"
+  type        = number
+  default     = 30
+}

@@ -20,3 +20,8 @@ output "infra_service_account" {
   description = "Paste into the GCP_INFRA_SA repository variable"
   value       = google_service_account.infra.email
 }
+
+output "static_ips" {
+  description = "Put them in loadBalancerIP of pilar3/k8s/apps and in GATEWAY_URL of pilar3/k3s-local"
+  value       = { for k, a in google_compute_address.lb : k => a.address }
+}

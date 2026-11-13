@@ -5,5 +5,7 @@ metadata:
   namespace: tpi-miners
 data:
   # Public URL of the gateway Service in GKE (kubectl -n tpi get svc gateway).
-  GATEWAY_URL: http://GATEWAY_IP
+  GATEWAY_URL: http://34.63.209.225
   MINER_KIND: cpu
+  # Nombre de ESTA PC / cluster (cambiarlo en cada una): queda al principio del id de cada minero.
+  MINER_CLUSTER: pc-mateo

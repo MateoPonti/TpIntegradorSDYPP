@@ -17,9 +17,9 @@ spec:
         app: rabbitmq
     spec:
       nodeSelector:
-        role: infra
+        pool: infra
       tolerations:
-        - key: dedicated
+        - key: pool
           operator: Equal
           value: infra
           effect: NoSchedule

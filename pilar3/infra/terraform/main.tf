@@ -111,17 +111,17 @@ resource "google_container_node_pool" "infra" {
 
   node_config {
     machine_type    = var.infra_machine_type
-    disk_size_gb    = 50
-    disk_type       = "pd-balanced"
+    disk_size_gb    = var.node_disk_size_gb
+    disk_type       = "pd-standard" # pd-balanced cuenta en la cuota de SSD y no deja sumar nodos
     service_account = google_service_account.gke_nodes.email
     oauth_scopes    = ["https://www.googleapis.com/auth/cloud-platform"]
 
     labels = {
-      role = "infra"
+      pool = "infra"
     }
 
     taint {
-      key    = "dedicated"
+      key    = "pool"
       value  = "infra"
       effect = "NO_SCHEDULE"
     }
@@ -152,13 +152,13 @@ resource "google_container_node_pool" "apps" {
 
   node_config {
     machine_type    = var.apps_machine_type
-    disk_size_gb    = 50
-    disk_type       = "pd-balanced"
+    disk_size_gb    = var.node_disk_size_gb
+    disk_type       = "pd-standard" # pd-balanced cuenta en la cuota de SSD y no deja sumar nodos
     service_account = google_service_account.gke_nodes.email
     oauth_scopes    = ["https://www.googleapis.com/auth/cloud-platform"]
 
     labels = {
-      role = "apps"
+      pool = "apps"
     }
 
     workload_metadata_config {
@@ -263,4 +263,12 @@ resource "google_project_iam_member" "infra" {
   project = var.project_id
   role    = each.value
   member  = "serviceAccount:${google_service_account.infra.email}"
+}
+
+# IPs fijas de los LoadBalancers (los manifiestos y el k3s local las usan; ver outputs).
+# Son regionales, como las de un Service type LoadBalancer de GKE.
+resource "google_compute_address" "lb" {
+  for_each = toset(["coordinator", "gateway"])
+  name     = "${var.name}-${each.key}"
+  region   = var.region
 }

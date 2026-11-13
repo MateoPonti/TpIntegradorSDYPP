@@ -17,8 +17,10 @@ spec:
       labels:
         app: pool
     spec:
+      # Sin esto k8s inyecta REDIS_PORT=tcp://... (por el Service "redis") y pisa la config.
+      enableServiceLinks: false
       nodeSelector:
-        role: apps
+        pool: apps
       containers:
         - name: pool
           image: REGISTRY/pool:latest
@@ -46,7 +48,7 @@ spec:
             periodSeconds: 5
           resources:
             requests:
-              cpu: 100m
+              cpu: 50m
               memory: 128Mi
             limits:
               memory: 256Mi

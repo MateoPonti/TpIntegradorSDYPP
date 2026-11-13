@@ -1,0 +1,35 @@
+# Prometheus (kube-prometheus-stack, namespace monitoring) lee /metrics de los pods del TPI.
+# PodMonitor y no ServiceMonitor: el pool no tiene Service. El Prometheus del cluster solo toma
+# PodMonitors con la etiqueta release=kube-prometheus-stack.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: tpi-servicios
+  namespace: tpi
+  labels:
+    release: kube-prometheus-stack
+spec:
+  selector:
+    matchExpressions:
+      - { key: app, operator: In, values: [coordinator, pool, gateway] }
+  podMetricsEndpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
+---
+# Largo de las colas de RabbitMQ (plugin rabbitmq_prometheus, puerto 15692).
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: tpi-rabbitmq
+  namespace: tpi
+  labels:
+    release: kube-prometheus-stack
+spec:
+  selector:
+    matchLabels:
+      app: rabbitmq
+  podMetricsEndpoints:
+    - port: prometheus
+      path: /metrics
+      interval: 15s

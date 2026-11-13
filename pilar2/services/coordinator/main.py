@@ -5,9 +5,10 @@ import contextlib
 import json
 import time
 import urllib.request
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from prometheus_client import Counter, Gauge
 
 from tpi_common import keys, rabbit, store
@@ -171,9 +172,23 @@ async def status():
         "chain_height": await r.llen(keys.CHAIN),
         "chain_tip": await r.get(keys.CHAIN_TIP),
         "mining": None if cur is None else {k: cur[k] for k in ("block_id", "index", "prefix", "range_size")}
-        | {"seconds": round(time.time() - cur["created"], 1)},
+        | {"seconds": round(time.time() - cur.get("assembled", cur["created"]), 1), "rearmed": cur.get("rearmed", 0)},
         "miners": {"gpu": sum(w.get("type") == "gpu" for w in workers),
                    "cpu": sum(w.get("type") == "cpu" for w in workers)},
+        "pool_plan": json.loads(plan) if (plan := await r.get(keys.POOL_PLAN)) else None,
         "pool_signal": json.loads(signal) if signal else None,
         "leader": await r.get(keys.COORD_LEADER),
     }
+
+
+@app.get("/miners")
+async def miners():
+    """Mineros vivos con su hashrate (calibrado, del motor, efectivo y declarado) y su clase."""
+    raw = await state["r"].get(keys.POOL_MINERS)
+    return json.loads(raw) if raw else []
+
+
+@app.get("/", include_in_schema=False)
+async def frontend():
+    """Explorador de la cadena: lee la misma API pública (no habla con Redis)."""
+    return FileResponse(Path(__file__).with_name("static") / "index.html")

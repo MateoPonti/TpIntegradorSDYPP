@@ -11,6 +11,7 @@ cp .env.example .env              # credenciales SOLO para local (.env está en 
 docker compose up -d --build      # RabbitMQ, Redis, coordinator x2, pool x2, gateway x2, miner-cpu x2
 
 curl http://127.0.0.1:18080/status                       # estado de todo (endpoint público)
+# http://127.0.0.1:18080/  -> frontend: estado, enviar tx, saldos, mineros y últimos bloques
 curl -X POST http://127.0.0.1:18080/transactions -H 'Content-Type: application/json' \
      -d '{"sender":"user-1","receiver":"user-2","amount":10.5}'
 python tools/verify_chain.py --url http://127.0.0.1:18080   # verifica la cadena entera
@@ -31,7 +32,10 @@ $env:GATEWAY_URL = "http://127.0.0.1:18180"; $env:MINER_TOKEN = "<el de .env>"
 
 ```bash
 python -m pytest -q pilar2/tests                                       # unitarios
-TPI_E2E_URL=http://127.0.0.1:18080 python -m pytest -q pilar2/tests     # + integración (compose levantado)
+TPI_E2E_URL=http://127.0.0.1:18080 python -m pytest -q pilar2/tests     # + integración y doble gasto (compose levantado)
+# Caídas en GKE (mata un pod de cada servicio y verifica la cadena). Necesita un minero conectado:
+TPI_E2E_URL=http://35.223.237.60 TPI_K8S_CONTEXT=gke_tp3distribuidos_us-central1-a_tp3 \
+  python -m pytest -v pilar2/tests/test_sistema.py
 ```
 
 ## Arquitectura
@@ -55,9 +59,9 @@ flowchart LR
 | Carpeta | Qué es | Dónde corre |
 |---|---|---|
 | `services/tpi_common/` | Código compartido: PoW, claves de Redis, topología de RabbitMQ, logs, líder | (librería) |
-| `services/coordinator/` | NCT: valida tx, arma el bloque, publica tareas por tandas, verifica y sella (Lua) | GKE |
-| `services/pool/` | P5: cada 15 s publica `pool:plan` y `pool:scaling` | GKE |
-| `services/gateway/` | Única puerta de los mineros: préstamos (lease), reaper, keep-alive, `/scaling` | GKE |
+| `services/coordinator/` | NCT: valida tx, arma el bloque por ventanas, publica tareas por tandas, verifica, sella (Lua), reparte el premio y rearma si cae el hashrate. Sirve el frontend en `/` | GKE |
+| `services/pool/` | P5: cada 15 s mide el hashrate real y publica `pool:plan` (prefijo automático + rango), `pool:scaling` y `pool:miners` | GKE |
+| `services/gateway/` | Única puerta de los mineros: préstamos (lease), reaper, keep-alive, `/scaling`, calibración, canarios y cuarentena | GKE |
 | `services/miners/agent.py` | Agente compartido por los dos mineros (habla con el gateway) | — |
 | `services/miners/cpu/` | Imagen `miner-cpu` = agente + `pilar1/cpu/miner_cpu.py` | **k3s local** |
 | `services/miners/gpu/` | Scripts para correr agente + `pilar1/build/miner_gpu` | **PC / Colab** |
@@ -85,13 +89,14 @@ Así el gateway y el coordinator ni se enteran de quién minó, y el binario CUD
 ## API
 
 **Coordinator** (público): `POST /transactions` · `POST /transactions/bulk` · `GET /transactions/{id}` ·
-`GET /balances/{user}` · `GET /blocks/{i}` · `GET /chain` · `GET /status` · `/health` `/metrics` `/logs`
+`GET /balances/{user}` · `GET /blocks/{i}` · `GET /chain` · `GET /status` · `GET /miners` · `GET /` (frontend) ·
+`/health` `/metrics` `/logs`
 
 **Gateway** (todo con `Authorization: Bearer <MINER_TOKEN>`):
 
 | Endpoint | Qué hace |
 |---|---|
-| `GET /tasks/next?miner_id=&kind=` | Saca una tarea de `mining.tasks`, la presta (`lease:<task_id>`) y la devuelve. `204` si no hay. |
+| `GET /tasks/next?miner_id=&kind=` | Saca una tarea de `mining.tasks`, la presta (`lease:<task_id>`) y la devuelve. `204` si no hay o si el minero está en cuarentena. La primera de cada minero es la **calibración** y 1 de cada `CANARY_EVERY` es un **canario**. |
 | `POST /tasks/{task_id}/renew` | El agente pregunta entre tramo y tramo. Renueva el préstamo, o `410` si el bloque ya se cerró. |
 | `POST /results` | Publica el resultado en `mining.results` (el coordinator lo verifica de nuevo). |
 | `POST /keepalive` | `{miner_id, type: cpu\|gpu, hashrate}` → `worker:<id>` con TTL 15 s. |
@@ -103,39 +108,77 @@ Así el gateway y el coordinator ni se enteran de quién minó, y el binario CUD
 // task (coordinator → mining.tasks)
 {"v":1,"task_id":"…","block_id":"3-1a2b3c4d","base":"<prev_hash 32><tx_digest 64>","prefix":"00000","from":0,"to":104857,"attempts":0}
 // result (gateway → mining.results)
-{"v":1,"task_id":"…","block_id":"3-1a2b3c4d","worker":"gpu-PC","from":0,"to":104857,"found":true,"nonce":48213,"hash":"00000…","hashes":48214,"seconds":0.01}
+{"v":1,"task_id":"…","block_id":"3-1a2b3c4d","worker":"gpu-PC","from":0,"to":104857,"found":true,"nonce":48213,"hash":"00000…","hashes":48214,"seconds":0.21,"engine_seconds":0.01}
+// tx de premio (primera del bloque siguiente; sender reservado)
+{"tx_id":"reward-3-gpu-PC","sender":"recompensa","receiver":"miner:gpu-PC","amount":4500,"ts":…,"reward_for":3}
 // block.solved (coordinator → block.events.<pod>)
 {"v":1,"block_id":"3-1a2b3c4d","index":3,"block_hash":"00000…"}
 ```
 
 ## Decisiones de diseño (resumen; el detalle está en `docs/decisiones.docx`)
 
-- **Un bloque a la vez.** `mining:current` guarda el candidato. Se arma con `MAX_TX_PER_BLOCK` (1000)
-  tx o a los `BLOCK_TIMEOUT_SECONDS` (10 s) desde la primera pendiente; al sellar, el siguiente se arma enseguida.
+- **Armado por ventanas de tiempo** (comentario del profe, decidido el 13/11). Ventanas fijas de reloj de
+  `BLOCK_WINDOW_SECONDS` (10 s: 0–10, 10–20…). Cuando cierra la ventana de la primera tx pendiente, sus tx
+  salen en bloques de hasta `MAX_TX_PER_BLOCK` (1000), que se minan uno detrás del otro (cada uno necesita el
+  hash del anterior). Un bloque nunca mezcla dos ventanas (1200 de una y 400 de la otra = 1000 / 200 / 400) y
+  no hay bloques vacíos. El costo del PoW no depende de cuántas tx tenga el bloque (`tx_digest` mide siempre 64).
 - **Coordinadores múltiples:** todas las réplicas atienden la API y verifican resultados; solo el
   líder (`coord:leader`, `SET NX EX` + renovación) arma y publica. El sellado es un script Lua que
   solo escribe si `chain:tip == previous_hash` y el `block_id` sigue vigente, así que dos réplicas
   nunca sellan dos veces ni bifurcan la cadena.
+- **Prefijo automático** (13/11). El pool elige el prefijo más largo con el que un bloque tarda menos de
+  `BLOCK_TARGET_SECONDS` (10 s) con el **hashrate real** de los mineros vivos (16^n / hashrate). Baja apenas se
+  pasa y sube solo con margen (`PREFIX_RAISE_MARGIN`), entre 1 y 8 caracteres. `DIFFICULTY_MODE=fixed` lo fija
+  para las pruebas de carga. Sin mineros vale 1. Se guarda en cada bloque.
+- **Rearmado:** si se va la GPU a mitad de un bloque y con lo que queda tardaría más de `REARM_FACTOR` × el
+  objetivo, el líder rearma el bloque: mismas tx y misma base, prefijo más corto, `block_id` nuevo (las tareas
+  viejas se descartan solas).
+- **Hashrate real:** el que cada minero entrega en sus resultados (`hashes / engine_seconds`, ventana de 5 min),
+  no el que declara en el keep-alive. Un minero que dejó vencer un préstamo después de su último resultado
+  (zombie) o que está en cuarentena cuenta 0. Mientras no tiene resultados, vale su calibración.
 - **Rangos por tandas:** si en `mining.tasks` quedan menos tareas que mineros vivos, el líder
-  publica otra tanda desde `block:<i>:next_from` (`INCRBY`, atómico).
+  publica otra tanda desde `block:<i>:next_from` (`INCRBY`, atómico). La cola es un colchón, no mide el trabajo.
+- **Tamaño de rango:** fragmentación (`16^largo × POOL_FRAGMENT_PERCENT`, el experimento del 1 % al 50 %), con
+  un mínimo según quién mina: `MIN_RANGE_GPU` si hay GPU viva (que llene sus hilos) y `MIN_RANGE_CPU` si no.
+- **Mineros CPU (KEDA):** todo o nada. Sin GPU y con trabajo, `CPU_MINERS_MAX`; 60 s sin trabajo, 0; con GPU, 0.
+  La GPU no va en KEDA: es una sola placa, y el agente ya la deja en reposo cuando no hay tareas.
+- **Calibración** (profe 2): la primera tarea de cada minero es una prueba fija en el gateway (base fija,
+  prefijo imposible, `CALIB_RANGE_GPU` / `CALIB_RANGE_CPU`). Da su hashrate inicial y una clase.
+- **Canarios:** 1 de cada `CANARY_EVERY` (20) tareas es un rango de un bloque ya sellado que contiene su nonce.
+  Si el minero contesta "no encontré", está roto o miente: **cuarentena** (`QUARANTINE_SECONDS`), su trabajo
+  de ese bloque no cobra y sus rangos "no encontré" se re-publican. También va a cuarentena con
+  `QUARANTINE_AFTER_EXPIRED` préstamos vencidos seguidos. Nada de esto mina en GCP: el canario se arma con datos
+  guardados y se verifica con un solo MD5.
+- **Premio proporcional** (13/11): `BLOCK_REWARD_CENTS` por bloque, repartido según los nonces que completó
+  cada minero antes del sellado (el tamaño de rango que fijó el coordinator, no los `hashes` que informa).
+  Se paga con tx `sender="recompensa"` → `miner:<id>` al principio del bloque siguiente; el resto del redondeo
+  va al que encontró el nonce. `verify_chain.py` comprueba que sumen el `reward_cents` del bloque anterior.
 - **Préstamos:** el gateway hace `basic_get` + ack y guarda `lease:<task_id>` + vencimiento en el
   ZSET `leases:deadline`. El reaper (una réplica, `gateway:reaper:lock`) devuelve lo vencido; al 3er
   intento va a `mining.dlq`, que **no se reprocesa sola** (métrica `tasks_dlq_total` + log).
 - **Saldos:** cuentas en centavos enteros. Disponible = `balance − pending_out`, reservado en Lua
   al aceptar la tx; al sellar se mueve el saldo. Génesis: 97 usuarios (`user-0..user-96`, como bench.py).
+  `recompensa` es un nombre reservado. `test_sistema.py` prueba el doble gasto con dos tx simultáneas.
 - **PoW:** `md5(previous_hash + tx_digest + str(nonce))`, `tx_digest` = SHA-256 del JSON canónico.
-  La dificultad (prefijo) se guarda en cada bloque.
+- **Frontend:** una página estática servida por el coordinator en `/`, que usa la misma API pública
+  (estado, enviar tx, saldos, mineros y bloques). No habla con Redis.
 - **Logs** en stdout (JSON), disco (archivo rotativo en `LOG_DIR`) y memoria (`GET /logs`).
 
-### Claves de Redis que agregó el código (no estaban en el Word)
+### Claves de Redis
 
-`mining:current` (candidato que se mina), `tx:status` (dónde está cada tx, para `GET /transactions/{id}`)
-y `leases:deadline` (ZSET que recorre el reaper). Hay que pasarlas a `decisiones.docx`.
+Además de las del Word: `mining:current` (candidato que se mina), `tx:status` (dónde está cada tx),
+`leases:deadline` (ZSET del reaper), `block:<i>:shares` (nonces completados por minero, para el premio),
+`block:<block_id>:notfound:<minero>` (rangos "no encontré", por si falla un canario),
+`miner:<id>:results` / `:calibration` / `:expired`, `quarantine:<id>`, `pool:miners`, `pool:last_work` y
+`gateway:canary:counter`.
 
-## Pendiente (dudas abiertas)
+## Pendiente
 
-- **Duda 4** (fórmulas del pool): hoy el rango es `16^largo_prefijo × POOL_FRAGMENT_PERCENT` (la
-  perilla que mueve `matrix.sh`) y los mineros CPU = 0 si hay GPU viva. Se ajusta después de medir.
-- **Dudas 5 y 6:** implementadas con la propuesta (loop de 1 s; campo `ts` en cada tx), configurables.
-- **Duda 8:** `MINER_CHUNK` del agente y los parámetros CUDA se eligen midiendo.
-- **Duda 11:** el starter del Pilar 3 ya pone `GET /scaling` en el **gateway** (opción A). Así quedó.
+- **Parámetros CUDA** (threads, bloques, K, `--chunk`): se eligen midiendo cuando esté el kernel.
+  Con eso también `MIN_RANGE_GPU` y `CALIB_RANGE_GPU` (ver `pilar1/rendimiento`).
+- **Dos colas** (`tasks.gpu` / `tasks.cpu`): se decide después de medir si GPU y CPU minando juntos cambia algo.
+- **A futuro, sin hacer:** RabbitMQ con 3 réplicas (quorum) y Redis con réplicas (Sentinel), porque no hay
+  recursos en el cluster, y firmas Ed25519 en las tx (hoy cualquiera puede mandar una tx en nombre de otra cuenta).
+- **Limitación conocida:** la calibración confía en los `hashes` y `engine_seconds` que informa el minero. Uno
+  que mienta puede inflar su hashrate inicial hasta que lo atrapa un canario (en la prueba local, en su primera
+  tarea real).

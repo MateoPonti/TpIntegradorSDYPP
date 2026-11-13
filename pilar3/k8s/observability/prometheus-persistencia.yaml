@@ -1,0 +1,18 @@
+# Prometheus con disco y 30 días de retención (decidido el 13/11), para no perder las mediciones del TPI.
+# El kube-prometheus-stack lo instaló el TP3; esto se suma a su configuración, sin pisar lo demás:
+#   helm upgrade kube-prometheus-stack prometheus-community/kube-prometheus-stack -n monitoring \
+#     --version 92.16.1 --reuse-values -f pilar3/k8s/observability/prometheus-persistencia.yaml
+# `standard` es pd-standard: cuenta en la cuota de disco común, no en la de SSD (~0,40 USD/mes).
+# En una cuenta nueva (ver pilar3/README), se usa junto con los values del TP3 en un helm install.
+prometheus:
+  prometheusSpec:
+    retention: 30d
+    retentionSize: 9GB
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: standard
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests:
+              storage: 10Gi

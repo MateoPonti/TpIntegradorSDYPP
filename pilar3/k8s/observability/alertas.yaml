@@ -1,0 +1,61 @@
+# Alertas del TPI (decididas el 13/11). Sin receptores: se ven en Grafana, Prometheus y Alertmanager.
+# Las métricas que vienen de Redis las publica solo el líder del pool: por eso max().
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: tpi-alertas
+  namespace: tpi
+  labels:
+    release: kube-prometheus-stack
+spec:
+  groups:
+    - name: tpi
+      rules:
+        - alert: TpiSinGPU
+          expr: (max(miners_alive{namespace="tpi", kind="gpu"}) or vector(0)) == 0
+          for: 1m
+          labels: { severity: warning }
+          annotations:
+            summary: No hay ningún minero GPU vivo
+            description: El pool tendría que haber acortado el prefijo y pedido mineros CPU a KEDA.
+
+        - alert: TpiColaDeTareasAcumulada
+          expr: max(mining_tasks_ready{namespace="tpi"}) > 50
+          for: 2m
+          labels: { severity: warning }
+          annotations:
+            summary: "{{ $value }} tareas esperando un minero"
+            description: Con las tandas la cola es chica. Si crece, los mineros no las están tomando.
+
+        - alert: TpiSinBloquesConPendientes
+          # Sin trabajo no se sellan bloques y está bien: solo avisa si hay tx esperando.
+          expr: |
+            (sum(increase(blocks_sealed_total{namespace="tpi"}[10m])) or vector(0)) == 0
+            and on() max(pending_transactions{namespace="tpi"}) > 0
+          labels: { severity: critical }
+          annotations:
+            summary: Hay transacciones pendientes y no se selló ningún bloque en 10 minutos
+
+        - alert: TpiServicioCaido
+          expr: |
+            up{namespace="tpi"} == 0
+            or kube_deployment_status_replicas_available{namespace="tpi"} == 0
+            or kube_statefulset_status_replicas_ready{namespace="tpi"} == 0
+          for: 1m
+          labels: { severity: critical }
+          annotations:
+            summary: "{{ $labels.pod }}{{ $labels.deployment }}{{ $labels.statefulset }} no responde"
+
+        - alert: TpiMineroEnCuarentena
+          expr: sum(increase(quarantined_total{namespace="tpi"}[5m])) by (reason) > 0
+          labels: { severity: warning }
+          annotations:
+            summary: "Un minero entró en cuarentena ({{ $labels.reason }})"
+            description: Falló un canario o dejó vencer varios préstamos seguidos.
+
+        - alert: TpiTareasEnDLQ
+          expr: sum(increase(tasks_dlq_total{namespace="tpi"}[10m])) > 0
+          labels: { severity: warning }
+          annotations:
+            summary: Hay tareas nuevas en mining.dlq
+            description: Una tarea agotó sus 3 préstamos. No se reprocesa sola, hay que mirarla a mano.

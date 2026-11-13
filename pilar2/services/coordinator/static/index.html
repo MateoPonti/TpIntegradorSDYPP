@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TPI Blockchain</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #ffffff; --text: #1c2430; --muted: #5b6573; --line: #dde1e6;
+    --accent: #1f5fa8; --ok: #1d7a46; --bad: #b3261e; --warn: #9a6700; --mono: ui-monospace, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #12161c; --card: #1b2129; --text: #e6e9ee; --muted: #98a2b0; --line: #2c3440;
+            --accent: #6aa8f0; --ok: #4cc283; --bad: #f2867d; --warn: #e3b341; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 system-ui, sans-serif; }
+  header { padding: 18px 16px 6px; max-width: 1200px; margin: 0 auto; }
+  h1 { margin: 0; font-size: 22px; }
+  header p { margin: 4px 0 0; color: var(--muted); }
+  main { max-width: 1200px; margin: 0 auto; padding: 10px 16px 40px; display: grid; gap: 14px;
+         grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px; min-width: 0; }
+  section.wide { grid-column: 1 / -1; }
+  h2 { margin: 0 0 10px; font-size: 16px; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; }
+  .stat b { display: block; font-size: 20px; }
+  .stat span { color: var(--muted); font-size: 13px; }
+  .ok { color: var(--ok); } .bad { color: var(--bad); } .warn { color: var(--warn); }
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th { color: var(--muted); font-weight: 600; }
+  .scroll { overflow-x: auto; }
+  code, .mono { font-family: var(--mono); font-size: 12.5px; }
+  form { display: grid; gap: 8px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .row > * { flex: 1 1 120px; }
+  input, button { font: inherit; padding: 8px 10px; border-radius: 7px; border: 1px solid var(--line);
+                  background: var(--bg); color: var(--text); min-width: 0; }
+  button { background: var(--accent); border-color: var(--accent); color: #fff; cursor: pointer; flex: 0 0 auto; }
+  .out { font-family: var(--mono); font-size: 12.5px; white-space: pre-wrap; word-break: break-all;
+         color: var(--muted); margin: 8px 0 0; }
+  tr.click { cursor: pointer; } tr.click:hover td { background: var(--bg); }
+  .pill { display: inline-block; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line); font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>TPI Blockchain distribuida</h1>
+  <p>Explorador del coordinator. Se actualiza cada 3 s con la API pública (<code>/status</code>, <code>/chain</code>, <code>/blocks</code>, <code>/miners</code>).</p>
+</header>
+<main>
+  <section class="wide">
+    <h2>Estado</h2>
+    <div class="stats" id="stats"></div>
+  </section>
+
+  <section>
+    <h2>Enviar transacción</h2>
+    <form id="tx">
+      <div class="row">
+        <input name="sender" placeholder="sender (ej. user-1)" required>
+        <input name="receiver" placeholder="receiver (ej. user-2)" required>
+      </div>
+      <div class="row">
+        <input name="amount" placeholder="monto (ej. 12.50)" required inputmode="decimal">
+        <button>Enviar</button>
+      </div>
+    </form>
+    <div class="out" id="txOut"></div>
+  </section>
+
+  <section>
+    <h2>Saldo y estado de una tx</h2>
+    <form id="bal">
+      <div class="row"><input name="user" placeholder="usuario (ej. user-1 o miner:pc-mateo)" required><button>Ver saldo</button></div>
+    </form>
+    <div class="out" id="balOut"></div>
+    <form id="txq" style="margin-top:10px">
+      <div class="row"><input name="id" placeholder="tx_id" required><button>Ver tx</button></div>
+    </form>
+    <div class="out" id="txqOut"></div>
+  </section>
+
+  <section class="wide">
+    <h2>Mineros</h2>
+    <div class="scroll"><table id="miners"></table></div>
+  </section>
+
+  <section class="wide">
+    <h2>Últimos bloques <span class="pill">tocá una fila para ver sus transacciones</span></h2>
+    <div class="scroll"><table id="blocks"></table></div>
+    <div class="out" id="blockOut"></div>
+  </section>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const money = (c) => (c / 100).toLocaleString("es-AR", { minimumFractionDigits: 2 });
+const rate = (h) => h == null ? "—" : h >= 1e9 ? (h / 1e9).toFixed(2) + " GH/s" : h >= 1e6 ? (h / 1e6).toFixed(2) + " MH/s" : (h / 1e3).toFixed(1) + " kH/s";
+const get = async (path) => { const r = await fetch(path); if (!r.ok) throw new Error(r.status); return r.json(); };
+const cache = new Map();
+
+async function refreshStatus() {
+  const s = await get("/status");
+  const svc = Object.entries(s.services).map(([k, v]) => `<span class="${v === "ok" ? "ok" : "bad"}">${esc(k)}</span>`).join(" · ");
+  const m = s.mining, plan = s.pool_plan || {};
+  const cards = [
+    ["Servicios", svc],
+    ["Altura de la cadena", s.chain_height],
+    ["Tx pendientes", s.pending_transactions],
+    ["Minando", m ? `#${m.index} · ${esc(m.prefix)} · ${m.seconds} s${m.rearmed ? " · rearmado" : ""}` : "nada"],
+    ["Prefijo del pool", `${esc(plan.prefix ?? "—")} <span class="pill">${esc(plan.mode ?? "")}</span>`],
+    ["Hashrate real", rate(plan.hashrate)],
+    ["Mineros vivos", `GPU ${s.miners.gpu} · CPU ${s.miners.cpu}`],
+    ["CPU pedidos a KEDA", s.pool_signal ? s.pool_signal.desired_cpu_miners : "—"],
+  ];
+  $("stats").innerHTML = cards.map(([k, v]) => `<div class="stat"><b>${v}</b><span>${k}</span></div>`).join("");
+  return s.chain_height;
+}
+
+async function refreshMiners() {
+  const ms = await get("/miners");
+  $("miners").innerHTML = "<tr><th>Minero</th><th>Tipo</th><th>Cuenta</th><th>Clase</th><th>Cuenta para el prefijo</th><th>Motor</th><th>Efectivo</th><th>Calibrado</th><th>Declarado</th></tr>" +
+    (ms.length ? ms.map((x) => `<tr><td class="mono">${esc(x.miner_id)}</td><td>${esc(x.kind)}</td><td>${x.quarantined ? '<span class="bad">cuarentena</span>' : esc(x.source)}</td>
+      <td>${esc(x.class ?? "—")}</td><td>${rate(x.hashrate)}</td><td>${rate(x.motor)}</td><td>${rate(x.efectivo)}</td><td>${rate(x.calibrated)}</td><td>${rate(x.declared)}</td></tr>`).join("")
+      : '<tr><td colspan="9">No hay mineros conectados al gateway.</td></tr>');
+}
+
+async function block(i) {
+  if (!cache.has(i)) cache.set(i, await get(`/blocks/${i}`));
+  return cache.get(i);
+}
+
+async function refreshBlocks(height) {
+  const idx = [];
+  for (let i = height - 1; i >= Math.max(0, height - 12); i--) idx.push(i);
+  const bs = await Promise.all(idx.map(block));
+  $("blocks").innerHTML = "<tr><th>#</th><th>Hash</th><th>Prefijo</th><th>Tx</th><th>Premios</th><th>Minero</th><th>Hora</th></tr>" +
+    bs.map((b) => {
+      const rewards = b.transactions.filter((t) => t.sender === "recompensa").length;
+      const when = b.timestamp ? new Date(b.timestamp * 1000).toLocaleTimeString("es-AR") : "génesis";
+      return `<tr class="click" data-i="${b.index}"><td>${b.index}</td><td class="mono">${esc(b.block_hash.slice(0, 16))}…</td><td class="mono">${esc(b.prefix || "—")}</td>
+        <td>${b.transactions.length - rewards}</td><td>${rewards}</td><td class="mono">${esc(b.miner ?? "—")}</td><td>${when}</td></tr>`;
+    }).join("");
+  document.querySelectorAll("#blocks tr.click").forEach((tr) => tr.onclick = async () => {
+    const b = await block(Number(tr.dataset.i));
+    const lines = b.transactions.slice(0, 50).map((t) => `${t.sender} → ${t.receiver}: ${money(t.amount)}${t.reward_for != null ? "  (premio del bloque " + t.reward_for + ")" : ""}`);
+    $("blockOut").textContent = `Bloque ${b.index} · nonce ${b.nonce} · ${b.transactions.length} tx\n` + lines.join("\n") + (b.transactions.length > 50 ? "\n…" : "");
+  });
+}
+
+async function refresh() {
+  try {
+    const height = await refreshStatus();
+    await Promise.all([refreshMiners(), refreshBlocks(height)]);
+  } catch (e) {
+    $("stats").innerHTML = `<div class="stat"><b class="bad">sin conexión</b><span>${esc(e.message)}</span></div>`;
+  }
+}
+
+$("tx").onsubmit = async (ev) => {
+  ev.preventDefault();
+  const f = new FormData(ev.target);
+  const body = { sender: f.get("sender"), receiver: f.get("receiver"), amount: f.get("amount") };
+  const r = await fetch("/transactions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const j = await r.json();
+  $("txOut").textContent = `${r.status} ${JSON.stringify(j)}`;
+  if (j.tx_id) $("txq").elements.id.value = j.tx_id;
+};
+$("bal").onsubmit = async (ev) => {
+  ev.preventDefault();
+  const u = new FormData(ev.target).get("user");
+  try {
+    const b = await get(`/balances/${encodeURIComponent(u)}`);
+    $("balOut").textContent = `saldo ${money(b.balance_cents)} · reservado ${money(b.pending_out_cents)} · disponible ${money(b.available_cents)}`;
+  } catch (e) { $("balOut").textContent = "error " + e.message; }
+};
+$("txq").onsubmit = async (ev) => {
+  ev.preventDefault();
+  try {
+    const t = await get(`/transactions/${encodeURIComponent(new FormData(ev.target).get("id"))}`);
+    $("txqOut").textContent = t.status === "confirmed" ? `confirmada en el bloque ${t.block}` : "pendiente (esperando que se mine)";
+  } catch (e) { $("txqOut").textContent = e.message === "404" ? "no existe" : "error " + e.message; }
+};
+refresh();
+setInterval(refresh, 3000);
+</script>
+</body>
+</html>

@@ -59,6 +59,7 @@ jobs:
           sed -i "s#newName: REGISTRY/#newName: $REGISTRY/#; s#newTag: latest#newTag: ${{ github.sha }}#" kustomization.yaml
       - run: |
           kubectl apply -k pilar3/k8s/apps
+          kubectl apply -k pilar3/k8s/observability   # PodMonitors y alertas (Prometheus del cluster)
           for d in coordinator pool gateway; do
             kubectl -n tpi rollout status deployment/$d --timeout=300s
           done

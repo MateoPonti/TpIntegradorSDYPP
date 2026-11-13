@@ -1,49 +1,82 @@
 """Decisiones del pool (P5) como funciones puras, para testearlas sin Redis ni RabbitMQ.
 
-Base: examples/pool_scaler.py del starter del Pilar 3.
-OJO, duda 4 abierta (ver "Pendiente" en pilar2/README.md): las fórmulas finales (PREFIX_GPU / PREFIX_CPU_ONLY,
-rango = hashrate x 5 s, mineros CPU con o sin GPU viva) se deciden midiendo. Por ahora se usan
-las perillas del starter, que son las que cambia loadtest/matrix.sh.
+Decidido el 13/11 (decisiones.docx §7):
+  * Prefijo automático: el más largo con el que un bloque tarda menos de BLOCK_TARGET_SECONDS con el
+    hashrate real de los mineros vivos. Con histéresis: baja apenas se pasa, sube solo con margen.
+    DIFFICULTY_MODE=fixed lo deja fijo para las pruebas de carga (prefijos 1 a 8).
+  * Tamaño de rango: fragmentación (16^largo x %), con un mínimo según quién mina (GPU o CPU).
+  * Mineros CPU: todo o nada. Sin GPU y con trabajo, el máximo; 60 s sin trabajo, 0; con GPU, 0.
+  * Hashrate de cada minero: el que entrega de verdad (sus resultados), no el que declara.
 """
 import math
+
+from tpi_common.pow import expected_seconds
 
 MIN_RANGE_SIZE = 10_000
 
 
-def effective_prefix(configured: str, gpu_alive: int, min_without_gpu: int) -> str:
-    """Sin GPU viva se acorta el prefijo (el bloque guarda con qué prefijo se minó)."""
+def choose_prefix_len(current: int, hashrate: float, target_seconds: float, min_len: int, max_len: int,
+                      raise_margin: float = 0.8) -> int:
+    """Sin mineros, el mínimo: el primero que llegue lo resuelve enseguida."""
+    if hashrate <= 0:
+        return min_len
+    best = min_len
+    for n in range(min_len, max_len + 1):
+        if expected_seconds(n, hashrate) <= target_seconds:
+            best = n
+    current = max(min_len, min(max_len, current))
+    if best < current:
+        return best  # con el actual ya se pasa del objetivo: bajar enseguida
+    if best > current and expected_seconds(best, hashrate) <= target_seconds * raise_margin:
+        return best  # subir solo con margen, para no oscilar en el borde
+    return current
+
+
+def range_size(prefix_len: int, fragment_percent: float, min_range: int) -> int:
+    """Fragmentación del 1 % al 50 % del trabajo esperado, sin bajar del mínimo del tipo de minero."""
+    expected = 16**prefix_len
+    return max(MIN_RANGE_SIZE, min_range, math.ceil(expected * fragment_percent / 100))
+
+
+def desired_cpu_miners(gpu_alive: int, has_work: bool, idle_seconds: float, max_miners: int,
+                       idle_limit: float) -> int:
+    """No mira la cola de tareas: con las tandas, la cola siempre tiene el tamaño justo para los mineros que ya hay."""
     if gpu_alive > 0:
-        return configured
-    return configured[: max(1, min(len(configured), min_without_gpu))]
+        return 0
+    if has_work or idle_seconds < idle_limit:
+        return max_miners
+    return 0
 
 
-def range_size(prefix: str, fragment_percent: float) -> int:
-    """Fragmentación del 1 % al 50 % del trabajo esperado (16^largo hashes en promedio)."""
-    expected = 16 ** len(prefix)
-    return max(MIN_RANGE_SIZE, math.ceil(expected * fragment_percent / 100))
+def miner_rates(results: list[dict], now: float, window: float) -> tuple[float, float] | None:
+    """(velocidad del motor, rendimiento efectivo) con los resultados de la ventana, o None si no hay.
+
+    Motor = hashes / segundos minando. Efectivo = hashes / segundos de punta a punta (red y arranque).
+    """
+    recent = [x for x in results if now - x["ts"] <= window and x.get("hashes")]
+    if not recent:
+        return None
+    hashes = sum(x["hashes"] for x in recent)
+    engine = sum(x.get("engine_seconds") or x["seconds"] for x in recent)
+    total = sum(x["seconds"] for x in recent)
+    return hashes / max(engine, 1e-6), hashes / max(total, 1e-6)
 
 
-def desired_cpu_miners(gpu_alive: int, pending_tasks: int, current: int, max_miners: int,
-                       tasks_per_miner: int = 20) -> int:
-    if gpu_alive > 0:
-        return 0  # con GPU no hacen falta mineros CPU (duda 4, opción A)
-    if pending_tasks <= 0:
-        return min(current, max_miners)  # entre bloques: no oscilar
-    return max(1, min(max_miners, math.ceil(pending_tasks / tasks_per_miner)))
+def miner_hashrate(results: list[dict], calibration: dict | None, declared: float, expired_ts: float | None,
+                   quarantined: bool, now: float, window: float) -> tuple[float, str]:
+    """Hashrate que cuenta para el prefijo y de dónde salió.
 
-
-def plan(configured_prefix: str, fragment_percent: float, gpu_alive: int, min_without_gpu: int) -> dict:
-    prefix = effective_prefix(configured_prefix, gpu_alive, min_without_gpu)
-    return {"prefix": prefix, "range_size": range_size(prefix, fragment_percent)}
-
-
-def scaling_signal(configured_prefix: str, gpu_alive: int, cpu_alive: int, pending_tasks: int,
-                   max_miners: int, min_without_gpu: int, tasks_per_miner: int = 20) -> dict:
-    """Lo que devuelve GET /scaling del gateway (KEDA lee desired_cpu_miners)."""
-    return {
-        "gpu_alive": gpu_alive,
-        "cpu_alive": cpu_alive,
-        "pending_tasks": pending_tasks,
-        "prefix": effective_prefix(configured_prefix, gpu_alive, min_without_gpu),
-        "desired_cpu_miners": desired_cpu_miners(gpu_alive, pending_tasks, cpu_alive, max_miners, tasks_per_miner),
-    }
+    Un minero que dejó vencer un préstamo después de su último resultado es un zombie (manda keep-alive
+    pero no mina): cuenta 0 hasta que vuelva a entregar algo.
+    """
+    if quarantined:
+        return 0.0, "cuarentena"
+    last_result = max((x["ts"] for x in results), default=None)
+    if expired_ts is not None and (last_result is None or expired_ts > last_result):
+        return 0.0, "zombie"
+    rates = miner_rates(results, now, window)
+    if rates is not None:
+        return rates[0], "motor"
+    if calibration:
+        return float(calibration["hashrate"]), "calibracion"
+    return float(declared or 0), "declarado"

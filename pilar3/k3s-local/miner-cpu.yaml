@@ -28,10 +28,19 @@ spec:
             - configMapRef:
                 name: miners-config
           env:
-            - name: MINER_ID
+            # Id = <cluster>-<pod>: único aunque varias PCs corran este mismo Deployment
+            # (el gateway lleva el hashrate, la calibración y el premio por id).
+            - name: MINER_CLUSTER
+              valueFrom:
+                configMapKeyRef:
+                  name: miners-config
+                  key: MINER_CLUSTER
+            - name: POD_NAME
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
+            - name: MINER_ID
+              value: "$(MINER_CLUSTER)-$(POD_NAME)"
             - name: MINER_TOKEN
               valueFrom:
                 secretKeyRef:

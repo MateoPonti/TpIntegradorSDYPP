@@ -24,6 +24,11 @@ def md5_hex(base: str, nonce: int) -> str:
     return hashlib.md5(f"{base}{nonce}".encode("utf-8")).hexdigest()
 
 
+def expected_seconds(prefix_len: int, hashrate: float) -> float:
+    """Con un prefijo de n caracteres hacen falta 16^n hashes en promedio."""
+    return float("inf") if hashrate <= 0 else 16**prefix_len / hashrate
+
+
 def is_valid_prefix(prefix: str) -> bool:
     return len(prefix) <= 32 and set(prefix) <= HEX
 

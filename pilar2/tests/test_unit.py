@@ -1,9 +1,10 @@
-"""Tests unitarios de lo crítico: PoW, validación de tx, decisiones del pool, génesis y motor CPU."""
+"""Tests unitarios de lo crítico: PoW, validación de tx, decisiones del pool, armado del bloque,
+premio, génesis y motor CPU."""
 import pytest
 
 import miner_cpu
 import verify_chain
-from coordinator import ledger
+from coordinator import blocks, ledger, reward
 from coordinator.blocks import genesis_block
 from pool import decision
 from tpi_common import pow
@@ -56,21 +57,93 @@ def test_normalize_allows_self_transfer_and_rejects_missing():
 
 # ---- Pool ----
 
-def test_prefix_shrinks_without_gpu():
-    assert decision.effective_prefix("000000", gpu_alive=1, min_without_gpu=4) == "000000"
-    assert decision.effective_prefix("000000", gpu_alive=0, min_without_gpu=4) == "0000"
+def test_prefix_is_the_longest_that_fits_the_target():
+    # 1 GH/s y 10 s de objetivo: 16^8 = 4.300 M (4,3 s) entra; 16^9 no.
+    assert decision.choose_prefix_len(1, 1e9, 10, 1, 8, raise_margin=1) == 8
+    # CPU de la PC con 12 procesos (8 MH/s medido): 16^6 = 2 s; 16^7 = 33 s.
+    assert decision.choose_prefix_len(1, 8e6, 10, 1, 8, raise_margin=1) == 6
+    assert decision.choose_prefix_len(5, 0, 10, 1, 8) == 1  # sin mineros: el primero lo resuelve enseguida
 
 
-def test_range_size_follows_fragment():
-    assert decision.range_size("00000", 10) == 104_858  # 16^5 * 10 %
-    assert decision.range_size("0", 1) == decision.MIN_RANGE_SIZE
+def test_prefix_hysteresis():
+    # 16^6 / 1,8 MH/s = 9,3 s: entra en el objetivo, pero sin el margen del 80 % no sube.
+    assert decision.choose_prefix_len(5, 1.8e6, 10, 1, 8, raise_margin=0.8) == 5
+    # Bajar es inmediato: con 6 ya se pasa (16^6 / 1 MH/s = 16,8 s).
+    assert decision.choose_prefix_len(6, 1e6, 10, 1, 8) == 5
 
 
-def test_desired_cpu_miners():
-    assert decision.desired_cpu_miners(gpu_alive=1, pending_tasks=100, current=3, max_miners=8) == 0
-    assert decision.desired_cpu_miners(0, 45, 1, 8, tasks_per_miner=20) == 3
-    assert decision.desired_cpu_miners(0, 0, 2, 8) == 2  # entre bloques no oscila
-    assert decision.desired_cpu_miners(0, 1000, 1, 8) == 8
+def test_range_size_follows_fragment_with_minimum():
+    assert decision.range_size(5, 10, 0) == 104_858  # 16^5 * 10 %
+    assert decision.range_size(1, 1, 0) == decision.MIN_RANGE_SIZE
+    assert decision.range_size(5, 10, 100_000_000) == 100_000_000  # con GPU: que llene sus hilos
+
+
+def test_desired_cpu_miners_all_or_nothing():
+    assert decision.desired_cpu_miners(gpu_alive=1, has_work=True, idle_seconds=0, max_miners=8, idle_limit=60) == 0
+    assert decision.desired_cpu_miners(0, True, 0, 8, 60) == 8
+    assert decision.desired_cpu_miners(0, False, 30, 8, 60) == 8  # todavía no pasó el minuto
+    assert decision.desired_cpu_miners(0, False, 61, 8, 60) == 0
+
+
+def test_miner_hashrate_uses_delivered_work():
+    now = 1000.0
+    results = [{"hashes": 2_000_000, "engine_seconds": 1.0, "seconds": 1.5, "ts": now - 10}]
+    motor, efectivo = decision.miner_rates(results, now, 300)
+    assert motor == 2e6 and round(efectivo) == 1_333_333
+    assert decision.miner_hashrate(results, None, 9e9, None, False, now, 300) == (2e6, "motor")
+    # Sin resultados: la calibración; sin calibración: lo declarado.
+    assert decision.miner_hashrate([], {"hashrate": 5e5}, 9e9, None, False, now, 300) == (5e5, "calibracion")
+    assert decision.miner_hashrate([], None, 7.0, None, False, now, 300) == (7.0, "declarado")
+
+
+def test_zombie_and_quarantined_miners_do_not_count():
+    now = 1000.0
+    results = [{"hashes": 2_000_000, "engine_seconds": 1.0, "seconds": 1.5, "ts": now - 100}]
+    assert decision.miner_hashrate(results, None, 5e8, now - 5, False, now, 300) == (0.0, "zombie")
+    assert decision.miner_hashrate(results, None, 5e8, None, True, now, 300) == (0.0, "cuarentena")
+    # Un vencimiento viejo, anterior a su último resultado, no lo marca.
+    assert decision.miner_hashrate(results, None, 5e8, now - 200, False, now, 300)[1] == "motor"
+
+
+# ---- Armado del bloque ----
+
+def test_fixed_clock_windows():
+    assert blocks.window_end(0.0, 10) == 10
+    assert blocks.window_end(9.999, 10) == 10
+    assert blocks.window_end(10.0, 10) == 20  # el borde es de la ventana siguiente
+    assert blocks.window_end(1234.5, 10) == 1240
+
+
+def test_rearm_only_when_hashrate_falls_a_lot():
+    # Prefijo 8 y se fue la GPU: quedan 16 MH/s de CPU -> 268 s, más de 6 x 10 s.
+    assert blocks.should_rearm(8, 6, 16e6, 10, 6, age=30, min_age=20)
+    assert not blocks.should_rearm(8, 6, 16e6, 10, 6, age=5, min_age=20)  # recién armado
+    assert not blocks.should_rearm(8, 8, 16e6, 10, 6, age=30, min_age=20)  # el pool no pide uno más corto
+    assert not blocks.should_rearm(6, 5, 16e6, 10, 6, age=30, min_age=20)  # 1 s: sigue bien
+
+
+# ---- Premio ----
+
+def test_reward_is_proportional_and_exact():
+    split = reward.split_reward({"gpu": 900, "cpu-a": 50, "cpu-b": 50}, 5000, finder="gpu")
+    assert split == {"gpu": 4500, "cpu-a": 250, "cpu-b": 250}
+    odd = reward.split_reward({"a": 1, "b": 1, "c": 1}, 100, finder="b")
+    assert sum(odd.values()) == 100 and odd["b"] == 34  # el resto del redondeo, al que encontró
+    assert reward.split_reward({}, 5000, None) == {}
+
+
+def test_reward_transactions_and_verify_chain():
+    txs = reward.reward_transactions(3, {"pc": 10, "pod-1": 30}, 5000, "pod-1", ts=1.0)
+    assert [t["receiver"] for t in txs] == ["miner:pc", "miner:pod-1"]
+    prev = {"index": 3, "reward_cents": 5000}
+    assert verify_chain.check_rewards({"transactions": txs}, prev) == []
+    txs[0]["amount"] += 1
+    assert verify_chain.check_rewards({"transactions": txs}, prev)
+
+
+def test_reward_sender_is_reserved():
+    with pytest.raises(ledger.InvalidTx):
+        ledger.normalize({"sender": "recompensa", "receiver": "user-1", "amount": 1})
 
 
 # ---- Génesis y verificador ----

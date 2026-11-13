@@ -72,13 +72,14 @@ class Miner:
     def mine(self, task: dict) -> str:
         """Recorre [from, to] por tramos. Devuelve found / exhausted / abandoned."""
         lo, hi = int(task["from"]), int(task["to"])
-        hashes, t0 = 0, time.perf_counter()
+        hashes, engine_seconds, t0 = 0, 0.0, time.perf_counter()
         result = {"task_id": task["task_id"], "block_id": task["block_id"], "worker": self.id,
                   "from": lo, "to": hi, "found": False}
         while lo <= hi:
             end = min(lo + self.chunk - 1, hi)
             out = run_engine(self.cmd, task["base"], task["prefix"], lo, end)
             hashes += int(out["hashes"])
+            engine_seconds += float(out.get("seconds") or 0)  # solo minando: sin arrancar el proceso ni la red
             self.hashrate = hashes / max(time.perf_counter() - t0, 1e-6)
             if out["found"]:
                 result.update(found=True, nonce=out["nonce"], hash=out["hash"])
@@ -88,7 +89,8 @@ class Miner:
                 status, _ = self.gw.call("POST", f"/tasks/{task['task_id']}/renew")
                 if status == 410:
                     return "abandoned"
-        result.update(hashes=hashes, seconds=round(time.perf_counter() - t0, 3))
+        result.update(hashes=hashes, seconds=round(time.perf_counter() - t0, 3),
+                      engine_seconds=round(engine_seconds, 6))
         status, _ = self.gw.call("POST", "/results", result)
         log.info("tarea %s rango %d-%d found=%s -> %s (%.0f H/s)", task["task_id"][:8], int(task["from"]),
                  hi, result["found"], status, self.hashrate)

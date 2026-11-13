@@ -7,23 +7,40 @@ metadata:
   namespace: tpi
 data:
   REDIS_HOST: redis.tpi.svc.cluster.local
-  DIFFICULTY_PREFIX: "000"
+  # --- Prefijo (decidido el 13/11): automático por hashrate real, para que un bloque tarde < BLOCK_TARGET_SECONDS.
+  # Para las pruebas de carga de prefijos 1 a 8: DIFFICULTY_MODE=fixed y DIFFICULTY_PREFIX con los ceros.
+  DIFFICULTY_MODE: auto
+  DIFFICULTY_PREFIX: "00000"
+  BLOCK_TARGET_SECONDS: "10"
+  PREFIX_MIN_LEN: "1"
+  PREFIX_MAX_LEN: "8"
+  PREFIX_RAISE_MARGIN: "0.8"
+  REARM_FACTOR: "6"                # rearmar el bloque si va a tardar más de 6 x el objetivo (se fue la GPU)
+  REARM_MIN_AGE_SECONDS: "20"
+  HASHRATE_WINDOW_SECONDS: "300"   # hashrate real = resultados de los últimos 5 min
+  # --- Rangos: fragmentación del trabajo esperado (el experimento 1 % a 50 %), con mínimo según quién mina.
   POOL_FRAGMENT_PERCENT: "10"
+  MIN_RANGE_GPU: "100000000"       # que la tarea llene los hilos de la GPU
+  MIN_RANGE_CPU: "2000000"         # ~1 s en un pod con 1 worker (1,6 MH/s medido en pilar1/rendimiento)
   GPU_KEEPALIVE_TIMEOUT_SECONDS: "15"
-  MIN_DIFFICULTY_WITHOUT_GPU: "2"
-  # Scaling signal the pool publishes for the CPU miners of the group k3s
-  # (served by the gateway at GET /scaling). No miner runs in GKE.
+  # --- Mineros CPU del k3s (GET /scaling para KEDA): todo o nada. No corre ningún minero en GKE.
   CPU_MINERS_MAX: "8"
-  TASKS_PER_CPU_MINER: "20"
+  CPU_IDLE_SECONDS: "60"
   # A task handed out by the gateway and not answered in this time goes back
   # to the queue (external miners die without warning: Colab, laptops).
   TASK_LEASE_SECONDS: "60"
-  # --- Agregadas por el grupo (decisiones.docx) ---
-  # Armado del bloque: MAX_TX_PER_BLOCK tx o BLOCK_TIMEOUT_SECONDS desde la primera pendiente.
+  TASK_MAX_ATTEMPTS: "3"           # al 3er préstamo vencido la tarea va a mining.dlq
+  # --- Calibración, canarios y cuarentena (gateway).
+  CALIB_RANGE_GPU: "256000000"
+  CALIB_RANGE_CPU: "2000000"
+  CANARY_EVERY: "20"
+  QUARANTINE_AFTER_EXPIRED: "3"
+  QUARANTINE_SECONDS: "300"
+  # --- Armado del bloque (comentario del profe): ventanas fijas de reloj, sin bloques vacíos, sin mezclar.
+  BLOCK_WINDOW_SECONDS: "10"
   MAX_TX_PER_BLOCK: "1000"
-  BLOCK_TIMEOUT_SECONDS: "10"
-  BLOCK_POLL_SECONDS: "1"        # duda 5 (propuesta)
+  BLOCK_POLL_SECONDS: "1"
+  BLOCK_REWARD_CENTS: "5000"       # premio por bloque (50,00), repartido según los nonces completados
   POOL_PERIOD_SECONDS: "15"
-  TASK_MAX_ATTEMPTS: "3"         # al 3er préstamo vencido la tarea va a mining.dlq
   GATEWAY_HEALTH_URL: http://gateway.tpi.svc.cluster.local/health   # para GET /status
   LOG_DIR: /tmp/logs

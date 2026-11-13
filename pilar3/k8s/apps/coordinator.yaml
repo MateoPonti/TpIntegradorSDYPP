@@ -18,8 +18,10 @@ spec:
       labels:
         app: coordinator
     spec:
+      # Sin esto k8s inyecta REDIS_PORT=tcp://... (por el Service "redis") y pisa la config.
+      enableServiceLinks: false
       nodeSelector:
-        role: apps
+        pool: apps
       containers:
         - name: coordinator
           image: REGISTRY/coordinator:latest
@@ -53,7 +55,7 @@ spec:
             periodSeconds: 10
           resources:
             requests:
-              cpu: 100m
+              cpu: 50m
               memory: 128Mi
             limits:
               memory: 256Mi
@@ -65,6 +67,8 @@ metadata:
   namespace: tpi
 spec:
   type: LoadBalancer
+  # IP estática reservada (gcloud compute addresses: tpi-coordinator)
+  loadBalancerIP: 35.223.237.60
   selector:
     app: coordinator
   ports:

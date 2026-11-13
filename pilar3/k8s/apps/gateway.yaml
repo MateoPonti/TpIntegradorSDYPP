@@ -24,8 +24,10 @@ spec:
       labels:
         app: gateway
     spec:
+      # Sin esto k8s inyecta REDIS_PORT=tcp://... (por el Service "redis") y pisa la config.
+      enableServiceLinks: false
       nodeSelector:
-        role: apps
+        pool: apps
       containers:
         - name: gateway
           image: REGISTRY/gateway:latest
@@ -65,7 +67,7 @@ spec:
           resources:
             # requests are mandatory: the HPA computes utilization against them
             requests:
-              cpu: 100m
+              cpu: 50m
               memory: 128Mi
             limits:
               memory: 256Mi
@@ -77,6 +79,8 @@ metadata:
   namespace: tpi
 spec:
   type: LoadBalancer
+  # IP estática reservada (gcloud compute addresses: tpi-gateway)
+  loadBalancerIP: 34.63.209.225
   selector:
     app: gateway
   ports:

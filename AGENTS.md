@@ -97,8 +97,13 @@ Es un **pool de minería colaborativo**: todos minan el mismo bloque, cada uno e
 - **Redis** con AOF everysec y PVC. El sellado es atómico con un script Lua (si `tip == prev`).
 - **Transacciones:** `POST /transactions {sender, receiver, amount}` (y `/bulk`), responde `202` + `tx_id`, o `400`. Hay que respetar el formato del `bench.py` de la cátedra. **No modificar** `bench.py`, `matrix.sh` ni `plot.py`.
 - **Saldos:** modelo de cuentas. Disponible = `balance − pending_out`. La reserva es atómica en Lua. Los montos se guardan en **centavos enteros**, nunca en float.
-- **Armado del bloque:** si no se está minando, el bloque sale con 1000 tx o a los 10 s desde la primera pendiente. Al sellar uno, si hay pendientes, el siguiente se arma enseguida. Se mina **un bloque a la vez**.
-- **Rangos por tandas:** cuando en la cola quedan menos tareas que mineros vivos, se publica la tanda siguiente desde `block:<i>:next_from`.
+- **Armado del bloque** (13/11, comentario del profe): **ventanas fijas de reloj** de 10 s (`BLOCK_WINDOW_SECONDS`). Cuando cierra la ventana de la primera tx pendiente, sus tx salen en bloques de hasta 1000 (`MAX_TX_PER_BLOCK`). **No se mezclan ventanas** y **no hay bloques vacíos**. Se mina **un bloque a la vez** (cada uno necesita el hash del anterior).
+- **Rangos por tandas:** cuando en la cola quedan menos tareas que mineros vivos, se publica la tanda siguiente desde `block:<i>:next_from`. La cola es un colchón: **no** sirve para decidir cuántos mineros levantar.
+- **Prefijo automático** (13/11): el pool elige el prefijo más largo con el que un bloque tarda < 10 s con el **hashrate real** (lo que entregan los mineros, no lo que declaran), con histéresis, entre 1 y 8. `DIFFICULTY_MODE=fixed` para las pruebas de carga. Si cae el hashrate a mitad de un bloque, el líder lo **rearma** con un prefijo más corto.
+- **Tamaño de rango:** fragmentación `16^largo × POOL_FRAGMENT_PERCENT`, con un mínimo según si mina una GPU o solo CPU. Una sola cola (dos colas: se decide después de medir).
+- **Mineros CPU:** todo o nada. Sin GPU y con trabajo, `CPU_MINERS_MAX`; 60 s sin trabajo, 0; con GPU, 0. La GPU no va en KEDA.
+- **Gateway:** calibración al arrancar cada worker, canarios (1 de cada 20 tareas) y cuarentena (canario fallado o 3 préstamos vencidos seguidos). Nada de esto mina en GCP.
+- **Premio proporcional** a los nonces completados, pagado con tx `sender="recompensa"` en el bloque siguiente.
 - Al menos **2 réplicas por servicio**. [Enunciado]
 
 ## 4. Infraestructura y despliegue (Pilar 3)
@@ -109,7 +114,8 @@ Es un **pool de minería colaborativo**: todos minan el mismo bloque, cada uno e
 - **Logs en memoria y en disco** (archivo rotativo + `GET /logs`). [Enunciado]
 - Métricas con **Prometheus + Grafana**. Cada servicio expone `/metrics`. [Enunciado + Grupo]
 - Pruebas de carga: bulks de 1 a 100.000 tx, prefijos de 1 a 8, fragmentación del 1 % al 50 %, y entrada y salida de GPUs. [Enunciado]
-- **No tocar el cluster GKE del TP3** sin que lo pida alguien del grupo. [Grupo]
+- El TPI corre en el **cluster GKE del TP3** (proyecto `tp3distribuidos`, cluster `tp3`), en el **namespace `tpi`**. **No tocar el namespace `tp3`** ni lo compartido (`monitoring`, node pools) sin que lo pida alguien del grupo. [Grupo]
+- Prometheus (el del TP3, namespace `monitoring`) con disco de 10 GB y 30 días de retención para no perder las mediciones. [Grupo]
 
 ## 5. Seguridad [Enunciado]
 

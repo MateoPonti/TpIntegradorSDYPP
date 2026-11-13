@@ -14,6 +14,61 @@
 
 En los comandos de abajo, todo lo que dice `infra/terraform`, `k8s/` o `k3s-local/` está dentro de `pilar3/`.
 
+## Cómo está desplegado hoy (13/11/2026)
+
+El TPI corre en el **cluster GKE del TP3** (proyecto `tp3distribuidos`, cluster `tp3`, zona `us-central1-a`),
+en su propio namespace **`tpi`**. El TP3 sigue en el namespace `tp3`, sin cambios, salvo el mínimo de su HPA
+`backend`, que pasó de 3 a 2 para que entraran nuestros pods (revertir con
+`kubectl -n tp3 patch hpa backend -p '{"spec":{"minReplicas":3}}'`).
+
+| Qué | Dónde |
+|---|---|
+| Frontend, API y `/status` | `http://35.223.237.60` (IP fija `tpi-coordinator`) |
+| Gateway de los mineros | `http://34.63.209.225` (IP fija `tpi-gateway`) |
+| Imágenes | `us-central1-docker.pkg.dev/tp3distribuidos/tp3/tpi-{coordinator,pool,gateway}:<sha>` |
+| Prometheus, Grafana y Loki | Los del TP3 (namespace `monitoring`). Leen nuestros pods con `k8s/observability/` |
+
+Diferencias con el starter, para que entre en ese cluster:
+- Los nodos tienen la etiqueta `pool=infra` / `pool=apps` y el taint `pool=infra` (no `role` / `dedicated`).
+- Los pods de las apps llevan `enableServiceLinks: false`: si no, Kubernetes inyecta `REDIS_PORT=tcp://…`
+  por el Service `redis` y rompe la configuración.
+- Piden 50m de CPU (el nodo `apps` es compartido con el TP3).
+
+**Despliegue a mano** (los pipelines 1 a 3 necesitan las variables de GCP en GitHub; ver más abajo):
+
+```bash
+K="kubectl --context gke_tp3distribuidos_us-central1-a_tp3"
+R=us-central1-docker.pkg.dev/tp3distribuidos/tp3; T=$(git rev-parse --short HEAD)
+for s in coordinator pool gateway; do
+  docker build -f pilar2/services/Dockerfile --build-arg SERVICE=$s -t $R/tpi-$s:$T . && docker push $R/tpi-$s:$T
+done
+$K apply -k pilar3/k8s/base && $K apply -k pilar3/k8s/infra         # namespace, RabbitMQ y Redis
+$K kustomize pilar3/k8s/apps | sed -E "s#REGISTRY/(coordinator|pool|gateway):latest#$R/tpi-\1:$T#" | $K apply -f -
+$K apply -k pilar3/k8s/observability                                  # PodMonitors y alertas
+```
+
+Los secrets (`rabbitmq-auth`, `redis-auth`, `gateway-auth`) se crearon con los valores de `pilar3/k8s/gke.env`,
+que está solo en la PC de quien desplegó (`.gitignore`). El `MINER_TOKEN` de ese archivo es el que usan los mineros.
+
+**Prometheus persistente:** `k8s/observability/prometheus-persistencia.yaml` le agrega al Prometheus del TP3
+un disco de 10 GB (`pd-standard`) y 30 días de retención, con `helm upgrade --reuse-values` (el comando está
+en el archivo).
+
+**Otra cuenta de GCP:** `infra/terraform` crea un cluster propio con los mismos node pools, discos de 30 GB
+`pd-standard` (para que la cuota de SSD no frene al autoscaler), el registry `tpi`, la identidad de GitHub
+y las dos IPs fijas (`tofu output static_ips`). Las IPs van a ser otras: hay que ponerlas en
+`loadBalancerIP` de `k8s/apps/coordinator.yaml` y `gateway.yaml`, y en `k3s-local/`.
+
+## Mineros CPU en varias PCs
+
+Cada PC con un k3s corre el mismo Deployment (`k3s-local/`) contra el mismo gateway y con el **mismo
+`MINER_TOKEN`** (es un solo token para todos los mineros: lo crea quien despliega y está en el secret
+`gateway-auth`). Lo único que cambia por PC es `MINER_CLUSTER` en `k3s-local/config.yaml`: el id de cada
+minero queda `<MINER_CLUSTER>-<nombre del pod>`, y con ese id el gateway lleva su calibración, su hashrate
+real, su cuarentena y su premio (`GET /miners` del coordinator, y la tabla de mineros del frontend).
+Cada k3s tiene su propio KEDA, y todos leen la misma señal de `GET /scaling`: cada PC levanta hasta
+`CPU_MINERS_MAX` pods.
+
 ---
 
 # Starter del Pilar 3 del TPI: GKE + OpenTofu + pool + escalabilidad
