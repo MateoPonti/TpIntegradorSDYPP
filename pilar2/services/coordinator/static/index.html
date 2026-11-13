@@ -88,9 +88,23 @@
   </section>
 
   <section class="wide">
-    <h2>Últimos bloques <span class="pill">tocá una fila para ver sus transacciones</span></h2>
+    <h2>Cadena de bloques <span class="pill">tocá un bloque para ver todas sus transacciones</span></h2>
+    <div class="row" style="margin-bottom:8px">
+      <button id="newer" type="button">← Más nuevos</button>
+      <span class="out" id="pageInfo" style="margin:0;align-self:center;flex:2 1 160px"></span>
+      <button id="older" type="button">Más viejos →</button>
+      <form id="goto" class="row" style="flex:1 1 220px;display:flex">
+        <input name="n" placeholder="ir al bloque #" inputmode="numeric" required><button>Ver</button>
+      </form>
+    </div>
     <div class="scroll"><table id="blocks"></table></div>
-    <div class="out" id="blockOut"></div>
+  </section>
+
+  <section class="wide" id="detail">
+    <h2 id="detailTitle">Bloque</h2>
+    <div class="scroll"><table id="blockInfo"></table></div>
+    <h2 style="margin-top:14px" id="txTitle">Transacciones</h2>
+    <div class="scroll" style="max-height:460px;overflow-y:auto"><table id="blockTxs"></table></div>
   </section>
 </main>
 <script>
@@ -132,28 +146,76 @@ async function block(i) {
   return cache.get(i);
 }
 
-async function refreshBlocks(height) {
+// Cadena: páginas de PAGE bloques, del más nuevo al más viejo. `top` = bloque más nuevo de la página
+// (null = seguir siempre el último). `selected` = bloque que se muestra en el detalle.
+const PAGE = 20;
+let height = 0, top = null, selected = null;
+const when = (b) => b.timestamp ? new Date(b.timestamp * 1000).toLocaleString("es-AR") : "génesis";
+
+async function refreshBlocks() {
+  const hi = Math.min(top ?? height - 1, height - 1), lo = Math.max(0, hi - PAGE + 1);
   const idx = [];
-  for (let i = height - 1; i >= Math.max(0, height - 12); i--) idx.push(i);
+  for (let i = hi; i >= lo; i--) idx.push(i);
   const bs = await Promise.all(idx.map(block));
-  $("blocks").innerHTML = "<tr><th>#</th><th>Hash</th><th>Prefijo</th><th>Tx</th><th>Premios</th><th>Minero</th><th>Hora</th></tr>" +
+  $("pageInfo").textContent = `bloques ${lo} a ${hi} de ${height - 1}`;
+  $("newer").disabled = hi >= height - 1;
+  $("older").disabled = lo <= 0;
+  $("blocks").innerHTML = "<tr><th>#</th><th>Hash</th><th>Hash anterior</th><th>Prefijo</th><th>Tx</th><th>Premios</th><th>Minero</th><th>Hora</th></tr>" +
     bs.map((b) => {
       const rewards = b.transactions.filter((t) => t.sender === "recompensa").length;
-      const when = b.timestamp ? new Date(b.timestamp * 1000).toLocaleTimeString("es-AR") : "génesis";
-      return `<tr class="click" data-i="${b.index}"><td>${b.index}</td><td class="mono">${esc(b.block_hash.slice(0, 16))}…</td><td class="mono">${esc(b.prefix || "—")}</td>
-        <td>${b.transactions.length - rewards}</td><td>${rewards}</td><td class="mono">${esc(b.miner ?? "—")}</td><td>${when}</td></tr>`;
+      const sel = b.index === selected ? ' style="outline:2px solid var(--accent)"' : "";
+      return `<tr class="click" data-i="${b.index}"${sel}><td><b>${b.index}</b></td><td class="mono">${esc(b.block_hash.slice(0, 12))}…</td>
+        <td class="mono">${esc(b.previous_hash.slice(0, 12))}…</td><td class="mono">${esc(b.prefix || "—")}</td>
+        <td>${b.transactions.length - rewards}</td><td>${rewards}</td><td class="mono">${esc(b.miner ?? "—")}</td><td>${when(b)}</td></tr>`;
     }).join("");
-  document.querySelectorAll("#blocks tr.click").forEach((tr) => tr.onclick = async () => {
-    const b = await block(Number(tr.dataset.i));
-    const lines = b.transactions.slice(0, 50).map((t) => `${t.sender} → ${t.receiver}: ${money(t.amount)}${t.reward_for != null ? "  (premio del bloque " + t.reward_for + ")" : ""}`);
-    $("blockOut").textContent = `Bloque ${b.index} · nonce ${b.nonce} · ${b.transactions.length} tx\n` + lines.join("\n") + (b.transactions.length > 50 ? "\n…" : "");
-  });
+  document.querySelectorAll("#blocks tr.click").forEach((tr) => tr.onclick = () => showBlock(Number(tr.dataset.i), true));
+  if (selected === null && height > 0) await showBlock(height - 1, false);
 }
+
+async function showBlock(i, scroll) {
+  const b = await block(i);
+  selected = i;
+  document.querySelectorAll("#blocks tr.click").forEach((tr) =>
+    tr.style.outline = Number(tr.dataset.i) === i ? "2px solid var(--accent)" : "");
+  const rewards = b.transactions.filter((t) => t.sender === "recompensa");
+  $("detailTitle").textContent = `Bloque #${b.index}${b.index === 0 ? " (génesis)" : ""}`;
+  const prev = b.index > 0 ? `<a href="#" id="prevLink" class="mono">${esc(b.previous_hash)}</a> (bloque #${b.index - 1})` : `<span class="mono">${esc(b.previous_hash)}</span>`;
+  const rows = [
+    ["Hash", `<span class="mono">${esc(b.block_hash)}</span>`],
+    ["Hash anterior", prev],
+    ["tx_digest", `<span class="mono">${esc(b.tx_digest)}</span>`],
+    ["Prefijo", `<span class="mono">${esc(b.prefix || "—")}</span>`],
+    ["Nonce", `<span class="mono">${esc(b.nonce)}</span>`],
+    ["Lo resolvió", `<span class="mono">${esc(b.miner ?? "—")}</span>`],
+    ["Hora", when(b)],
+    ["Premio de este bloque", b.reward_cents != null ? `${money(b.reward_cents)} (se paga en el bloque #${b.index + 1})` : "—"],
+    ["Rearmado", b.rearmed ? `sí (${b.rearmed} vez/veces, se fue hashrate)` : "no"],
+    ["Comprobación", `md5(hash anterior + tx_digest + nonce) = hash, y el hash empieza con el prefijo`],
+  ];
+  $("blockInfo").innerHTML = rows.map(([k, v]) => `<tr><th>${k}</th><td style="white-space:normal;word-break:break-all">${v}</td></tr>`).join("");
+  if (b.index > 0) $("prevLink").onclick = (ev) => { ev.preventDefault(); goTo(b.index - 1); };
+  $("txTitle").textContent = `Transacciones (${b.transactions.length - rewards.length} de usuarios, ${rewards.length} de premio)`;
+  $("blockTxs").innerHTML = "<tr><th>#</th><th>Tipo</th><th>De</th><th>Para</th><th>Monto</th><th>tx_id</th></tr>" +
+    b.transactions.map((t, n) => `<tr><td>${n + 1}</td><td>${t.sender === "recompensa" ? `<span class="ok">premio del #${t.reward_for}</span>` : "transferencia"}</td>
+      <td class="mono">${esc(t.sender)}</td><td class="mono">${esc(t.receiver)}</td><td>${money(t.amount)}</td><td class="mono">${esc(t.tx_id)}</td></tr>`).join("");
+  if (scroll) $("detail").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+async function goTo(i) {
+  if (!(i >= 0 && i < height)) return;
+  top = Math.min(height - 1, i + Math.floor(PAGE / 2));
+  await refreshBlocks();
+  await showBlock(i, true);
+}
+
+$("newer").onclick = () => { top = Math.min(height - 1, (top ?? height - 1) + PAGE); if (top >= height - 1) top = null; refreshBlocks(); };
+$("older").onclick = () => { top = Math.max(PAGE - 1, (top ?? height - 1) - PAGE); refreshBlocks(); };
+$("goto").onsubmit = (ev) => { ev.preventDefault(); goTo(Number(new FormData(ev.target).get("n"))); };
 
 async function refresh() {
   try {
-    const height = await refreshStatus();
-    await Promise.all([refreshMiners(), refreshBlocks(height)]);
+    height = await refreshStatus();
+    await Promise.all([refreshMiners(), refreshBlocks()]);
   } catch (e) {
     $("stats").innerHTML = `<div class="stat"><b class="bad">sin conexión</b><span>${esc(e.message)}</span></div>`;
   }
@@ -180,7 +242,8 @@ $("txq").onsubmit = async (ev) => {
   ev.preventDefault();
   try {
     const t = await get(`/transactions/${encodeURIComponent(new FormData(ev.target).get("id"))}`);
-    $("txqOut").textContent = t.status === "confirmed" ? `confirmada en el bloque ${t.block}` : "pendiente (esperando que se mine)";
+    $("txqOut").textContent = t.status === "confirmed" ? `confirmada en el bloque ${t.block} (abajo, en el detalle)` : "pendiente (esperando que se mine)";
+    if (t.status === "confirmed") await goTo(t.block);
   } catch (e) { $("txqOut").textContent = e.message === "404" ? "no existe" : "error " + e.message; }
 };
 refresh();
