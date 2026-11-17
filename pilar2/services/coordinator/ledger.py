@@ -14,13 +14,16 @@ from .reward import REWARD_SENDER
 MAX_AMOUNT_CENTS = 10**12  # tope: el Lua de sellado convierte números con %.14g
 MAX_NAME = 64
 
-# KEYS: balance:<sender>, pending_out:<sender>, tx:pending, tx:seen, tx:status
-# ARGV: tx_id, amount_cents, tx_json
+# KEYS: balance:<sender>, pending_out:<sender>, tx:pending, tx:seen, tx:status, account:<sender>:seq
+# ARGV: tx_id, amount_cents, tx_json, seq ('' si la cuenta es del génesis y no firma)
+# El seq se controla y avanza acá adentro: si la tx se rechaza por saldo, el seq no se consume.
 RESERVE_LUA = """
 if redis.call('SISMEMBER', KEYS[4], ARGV[1]) == 1 then return -1 end
+if ARGV[4] ~= '' and tonumber(ARGV[4]) ~= tonumber(redis.call('GET', KEYS[6]) or '0') + 1 then return -3 end
 local bal = tonumber(redis.call('GET', KEYS[1]) or '0')
 local out = tonumber(redis.call('GET', KEYS[2]) or '0')
 if bal - out < tonumber(ARGV[2]) then return -2 end
+if ARGV[4] ~= '' then redis.call('SET', KEYS[6], ARGV[4]) end
 redis.call('INCRBY', KEYS[2], ARGV[2])
 redis.call('SADD', KEYS[4], ARGV[1])
 redis.call('HSET', KEYS[5], ARGV[1], 'pending')
@@ -28,7 +31,7 @@ redis.call('RPUSH', KEYS[3], ARGV[3])
 return 1
 """
 
-RESERVE_ERRORS = {-1: "duplicada", -2: "saldo insuficiente"}
+RESERVE_ERRORS = {-1: "duplicada", -2: "saldo insuficiente", -3: "seq inválido"}
 
 
 class InvalidTx(ValueError):
@@ -77,4 +80,5 @@ def normalize(body) -> dict:
 
 
 def reserve_keys(tx: dict) -> list[str]:
-    return [keys.balance(tx["sender"]), keys.pending_out(tx["sender"]), keys.TX_PENDING, keys.TX_SEEN, keys.TX_STATUS]
+    return [keys.balance(tx["sender"]), keys.pending_out(tx["sender"]), keys.TX_PENDING, keys.TX_SEEN, keys.TX_STATUS,
+            keys.account_seq(tx["sender"])]

@@ -12,5 +12,5 @@ if (-not (Test-Path $bin)) { throw "No existe pilar1\build\miner_gpu(.exe). Comp
 if (-not $env:GATEWAY_URL -or -not $env:MINER_TOKEN) { throw "Faltan GATEWAY_URL y/o MINER_TOKEN." }
 $env:MINER_KIND = "gpu"
 if (-not $env:MINER_ID) { $env:MINER_ID = "gpu-$env:COMPUTERNAME" }
-if (-not $env:MINER_CHUNK) { $env:MINER_CHUNK = "200000000" }  # duda 8: se elige midiendo
+if (-not $env:MINER_CHUNK) { $env:MINER_CHUNK = "1000000000" }  # ~0,9 s por llamada a 1,1 GH/s (pilar1/rendimiento)
 python "$PSScriptRoot\..\agent.py" -- $bin

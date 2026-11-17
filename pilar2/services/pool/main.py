@@ -27,7 +27,7 @@ TARGET = env_float("BLOCK_TARGET_SECONDS", 10)  # = la ventana: si un bloque tar
 PREFIX_MIN = env_int("PREFIX_MIN_LEN", 1)
 PREFIX_MAX = env_int("PREFIX_MAX_LEN", 8)
 RAISE_MARGIN = env_float("PREFIX_RAISE_MARGIN", 0.8)
-MIN_RANGE_GPU = env_int("MIN_RANGE_GPU", 100_000_000)  # que la tarea llene los hilos de la GPU
+MIN_RANGE_GPU = env_int("MIN_RANGE_GPU", 1_000_000_000)  # que la tarea llene los hilos de la GPU
 MIN_RANGE_CPU = env_int("MIN_RANGE_CPU", 2_000_000)    # ~1 s en un pod con 1 worker (1,6 MH/s medido)
 CPU_MAX = env_int("CPU_MINERS_MAX", 8)
 CPU_IDLE = env_float("CPU_IDLE_SECONDS", 60)

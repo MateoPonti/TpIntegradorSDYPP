@@ -220,3 +220,20 @@ def test_parse_sentinels():
     assert parse_sentinels("") == []
     assert parse_sentinels("redis-sentinel.tpi.svc.cluster.local:26379") == [("redis-sentinel.tpi.svc.cluster.local", 26379)]
     assert parse_sentinels(" a:1 , b ") == [("a", 1), ("b", 26379)]
+
+
+def test_cuentas_con_clave():
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from coordinator import accounts
+
+    key = Ed25519PrivateKey.generate()
+    pub = key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw).hex()
+    msg = accounts.tx_message("mateo", "user-3", 1050, 1)
+    sig = key.sign(msg).hex()
+    assert accounts.verify(pub, msg, sig)
+    assert not accounts.verify(pub, accounts.tx_message("mateo", "user-3", 1050, 2), sig)  # otro seq: replay
+    assert not accounts.verify(pub, msg, "00" * 64) and not accounts.verify(pub, msg, None)
+    assert accounts.is_genesis("user-0") and accounts.is_genesis("user-96") and not accounts.is_genesis("user-97")
+    assert accounts.reserved("user-5") and accounts.reserved("recompensa") and accounts.reserved("miner:x")
+    assert not accounts.reserved("mateo")

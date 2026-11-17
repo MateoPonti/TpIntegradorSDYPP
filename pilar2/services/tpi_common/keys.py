@@ -51,6 +51,16 @@ def pending_out(user: str) -> str:
     return f"pending_out:{user}"
 
 
+def account_pubkey(user: str) -> str:
+    """Clave pública Ed25519 (hex) de una cuenta registrada. Se escribe una vez (SET NX)."""
+    return f"account:{user}:pubkey"
+
+
+def account_seq(user: str) -> str:
+    """Último seq usado por una cuenta registrada (anti-replay)."""
+    return f"account:{user}:seq"
+
+
 def worker(worker_id: str) -> str:
     return f"worker:{worker_id}"
 

@@ -32,3 +32,6 @@ charts/
 .idea/
 Thumbs.db
 .DS_Store
+
+# Permisos locales de Claude Code (no se suben)
+.claude/settings.local.json

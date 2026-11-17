@@ -188,6 +188,26 @@ Así el gateway y el coordinator ni se enteran de quién minó, y el binario CUD
   (estado, enviar tx, saldos, mineros y bloques). No habla con Redis.
 - **Logs** en stdout (JSON), disco (archivo rotativo en `LOG_DIR`) y memoria (`GET /logs`).
 
+### Cuentas con clave (punto 1 del Contrato SDMER, decidido el 17/11/2026, opción A)
+
+- **La única forma de tener una cuenta propia es registrarse con un par de claves Ed25519.** La clave
+  privada nunca sale de la PC del usuario; al servidor solo llega la pública.
+  `POST /accounts/register {account, public_key, signature}`: la firma es sobre `register:<account>:<public_key>`
+  y prueba que el que registra tiene la clave privada. Se guarda en `account:<nombre>:pubkey` con `SET NX`
+  (una cuenta no cambia de dueño).
+- **Toda tx de una cuenta registrada va firmada:** `{sender, receiver, amount, seq, signature}`. La firma es
+  sobre `tx:<sender>:<receiver>:<centavos>:<seq>`, y `seq` tiene que ser el último + 1
+  (`account:<nombre>:seq`). Sin firma, con firma mala o con `seq` repetido → `400`. El `seq` evita que alguien
+  copie una tx firmada y la mande de nuevo (replay).
+- **Excepción fija: las 97 cuentas de prueba del génesis (`user-0` a `user-96`)** no se registran y mandan tx
+  sin firma, porque es lo que hace el `bench.py` de la cátedra (no se puede modificar). Son las únicas cuentas
+  sin firma. No se pueden registrar esos nombres, ni `recompensa` ni los que empiezan con `miner:`.
+- Una tx de un sender que no es del génesis y no está registrado se rechaza (`400`, cuenta no registrada).
+- Cliente: `pilar2/tools/cuenta.py` (`claves`, `registrar`, `enviar`). `GET /balances/<cuenta>` dice si está registrada y su último `seq`.
+- **Pendiente:** las cuentas de cobro de los mineros (`MINER_ACCOUNT`, ej. `mateo`) reciben premios sin estar
+  registradas. Para gastar esa plata el dueño tiene que registrar ese nombre con su clave; hasta que se ate
+  el `MINER_ACCOUNT` a una clave (con el alta de workers), el primero que registre el nombre se queda con la cuenta.
+
 ### Claves de Redis
 
 Además de las del Word: `mining:current` (candidato que se mina), `tx:status` (dónde está cada tx),
@@ -198,8 +218,8 @@ Además de las del Word: `mining:current` (candidato que se mina), `tx:status` (
 
 ## Pendiente
 
-- **Parámetros CUDA** (threads, bloques, K, `--chunk`): se eligen midiendo cuando esté el kernel.
-  Con eso también `MIN_RANGE_GPU` y `CALIB_RANGE_GPU` (ver `pilar1/rendimiento`).
+- ~~Parámetros CUDA~~: medidos el 17/11 (256 hilos, 48 bloques, K = 256, batch 2^28; `MINER_CHUNK`,
+  `MIN_RANGE_GPU` y `CALIB_RANGE_GPU` = 1.000 M). Ver `pilar1/README.md`.
 - **Dos colas** (`tasks.gpu` / `tasks.cpu`): se decide después de medir si GPU y CPU minando juntos cambia algo.
 - **A futuro, sin hacer:** firmas Ed25519 en las tx (hoy cualquiera puede mandar una tx en nombre de otra cuenta).
   RabbitMQ con 3 réplicas y Redis con Sentinel ya están hechos (17/11, ver `pilar3/README.md`).

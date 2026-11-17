@@ -16,6 +16,7 @@ from tpi_common.config import POD_NAME, env_float, env_str
 from tpi_common.logs import log, setup_logging
 from tpi_common.web import install_common_routes
 
+from . import accounts as cuentas
 from . import ledger
 from .blocks import Chain
 
@@ -76,7 +77,23 @@ async def _submit(body) -> tuple[int, dict]:
     except ledger.InvalidTx as exc:
         TX_REJECTED.labels("formato").inc()
         return 400, {"error": str(exc)}
-    rc = await state["reserve"](keys=ledger.reserve_keys(tx), args=[tx["tx_id"], tx["amount"], json.dumps(tx)])
+    seq = ""
+    if not cuentas.is_genesis(tx["sender"]):
+        # Cuenta propia: tiene que estar registrada y la tx firmada con su clave (opción A del 17/11).
+        pubkey = await state["r"].get(keys.account_pubkey(tx["sender"]))
+        if pubkey is None:
+            TX_REJECTED.labels("no registrada").inc()
+            return 400, {"error": "cuenta no registrada (registrarse con POST /accounts/register)"}
+        seq = body.get("seq")
+        if isinstance(seq, bool) or not isinstance(seq, int) or seq < 1:
+            TX_REJECTED.labels("seq inválido").inc()
+            return 400, {"error": "seq inválido"}
+        msg = cuentas.tx_message(tx["sender"], tx["receiver"], tx["amount"], seq)
+        if not cuentas.verify(pubkey, msg, body.get("signature")):
+            TX_REJECTED.labels("firma inválida").inc()
+            return 400, {"error": "firma inválida"}
+        tx.update(seq=seq, signature=body["signature"])  # quedan en el bloque: cualquiera puede re-verificar
+    rc = await state["reserve"](keys=ledger.reserve_keys(tx), args=[tx["tx_id"], tx["amount"], json.dumps(tx), str(seq)])
     if rc < 0:
         reason = ledger.RESERVE_ERRORS[rc]
         TX_REJECTED.labels(reason).inc()
@@ -124,7 +141,31 @@ async def get_balance(user: str):
     r = state["r"]
     bal = int(await r.get(keys.balance(user)) or 0)
     out = int(await r.get(keys.pending_out(user)) or 0)
-    return {"user": user, "balance_cents": bal, "pending_out_cents": out, "available_cents": bal - out}
+    registered = await r.exists(keys.account_pubkey(user)) == 1
+    return {"user": user, "balance_cents": bal, "pending_out_cents": out, "available_cents": bal - out,
+            "registered": registered, "seq": int(await r.get(keys.account_seq(user)) or 0) if registered else None}
+
+
+@app.post("/accounts/register", status_code=201)
+async def register_account(request: Request):
+    """Alta de una cuenta con su clave pública Ed25519. La firma sobre register:<cuenta>:<clave> prueba que
+    quien registra tiene la clave privada. Una cuenta registrada no cambia de dueño (SET NX)."""
+    body = await _json(request)
+    if not isinstance(body, dict):
+        raise HTTPException(400, "se esperaba un objeto JSON")
+    account, pubkey = body.get("account"), body.get("public_key")
+    if not isinstance(account, str) or not account or len(account) > ledger.MAX_NAME:
+        raise HTTPException(400, "account inválido")
+    if cuentas.reserved(account):
+        raise HTTPException(400, "nombre reservado (cuentas del génesis, premio o mineros)")
+    if not isinstance(pubkey, str) or len(pubkey) != 64:
+        raise HTTPException(400, "public_key: 32 bytes en hex")
+    if not cuentas.verify(pubkey, cuentas.register_message(account, pubkey), body.get("signature")):
+        raise HTTPException(400, "firma inválida")
+    if not await state["r"].set(keys.account_pubkey(account), pubkey.lower(), nx=True):
+        raise HTTPException(409, "la cuenta ya está registrada")
+    log(logger, "cuenta registrada", account=account)
+    return {"account": account, "public_key": pubkey.lower()}
 
 
 @app.get("/accounts")

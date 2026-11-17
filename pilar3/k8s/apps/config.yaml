@@ -22,7 +22,7 @@ data:
   HASHRATE_WINDOW_SECONDS: "300"   # hashrate real = resultados de los últimos 5 min
   # --- Rangos: fragmentación del trabajo esperado (el experimento 1 % a 50 %), con mínimo según quién mina.
   POOL_FRAGMENT_PERCENT: "10"
-  MIN_RANGE_GPU: "100000000"       # que la tarea llene los hilos de la GPU
+  MIN_RANGE_GPU: "1000000000"      # ~1 s en la 1050 Ti (1,1 GH/s): el arranque del motor (~0,09 s) pesa < 10 %
   MIN_RANGE_CPU: "2000000"         # ~1 s en un pod con 1 worker (1,6 MH/s medido en pilar1/rendimiento)
   GPU_KEEPALIVE_TIMEOUT_SECONDS: "15"
   # --- Mineros CPU del k3s (GET /scaling para KEDA): todo o nada. No corre ningún minero en GKE.
@@ -33,7 +33,7 @@ data:
   TASK_LEASE_SECONDS: "60"
   TASK_MAX_ATTEMPTS: "3"           # al 3er préstamo vencido la tarea va a mining.dlq
   # --- Calibración, canarios y cuarentena (gateway).
-  CALIB_RANGE_GPU: "256000000"
+  CALIB_RANGE_GPU: "1000000000"
   CALIB_RANGE_CPU: "2000000"
   CANARY_EVERY: "20"
   QUARANTINE_AFTER_EXPIRED: "3"

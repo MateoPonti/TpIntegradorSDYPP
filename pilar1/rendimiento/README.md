@@ -10,6 +10,8 @@ calentamiento y la mediana de 5.
 | `hashrate.py` | Mide el hashrate MD5 de cualquier motor con el contrato del kit (`miner_cpu.py` o `miner_gpu`). Recorre un rango fijo con un prefijo imposible, separa la **velocidad del motor** (`seconds` que informa el motor) del **rendimiento efectivo** (de punta a punta, con el arranque del proceso) y estima cuánto tardaría un bloque con cada prefijo. Agrega las corridas a `resultados.csv` |
 | `prueba_catedra.py` | El script que dio la cátedra en clase, tal cual (SHA-256, busca secuencialmente hasta la primera solución) |
 | `resultados.csv` | Una fila por corrida |
+| `barrido.py` / `barrido.csv` | Barre un parámetro de la GPU (`--threads`, `--blocks`, `--poll`, `--batch`) y guarda la mediana de 5 |
+| `comparativa.py` / `comparativa.csv` | Hit #6 (prefijos 1 a 8) y Hit #7 (rango con y sin solución), CPU vs GPU con las mismas bases y rangos |
 
 ```bash
 python pilar1/rendimiento/prueba_catedra.py 5
@@ -60,5 +62,6 @@ Tiempo esperado por bloque (16^n / hashrate del motor):
   porque comparten la misma CPU), y en 5 con uno solo. El 7 y el 8 solo son viables con GPU.
 - `MIN_RANGE_CPU` y `CALIB_RANGE_CPU` = **2 M nonces**: ~1,2 s por tarea en un pod, más que el costo fijo
   de pedir la tarea y arrancar el motor (la diferencia motor / efectivo es de ~8 %).
-- Falta la GPU (los 3 TODO de `gpu/miner_gpu.cu` y CUDA 12.x). Con eso se fijan `MIN_RANGE_GPU`,
-  `CALIB_RANGE_GPU` y el `--chunk` del agente.
+- GPU (17/11): **1.104 MH/s** de motor, 1.013 MH/s efectivo. Con eso `MIN_RANGE_GPU`, `CALIB_RANGE_GPU` y el
+  `MINER_CHUNK` del agente pasaron a 1.000 M. El barrido de parámetros (`barrido.py`) y la comparativa CPU vs
+  GPU de los Hits #6 y #7 (`comparativa.py`) están en `pilar1/README.md`.
