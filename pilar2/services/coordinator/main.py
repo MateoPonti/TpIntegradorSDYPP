@@ -23,6 +23,8 @@ from .blocks import Chain
 logger = setup_logging("coordinator")
 POLL = env_float("BLOCK_POLL_SECONDS", 1.0)  # duda 5 (propuesta): loop cada 1 s
 GATEWAY_HEALTH_URL = env_str("GATEWAY_HEALTH_URL", "http://gateway:8080/health")
+GATEWAY_PUBLIC_URL = env_str("GATEWAY_PUBLIC_URL", "http://127.0.0.1:18180")  # lo usa la página /unirse
+REPO_URL = env_str("REPO_URL", "https://github.com/MateoPonti/TpIntegradorSDYPP")
 MAX_BULK = 10_000
 
 TX_ACCEPTED = Counter("tx_accepted_total", "Transacciones aceptadas")
@@ -254,3 +256,14 @@ async def miners():
 async def frontend():
     """Explorador de la cadena: lee la misma API pública (no habla con Redis)."""
     return FileResponse(Path(__file__).with_name("static") / "index.html")
+
+
+@app.get("/unirse", include_in_schema=False)
+async def unirse():
+    """Portal "¿Querés minar con nosotros?": crear cuenta, dar de alta un worker y copiar el comando."""
+    return FileResponse(Path(__file__).with_name("static") / "unirse.html")
+
+
+@app.get("/unirse/config")
+async def unirse_config():
+    return {"gateway": GATEWAY_PUBLIC_URL, "repo": REPO_URL}

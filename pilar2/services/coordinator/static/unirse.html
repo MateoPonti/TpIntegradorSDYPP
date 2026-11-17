@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Minar con SDMER</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #ffffff; --text: #1c2430; --muted: #5b6573; --line: #dde1e6;
+    --accent: #2f6fdf; --ok: #1e8a4c; --bad: #c0392b; --mono: ui-monospace, SFMono-Regular, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #12161c; --card: #1b2129; --text: #e6e9ee; --muted: #98a2b0; --line: #2c3440;
+            --accent: #6b9cff; --ok: #4cc27f; --bad: #ff7b6b; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 24px 16px 48px; }
+  header h1 { font-size: 28px; margin: 8px 0 4px; }
+  header p { color: var(--muted); margin: 0 0 8px; }
+  nav a { color: var(--accent); margin-right: 14px; font-size: 14px; }
+  .why { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; margin: 18px 0; }
+  .why div { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; font-size: 14px; }
+  .why b { display: block; }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin: 14px 0; }
+  section h2 { font-size: 18px; margin: 0 0 6px; }
+  .num { display: inline-block; width: 26px; height: 26px; border-radius: 50%; background: var(--accent); color: #fff;
+         text-align: center; line-height: 26px; font-size: 14px; margin-right: 6px; }
+  .hint { color: var(--muted); font-size: 13.5px; margin: 4px 0 10px; }
+  label { display: block; font-size: 13px; color: var(--muted); margin: 8px 0 3px; }
+  input, select { width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px;
+                  background: var(--bg); color: var(--text); font: inherit; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; }
+  .row > * { flex: 1 1 200px; }
+  button { margin-top: 10px; padding: 8px 14px; border: 0; border-radius: 6px; background: var(--accent); color: #fff;
+           font: inherit; cursor: pointer; }
+  button.sec { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
+  .msg { margin-top: 8px; font-size: 14px; min-height: 1em; }
+  .msg.ok { color: var(--ok); } .msg.bad { color: var(--bad); }
+  pre { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 10px; overflow-x: auto;
+        font-family: var(--mono); font-size: 12.5px; white-space: pre-wrap; word-break: break-all; }
+  .off { opacity: .55; pointer-events: none; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <nav><a href="/">← Ver la blockchain</a></nav>
+    <h1>¿Querés minar con nosotros?</h1>
+    <p>Sumá tu PC al pool de SDMER: todos minamos el mismo bloque, cada uno en su rango de nonces, y el premio
+       se reparte según el trabajo que hizo cada uno.</p>
+  </header>
+
+  <div class="why">
+    <div><b>Cobrás por lo que minás</b>Cada bloque paga un premio que se reparte en proporción a los nonces que recorriste.</div>
+    <div><b>CPU o GPU</b>Sirve cualquier PC. Con una placa NVIDIA (CUDA) rendís cientos de veces más.</div>
+    <div><b>Tu cuenta, tu clave</b>La clave privada se genera en tu navegador y nunca se manda al servidor.</div>
+  </div>
+
+  <section id="paso1">
+    <h2><span class="num">1</span>Creá tu cuenta</h2>
+    <p class="hint">Ahí cobrás los premios. Se genera un par de claves Ed25519: la pública se registra y la privada se
+       descarga en un archivo. <b>Guardalo: sin él no podés mover tu plata ni sumar workers.</b></p>
+    <label for="cuenta">Nombre de la cuenta</label>
+    <input id="cuenta" maxlength="64" placeholder="ej. mateo" autocomplete="off">
+    <div class="row">
+      <button id="crear">Crear cuenta y descargar mi clave</button>
+      <button class="sec" id="tengo">Ya tengo cuenta: cargar mi clave</button>
+    </div>
+    <input type="file" id="archivo" accept=".key,.txt" hidden>
+    <div class="msg" id="msg1"></div>
+  </section>
+
+  <section id="paso2" class="off">
+    <h2><span class="num">2</span>Dá de alta tu worker</h2>
+    <p class="hint">Cada máquina que mina es un worker. Recibe un token propio, atado a tu cuenta: el premio va a tu
+       cuenta y, si el worker devuelve resultados falsos, se le revoca el token.</p>
+    <div class="row">
+      <div><label for="worker">Nombre del worker</label><input id="worker" maxlength="32" placeholder="ej. pc-casa"></div>
+      <div><label for="tipo">Qué va a minar</label>
+        <select id="tipo"><option value="gpu">GPU NVIDIA (CUDA)</option><option value="cpu">CPU</option></select></div>
+    </div>
+    <button id="alta">Dar de alta</button>
+    <div class="msg" id="msg2"></div>
+  </section>
+
+  <section id="paso3" class="off">
+    <h2><span class="num">3</span>Arrancá a minar</h2>
+    <p class="hint">Copiá esto en una terminal. <b>El token se muestra una sola vez</b>: guardalo como una contraseña.</p>
+    <pre id="cmd"></pre>
+    <button class="sec" id="copiar">Copiar</button>
+    <p class="hint">Mirá tu saldo en <a id="saldo" href="#">/balances</a> y los mineros conectados en la
+       <a href="/">blockchain</a>.</p>
+  </section>
+</main>
+
+<script>
+// PKCS#8 de Ed25519 = este prefijo fijo + la semilla de 32 bytes. El archivo guarda solo la semilla en hex,
+// igual que pilar2/tools/cuenta.py, así sirve en los dos lados.
+const PKCS8_PREFIX = "302e020100300506032b657004220420";
+const hex = b => [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, "0")).join("");
+const unhex = h => new Uint8Array(h.match(/../g).map(x => parseInt(x, 16)));
+const $ = id => document.getElementById(id);
+let cfg = {}, priv = null, pub = "", cuenta = "";
+
+function say(id, text, ok) { const m = $(id); m.textContent = text; m.className = "msg " + (ok ? "ok" : "bad"); }
+
+async function firmar(texto) {
+  return hex(await crypto.subtle.sign("Ed25519", priv, new TextEncoder().encode(texto)));
+}
+
+async function post(url, body) {
+  const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.detail || data.error || ("error " + r.status));
+  return data;
+}
+
+function listo(nombre) {
+  cuenta = nombre;
+  $("paso2").classList.remove("off");
+  $("saldo").href = "/balances/" + encodeURIComponent(nombre);
+  $("saldo").textContent = "/balances/" + nombre;
+}
+
+$("crear").onclick = async () => {
+  const nombre = $("cuenta").value.trim();
+  if (!nombre) return say("msg1", "Poné un nombre para la cuenta.");
+  try {
+    const par = await crypto.subtle.generateKey("Ed25519", true, ["sign", "verify"]);
+    priv = par.privateKey;
+    pub = hex(await crypto.subtle.exportKey("raw", par.publicKey));
+    await post("/accounts/register", { account: nombre, public_key: pub, signature: await firmar(`register:${nombre}:${pub}`) });
+    const semilla = hex(await crypto.subtle.exportKey("pkcs8", priv)).slice(PKCS8_PREFIX.length);
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([semilla], { type: "text/plain" }));
+    a.download = nombre + ".key";
+    a.click();
+    say("msg1", `Cuenta "${nombre}" creada. Se descargó ${nombre}.key: guardalo bien.`, true);
+    listo(nombre);
+  } catch (e) {
+    say("msg1", e.name === "NotSupportedError" ? "Tu navegador no soporta Ed25519: usá Chrome, Edge o Firefox actualizado." : e.message);
+  }
+};
+
+$("tengo").onclick = () => {
+  if (!$("cuenta").value.trim()) return say("msg1", "Poné el nombre de tu cuenta y después cargá la clave.");
+  $("archivo").click();
+};
+$("archivo").onchange = async () => {
+  try {
+    const semilla = (await $("archivo").files[0].text()).trim();
+    priv = await crypto.subtle.importKey("pkcs8", unhex(PKCS8_PREFIX + semilla), "Ed25519", false, ["sign"]);
+    const nombre = $("cuenta").value.trim();
+    const info = await (await fetch("/balances/" + encodeURIComponent(nombre))).json();
+    if (!info.registered) throw new Error(`La cuenta "${nombre}" no está registrada.`);
+    say("msg1", `Clave cargada para "${nombre}".`, true);
+    listo(nombre);
+  } catch (e) { say("msg1", e.message || "Archivo de clave inválido."); }
+};
+
+$("alta").onclick = async () => {
+  const worker = $("worker").value.trim(), tipo = $("tipo").value;
+  if (!/^[A-Za-z0-9_-]{1,32}$/.test(worker)) return say("msg2", "Nombre: 1 a 32 letras, números, - o _.");
+  try {
+    const r = await post(cfg.gateway + "/workers/register",
+                         { account: cuenta, worker, signature: await firmar(`worker:${cuenta}:${worker}`) });
+    say("msg2", `Worker "${r.miner_id}" dado de alta.`, true);
+    const repo = cfg.repo, carpeta = repo.split("/").pop();
+    $("cmd").textContent = tipo === "gpu"
+      ? `# Windows + placa NVIDIA. Requisitos: Git, Python 3.10+, CUDA 12.x (ver pilar1/README.md)\n` +
+        `git clone ${repo}\ncd ${carpeta}\n# compilar el minero una vez: cd pilar1; make ARCH=sm_61 (o la de tu placa); cd ..\n` +
+        `$env:GATEWAY_URL = "${cfg.gateway}"\n$env:MINER_TOKEN = "${r.token}"\n$env:MINER_ID = "${r.miner_id}"\n` +
+        `.\\pilar2\\services\\miners\\gpu\\run.ps1`
+      : `# Cualquier PC con Git y Python 3.10+ (Linux/macOS; en PowerShell usá $env:VAR = "...")\n` +
+        `git clone ${repo}\ncd ${carpeta}\n` +
+        `GATEWAY_URL="${cfg.gateway}" MINER_TOKEN="${r.token}" MINER_ID="${r.miner_id}" MINER_KIND=cpu \\\n` +
+        `  python pilar2/services/miners/agent.py -- python pilar1/cpu/miner_cpu.py`;
+    $("paso3").classList.remove("off");
+  } catch (e) { say("msg2", e.message === "Failed to fetch" ? "No se pudo conectar con el gateway." : e.message); }
+};
+
+$("copiar").onclick = () => navigator.clipboard.writeText($("cmd").textContent);
+fetch("/unirse/config").then(r => r.json()).then(c => { cfg = c; });
+</script>
+</body>
+</html>

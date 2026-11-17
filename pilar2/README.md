@@ -204,9 +204,22 @@ Así el gateway y el coordinator ni se enteran de quién minó, y el binario CUD
   sin firma. No se pueden registrar esos nombres, ni `recompensa` ni los que empiezan con `miner:`.
 - Una tx de un sender que no es del génesis y no está registrado se rechaza (`400`, cuenta no registrada).
 - Cliente: `pilar2/tools/cuenta.py` (`claves`, `registrar`, `enviar`). `GET /balances/<cuenta>` dice si está registrada y su último `seq`.
-- **Pendiente:** las cuentas de cobro de los mineros (`MINER_ACCOUNT`, ej. `mateo`) reciben premios sin estar
-  registradas. Para gastar esa plata el dueño tiene que registrar ese nombre con su clave; hasta que se ate
+- **Pendiente (solo para el `MINER_TOKEN` compartido):** las cuentas de cobro de los mineros (`MINER_ACCOUNT`, ej. `mateo`) reciben premios sin estar
+  registradas. Los workers dados de alta en `/unirse` ya cobran en su cuenta registrada. Para gastar esa plata el dueño tiene que registrar ese nombre con su clave; hasta que se ate
   el `MINER_ACCOUNT` a una clave (con el alta de workers), el primero que registre el nombre se queda con la cuenta.
+
+### Página "¿Querés minar con nosotros?" y alta de workers (17/11/2026, opción A)
+
+Como en los pools de minería, el alta está separada del explorador: `http://<coordinator>/unirse` (el explorador
+sigue en `/`). Tres pasos: (1) crear la cuenta: el navegador genera las claves Ed25519 (WebCrypto), registra la
+pública y descarga la privada en `<cuenta>.key` (mismo formato que `tools/cuenta.py`); (2) dar de alta el worker:
+la cuenta firma `worker:<cuenta>:<worker>` y el gateway (`POST /workers/register`, con CORS) devuelve un **token
+propio**; (3) copiar el comando para minar con CPU o GPU.
+- El token se muestra una sola vez; en Redis queda su sha256 (`workertoken:<hash>` → `{miner_id, account}`).
+- Con token propio, el `miner_id` (`cuenta.worker`) y la cuenta de cobro salen del token: el agente no los puede
+  cambiar. El premio va a la cuenta registrada (cierra el hueco de `MINER_ACCOUNT` sin dueño).
+- Si el worker falla un canario, además de la cuarentena se le **revoca el token**.
+- El `MINER_TOKEN` compartido sigue para los pods del k3s (KEDA).
 
 ### Claves de Redis
 

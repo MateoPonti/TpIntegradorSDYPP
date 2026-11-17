@@ -6,6 +6,11 @@
   POST /results                publica el resultado en mining.results
   POST /keepalive              SET worker:<id> EX 15 (Redis no se expone a Internet)
   GET  /scaling                señal del pool para KEDA del k3s
+  POST /workers/register       alta pública de un worker (página /unirse): token propio atado a una cuenta
+
+Tokens: el MINER_TOKEN compartido queda para los pods del k3s. Un worker dado de alta en /unirse usa su
+token propio: su miner_id (cuenta.worker) y su cuenta de cobro salen del token, no de lo que mande, y si
+falla un canario el token se revoca.
 
 Préstamos (decisiones §4): basic_get + ack inmediato y lease:<task_id> en Redis. El reaper
 (una sola réplica, con lock) devuelve a la cola lo vencido; al 3er intento va a la DLQ.
@@ -25,19 +30,23 @@ import hashlib
 import hmac
 import json
 import random
+import re
+import secrets
 import time
 import uuid
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import Counter
 
-from tpi_common import keys, pow, quarantine, rabbit, store
+from tpi_common import firmas, keys, pow, quarantine, rabbit, store
 from tpi_common.config import POD_NAME, WORKER_TTL_SECONDS, env_int, env_str
 from tpi_common.logs import log, setup_logging
 from tpi_common.web import install_common_routes
 
 logger = setup_logging("gateway")
 MINER_TOKEN = env_str("MINER_TOKEN", "")
+WORKER_NAME = re.compile(r"[A-Za-z0-9_-]{1,32}")
 LEASE_SECONDS = env_int("TASK_LEASE_SECONDS", 60)
 MAX_ATTEMPTS = env_int("TASK_MAX_ATTEMPTS", 3)
 REAPER_PERIOD = env_int("REAPER_PERIOD_SECONDS", 5)
@@ -65,9 +74,17 @@ RELEASED = Counter("tasks_released_total", "Tareas devueltas por el minero (se l
 state: dict = {"solved": set()}
 
 
-def auth(authorization: str = Header(default="")) -> None:
-    if not MINER_TOKEN or not hmac.compare_digest(authorization, f"Bearer {MINER_TOKEN}"):
-        raise HTTPException(401, "token inválido")
+def token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+async def auth(authorization: str = Header(default="")) -> dict | None:
+    """Token compartido (pods del k3s) -> None. Token propio (alta pública) -> {miner_id, account}."""
+    if MINER_TOKEN and hmac.compare_digest(authorization, f"Bearer {MINER_TOKEN}"):
+        return None
+    if authorization.startswith("Bearer ") and (raw := await state["r"].get(keys.worker_token(token_hash(authorization[7:])))):
+        return json.loads(raw)
+    raise HTTPException(401, "token inválido")
 
 
 def classify(hashrate: float) -> str:
@@ -175,6 +192,9 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="TPI gateway", lifespan=lifespan)
+# La página /unirse (servida por el coordinator, otro origen) hace el alta desde el navegador. Sin el header
+# Authorization permitido, ningún otro endpoint se puede usar desde otra página.
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["POST"], allow_headers=["Content-Type"])
 install_common_routes(app)
 
 
@@ -209,8 +229,10 @@ async def canary_task(cur: dict) -> dict | None:
             "from": lo, "to": lo + size - 1, "attempts": 0}
 
 
-@app.get("/tasks/next", dependencies=[Depends(auth)])
-async def next_task(miner_id: str, kind: str = "cpu"):
+@app.get("/tasks/next")
+async def next_task(miner_id: str, kind: str = "cpu", ident: dict | None = Depends(auth)):
+    if ident:  # worker con token propio: el nombre sale del token
+        miner_id = ident["miner_id"]
     r = state["r"]
     if await r.exists(keys.quarantine(miner_id)):
         return Response(status_code=204)
@@ -298,6 +320,9 @@ async def finish_canary(lease: dict, res: dict) -> None:
         return
     log(logger, "canario fallado", miner_id=miner, task_from=task["from"], task_to=task["to"])
     await put_in_quarantine(miner, "canario")  # no cobra el bloque y sus "no encontré" van a otros
+    if h := await state["r"].get(keys.worker_token_of(miner)):  # alta pública: mentir le cuesta el token
+        await state["r"].delete(keys.worker_token(h))
+        log(logger, "token revocado", miner_id=miner)
 
 
 async def record_result(lease: dict, res: dict) -> None:
@@ -354,9 +379,11 @@ async def post_result(request: Request):
     return Response(status_code=202)
 
 
-@app.post("/keepalive", dependencies=[Depends(auth)])
-async def keepalive(request: Request):
+@app.post("/keepalive")
+async def keepalive(request: Request, ident: dict | None = Depends(auth)):
     body = await request.json()
+    if ident:  # token propio: nombre y cuenta de cobro salen del alta, no de lo que mande el agente
+        body.update(miner_id=ident["miner_id"], account=ident["account"])
     miner_id, kind = body.get("miner_id"), body.get("type")
     if not isinstance(miner_id, str) or kind not in ("cpu", "gpu"):
         raise HTTPException(400, "se espera {miner_id, type: cpu|gpu, hashrate, account?}")
@@ -369,6 +396,31 @@ async def keepalive(request: Request):
     await state["r"].set(keys.miner_account(miner_id), account, ex=86400)  # el premio se paga en el bloque siguiente
     KEEPALIVES.labels(kind).inc()
     return {"ttl": WORKER_TTL_SECONDS}
+
+
+@app.post("/workers/register", status_code=201)
+async def register_worker(request: Request):
+    """Alta pública: la cuenta (registrada con su clave en el coordinator) firma worker:<cuenta>:<worker> y
+    recibe un token propio. El token se muestra una sola vez; en Redis queda solo su sha256."""
+    try:
+        body = await request.json()
+    except ValueError as exc:
+        raise HTTPException(400, "JSON inválido") from exc
+    account, worker = body.get("account"), body.get("worker")
+    if not isinstance(account, str) or not isinstance(worker, str) or not WORKER_NAME.fullmatch(worker):
+        raise HTTPException(400, "worker: 1 a 32 letras, números, - o _")
+    r = state["r"]
+    pubkey = await r.get(keys.account_pubkey(account))
+    if pubkey is None:
+        raise HTTPException(400, "cuenta no registrada: primero creá la cuenta")
+    if not firmas.verify(pubkey, firmas.worker_message(account, worker), body.get("signature")):
+        raise HTTPException(400, "firma inválida")
+    miner_id, token = f"{account}.{worker}", secrets.token_urlsafe(32)
+    if not await r.set(keys.worker_token_of(miner_id), token_hash(token), nx=True):
+        raise HTTPException(409, "ese worker ya existe: elegí otro nombre")
+    await r.set(keys.worker_token(token_hash(token)), json.dumps({"miner_id": miner_id, "account": account}))
+    log(logger, "worker dado de alta", miner_id=miner_id)
+    return {"miner_id": miner_id, "account": account, "token": token}
 
 
 @app.get("/scaling", dependencies=[Depends(auth)])

@@ -56,6 +56,16 @@ def account_pubkey(user: str) -> str:
     return f"account:{user}:pubkey"
 
 
+def worker_token(token_hash: str) -> str:
+    """Token propio de un worker (alta pública): se guarda el sha256, nunca el token. Valor: {miner_id, account}."""
+    return f"workertoken:{token_hash}"
+
+
+def worker_token_of(miner_id: str) -> str:
+    """Hash del token de un worker, para revocarlo y para que nadie registre dos veces el mismo nombre."""
+    return f"workertoken:of:{miner_id}"
+
+
 def account_seq(user: str) -> str:
     """Último seq usado por una cuenta registrada (anti-replay)."""
     return f"account:{user}:seq"
