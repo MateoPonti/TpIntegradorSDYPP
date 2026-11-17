@@ -112,3 +112,25 @@ def test_caida_de_un_servicio(app):
     kind = "statefulset" if app in ("rabbitmq", "redis") else "deployment"
     kubectl("rollout", "status", f"{kind}/{app}", "--timeout=300s")
     assert verify_chain.verify(URL) == 0
+
+
+def redis_master(via: str = "redis-0") -> str:
+    """Pod que Sentinel tiene como principal (la clave se lee adentro del pod, no hace falta tenerla acá)."""
+    out = kubectl("exec", via, "-c", "sentinel", "--", "sh", "-c",
+                  'redis-cli -p 26379 -a "$REDIS_PASSWORD" --no-auth-warning sentinel get-master-addr-by-name tpi')
+    return out.split()[0].split(".")[0]
+
+
+@pytest.mark.skipif(not K8S_CONTEXT, reason="definir TPI_K8S_CONTEXT para matar pods del cluster")
+def test_caida_del_redis_principal():
+    old = redis_master()
+    via = next(p for p in ("redis-0", "redis-1", "redis-2") if p != old)  # el Sentinel del pod muerto se va con él
+    kubectl("delete", "pod", old, "--wait=false")
+    deadline = time.time() + 60
+    while redis_master(via) == old:
+        assert time.time() < deadline, "Sentinel no ascendió a ninguna réplica"
+        time.sleep(2)
+    tx_id = send_ok("user-2", new_user("caida-redis-principal"), 1)
+    wait_confirmed(tx_id)
+    kubectl("rollout", "status", "statefulset/redis", "--timeout=300s")
+    assert verify_chain.verify(URL) == 0

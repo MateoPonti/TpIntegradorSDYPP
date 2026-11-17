@@ -94,7 +94,8 @@ Es un **pool de minería colaborativo**: todos minan el mismo bloque, cada uno e
   - Exchange topic `blockchain`.
   - Colas `mining.tasks`, `mining.results` y `block.events.<pod>`.
   - `blockchain.dlx` → `mining.dlq`. La DLQ **no se reprocesa sola**.
-- **Redis** con AOF everysec y PVC. El sellado es atómico con un script Lua (si `tip == prev`).
+- **Redis** con AOF everysec y PVC: 1 principal + 2 réplicas + 3 Sentinel (los servicios buscan el principal con `REDIS_SENTINELS`; nada de Redis Cluster, porque los Lua tocan varias claves). El sellado es atómico con un script Lua (si `tip == prev`).
+- **RabbitMQ** con 3 nodos en cluster: las colas quorum se copian en los 3 (Raft).
 - **Transacciones:** `POST /transactions {sender, receiver, amount}` (y `/bulk`), responde `202` + `tx_id`, o `400`. Hay que respetar el formato del `bench.py` de la cátedra. **No modificar** `bench.py`, `matrix.sh` ni `plot.py`.
 - **Saldos:** modelo de cuentas. Disponible = `balance − pending_out`. La reserva es atómica en Lua. Los montos se guardan en **centavos enteros**, nunca en float.
 - **Armado del bloque** (13/11, comentario del profe): **ventanas fijas de reloj** de 10 s (`BLOCK_WINDOW_SECONDS`). Cuando cierra la ventana de la primera tx pendiente, sus tx salen en bloques de hasta 1000 (`MAX_TX_PER_BLOCK`). **No se mezclan ventanas** y **no hay bloques vacíos**. Se mina **un bloque a la vez** (cada uno necesita el hash del anterior).
@@ -114,8 +115,8 @@ Es un **pool de minería colaborativo**: todos minan el mismo bloque, cada uno e
 - **Logs en memoria y en disco** (archivo rotativo + `GET /logs`). [Enunciado]
 - Métricas con **Prometheus + Grafana**. Cada servicio expone `/metrics`. [Enunciado + Grupo]
 - Pruebas de carga: bulks de 1 a 100.000 tx, prefijos de 1 a 8, fragmentación del 1 % al 50 %, y entrada y salida de GPUs. [Enunciado]
-- El TPI corre en el **cluster GKE del TP3** (proyecto `tp3distribuidos`, cluster `tp3`), en el **namespace `tpi`**. **No tocar el namespace `tp3`** ni lo compartido (`monitoring`, node pools) sin que lo pida alguien del grupo. [Grupo]
-- Prometheus (el del TP3, namespace `monitoring`) con disco de 10 GB y 30 días de retención para no perder las mediciones. [Grupo]
+- El TPI corre en el **cluster GKE que era del TP3** (proyecto `tp3distribuidos`, cluster `tp3`), en el **namespace `tpi`**. El TP3 ya se sacó del cluster (17/11). No tocar `monitoring` (Prometheus, Grafana, Loki, Fluent Bit) ni los node pools sin que lo pida alguien del grupo. [Grupo]
+- Prometheus (el de `monitoring`, que instaló el TP3) con disco de 10 GB y 30 días de retención para no perder las mediciones. [Grupo]
 
 ## 5. Seguridad [Enunciado]
 

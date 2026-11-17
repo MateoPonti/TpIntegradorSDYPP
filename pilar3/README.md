@@ -9,7 +9,7 @@
 - `k8s/apps/config.yaml` tiene además las variables del grupo (armado del bloque, reintentos, `GATEWAY_HEALTH_URL`).
 - `GET /scaling` lo sirve el **gateway** leyendo `pool:scaling` (duda 11, opción A, como trae el starter).
 - Los mineros GPU no tienen manifiesto: corren en la PC (`pilar2/services/miners/gpu/run.ps1`) o en Colab.
-- Prometheus + Grafana: los del TP3, con el dashboard "TPI Blockchain" (ver abajo).
+- Prometheus + Grafana: los que instaló el TP3 en `monitoring` (quedaron en el cluster), con el dashboard "TPI Blockchain" (ver abajo).
 - Pendiente: adaptar `bench.py` a `POST /transactions/bulk` en una copia
   propia (el `bench.py`, `matrix.sh` y `plot.py` de la cátedra no se modifican).
 
@@ -18,23 +18,23 @@ En los comandos de abajo, todo lo que dice `infra/terraform`, `k8s/` o `k3s-loca
 ## Cómo está desplegado hoy (13/11/2026)
 
 El TPI corre en el **cluster GKE del TP3** (proyecto `tp3distribuidos`, cluster `tp3`, zona `us-central1-a`),
-en su propio namespace **`tpi`**. El TP3 sigue en el namespace `tp3`, sin cambios, salvo el mínimo de su HPA
-`backend`, que pasó de 3 a 2 para que entraran nuestros pods (revertir con
-`kubectl -n tp3 patch hpa backend -p '{"spec":{"minReplicas":3}}'`).
+en su propio namespace **`tpi`**. El 17/11/2026 se sacó el TP3 del cluster (namespace `tp3`, su IP
+`tp3-ingress` y su dashboard de Grafana) para liberar nodos. Quedan compartidos `monitoring`
+(Prometheus, Grafana, Loki, Fluent Bit), el Artifact Registry `tp3` y los node pools.
 
 | Qué | Dónde |
 |---|---|
 | Frontend, API y `/status` | `http://35.223.237.60` (IP fija `tpi-coordinator`) |
 | Gateway de los mineros | `http://34.63.209.225` (IP fija `tpi-gateway`) |
 | Imágenes | `us-central1-docker.pkg.dev/tp3distribuidos/tp3/tpi-{coordinator,pool,gateway}:<sha>` |
-| Prometheus, Grafana y Loki | Los del TP3 (namespace `monitoring`). Leen nuestros pods con `k8s/observability/` |
+| Prometheus, Grafana y Loki | Los que instaló el TP3 (namespace `monitoring`, siguen ahí). Leen nuestros pods con `k8s/observability/` |
 | Grafana | `http://136.80.214.178`, dashboard **TPI Blockchain** (usuario y clave en el secret `grafana-admin` de `monitoring`) |
 
 Diferencias con el starter, para que entre en ese cluster:
 - Los nodos tienen la etiqueta `pool=infra` / `pool=apps` y el taint `pool=infra` (no `role` / `dedicated`).
 - Los pods de las apps llevan `enableServiceLinks: false`: si no, Kubernetes inyecta `REDIS_PORT=tcp://…`
-  por el Service `redis` y rompe la configuración.
-- Piden 50m de CPU (el nodo `apps` es compartido con el TP3).
+  por un Service que se llamaba `redis` y rompe la configuración.
+- Piden 50m de CPU (se bajó cuando el nodo `apps` lo compartíamos con el TP3; ahora hay lugar para subirlo).
 
 **Despliegue a mano** (los pipelines 1 a 3 necesitan las variables de GCP en GitHub; ver más abajo):
 
@@ -53,23 +53,42 @@ Los secrets (`rabbitmq-auth`, `redis-auth`, `gateway-auth`) se crearon con los v
 que está solo en la PC de quien desplegó (`.gitignore`). El `MINER_TOKEN` de ese archivo es el que usan los mineros.
 
 **Resetear la cadena** (empezar de cero con un génesis nuevo; se hizo el 13/11 para limpiar las pruebas).
-Borra todo lo del TPI: bloques, saldos, préstamos, calibraciones y cuentas de los mineros. No toca el TP3
-(su Redis y su RabbitMQ son otros). No se puede borrar solo la plata: los saldos salen de la cadena.
+Borra todo lo del TPI: bloques, saldos, préstamos, calibraciones y cuentas de los mineros. No se puede borrar solo la plata: los saldos salen de la cadena.
 
 ```bash
 set -a; . pilar3/k8s/gke.env; set +a
 K="kubectl --context gke_tp3distribuidos_us-central1-a_tp3 -n tpi"
-$K exec redis-0 -c redis -- redis-cli -a "$REDIS_PASSWORD" --no-auth-warning FLUSHALL
+M=$($K exec redis-0 -c sentinel -- redis-cli -p 26379 -a "$REDIS_PASSWORD" --no-auth-warning      sentinel get-master-addr-by-name tpi | head -1 | cut -d. -f1)          # el principal (puede no ser redis-0)
+$K exec $M -c redis -- redis-cli -a "$REDIS_PASSWORD" --no-auth-warning FLUSHALL   # las réplicas copian solas
 for q in mining.tasks mining.results mining.dlq; do $K exec rabbitmq-0 -- rabbitmqctl -q purge_queue $q; done
 $K rollout restart deploy/coordinator deploy/pool deploy/gateway   # el coordinator crea el génesis al arrancar
 ```
 
+**RabbitMQ y Redis con réplicas** (17/11/2026, cuando se sacó el TP3 del cluster). Los 6 pods están en el
+único nodo `infra`: sirve para mostrar que se cae un pod y el sistema sigue, pero si se cae la máquina se cae
+todo (para eso hay que sumar nodos al pool `infra`; los manifiestos ya reparten los pods si los hay).
+- **RabbitMQ:** 3 nodos (`rabbitmq-0..2`) en cluster. Se encuentran con el plugin `rabbitmq_peer_discovery_k8s`
+  (en 4.x no usa la API de Kubernetes: el `-0` arranca y los otros se le unen) y el Service headless
+  `rabbitmq-headless`. Las colas quorum tienen una copia en cada nodo y Raft elige el líder; la reconciliación
+  de miembros las lleva a 3 copias si se declararon con menos. La cookie de Erlang va en el secret
+  `rabbitmq-auth` (`erlang-cookie`, sale del hash de la clave). Los servicios entran por el Service `rabbitmq`.
+- **Redis:** `redis-0..2`, cada pod con Redis y un Sentinel. Al arrancar, cada pod le pregunta a los otros
+  Sentinel quién es el principal; si nadie contesta, el principal es `redis-0`. Si se cae el principal, 2 de 3
+  Sentinel lo dan por caído a los 5 s y ascienden una réplica (probado: 9 s, y el `redis-0` volvió como réplica).
+  Los servicios usan `REDIS_SENTINELS` (Service `redis-sentinel`). La replicación es asíncrona: en un failover
+  se puede perder lo último que escribió el principal (~1 s).
+- Probado el 17/11: cadena intacta (altura 15), `POST /transactions` → 202 a los pocos segundos del failover de
+  Redis, y con `rabbitmq-0` caído las colas siguieron con 2 copias y volvieron a 3. `test_caida_del_redis_principal`
+  en `pilar2/tests/test_sistema.py` mata el principal.
+- Para migrar desde la versión de 1 réplica hubo que borrar los StatefulSets (el `serviceName` no se puede cambiar;
+  los PVC quedan) y el Service `redis` viejo: `$K -n tpi delete sts rabbitmq redis; $K -n tpi delete svc redis`.
+
 **Dashboard:** `k8s/observability/dashboard-tpi.yaml` es un ConfigMap con la etiqueta `grafana_dashboard`; el
 sidecar de Grafana lo carga solo. 14 paneles: altura, pendientes, prefijo, hashrate por tipo y por minero, tiempo
-por bloque, tx/s, bloques rearmados, cola, vencidos, DLQ, canarios, cuarentena y tx por bloque. Comparte el
-Grafana con el TP3, pero solo lee el namespace `tpi`.
+por bloque, tx/s, bloques rearmados, cola, vencidos, DLQ, canarios, cuarentena y tx por bloque. Solo lee el
+namespace `tpi`.
 
-**Prometheus persistente:** `k8s/observability/prometheus-persistencia.yaml` le agrega al Prometheus del TP3
+**Prometheus persistente:** `k8s/observability/prometheus-persistencia.yaml` le agrega al Prometheus de `monitoring`
 un disco de 10 GB (`pd-standard`) y 30 días de retención, con `helm upgrade --reuse-values` (el comando está
 en el archivo).
 

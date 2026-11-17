@@ -22,6 +22,9 @@ RABBITMQ_URL = env_str("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/")
 REDIS_HOST = env_str("REDIS_HOST", "localhost")
 REDIS_PORT = env_int("REDIS_PORT", 6379)
 REDIS_PASSWORD = os.getenv("REDIS_PASSWORD") or None
+# Con Sentinel (GKE): "host:puerto,host:puerto". Vacío = un solo Redis en REDIS_HOST (compose, tests).
+REDIS_SENTINELS = env_str("REDIS_SENTINELS", "")
+REDIS_MASTER_NAME = env_str("REDIS_MASTER_NAME", "tpi")
 
 # Parámetros del ConfigMap que comparten varios servicios (nombres del starter del Pilar 3).
 DIFFICULTY_PREFIX = env_str("DIFFICULTY_PREFIX", "00000")

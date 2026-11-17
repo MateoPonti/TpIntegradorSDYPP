@@ -8,6 +8,7 @@ from coordinator import blocks, ledger, reward
 from coordinator.blocks import genesis_block
 from pool import decision
 from tpi_common import pow
+from tpi_common.store import parse_sentinels
 
 
 # ---- PoW ----
@@ -213,3 +214,9 @@ def test_cpu_miner_parallel_finds_valid_nonce():
 def test_cpu_miner_none_in_range_does_not_invent():
     res = miner_cpu.search("x", "ffffffff", 0, 1000, workers=1)
     assert res == {"found": False, "hashes": 1001, "seconds": res["seconds"]}
+
+
+def test_parse_sentinels():
+    assert parse_sentinels("") == []
+    assert parse_sentinels("redis-sentinel.tpi.svc.cluster.local:26379") == [("redis-sentinel.tpi.svc.cluster.local", 26379)]
+    assert parse_sentinels(" a:1 , b ") == [("a", 1), ("b", 26379)]

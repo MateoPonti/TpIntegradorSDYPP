@@ -46,6 +46,7 @@ jobs:
             --from-literal=username="$RABBIT_USER" \
             --from-literal=password="$RABBIT_PASS" \
             --from-literal=url="amqp://$RABBIT_USER:$RABBIT_PASS@rabbitmq.tpi.svc.cluster.local:5672/" \
+            --from-literal=erlang-cookie="$(printf 'cookie:%s' "$RABBIT_PASS" | sha256sum | cut -c1-48)" \
             --dry-run=client -o yaml | kubectl apply -f -
           kubectl -n tpi create secret generic redis-auth \
             --from-literal=password="$REDIS_PASS" \

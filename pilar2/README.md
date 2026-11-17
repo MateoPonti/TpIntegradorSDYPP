@@ -55,7 +55,7 @@ flowchart LR
   G -->|result.*| X --> R[(mining.results)] --> C
   C -->|block.solved| X --> E[(block.events.pod)] --> G
   T -.3 intentos.-> D[(mining.dlq)]
-  C & G & P[pool 2 fijas<br/>líder: pool:leader] --- RD[(Redis AOF)]
+  C & G & P[pool 2 fijas<br/>líder: pool:leader] --- RD[(Redis AOF<br/>principal + 2 réplicas<br/>3 Sentinel)]
   P -->|pool:plan / pool:scaling| RD
 ```
 
@@ -201,8 +201,8 @@ Además de las del Word: `mining:current` (candidato que se mina), `tx:status` (
 - **Parámetros CUDA** (threads, bloques, K, `--chunk`): se eligen midiendo cuando esté el kernel.
   Con eso también `MIN_RANGE_GPU` y `CALIB_RANGE_GPU` (ver `pilar1/rendimiento`).
 - **Dos colas** (`tasks.gpu` / `tasks.cpu`): se decide después de medir si GPU y CPU minando juntos cambia algo.
-- **A futuro, sin hacer:** RabbitMQ con 3 réplicas (quorum) y Redis con réplicas (Sentinel), porque no hay
-  recursos en el cluster, y firmas Ed25519 en las tx (hoy cualquiera puede mandar una tx en nombre de otra cuenta).
+- **A futuro, sin hacer:** firmas Ed25519 en las tx (hoy cualquiera puede mandar una tx en nombre de otra cuenta).
+  RabbitMQ con 3 réplicas y Redis con Sentinel ya están hechos (17/11, ver `pilar3/README.md`).
 - **Limitación conocida:** la calibración confía en los `hashes` y `engine_seconds` que informa el minero. Uno
   que mienta puede inflar su hashrate inicial hasta que lo atrapa un canario (en la prueba local, en su primera
   tarea real).

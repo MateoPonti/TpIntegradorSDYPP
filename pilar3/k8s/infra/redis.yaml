@@ -1,13 +1,64 @@
-# Redis with AOF persistence: the blockchain lives here (NCT.4), so losing
-# the pod must not lose the chain.
+# Redis con AOF: acá vive la cadena (NCT.4). Son 3 pods: 1 principal y 2 réplicas, y en cada pod un
+# Sentinel. Si se cae el principal, los Sentinel que quedan (2 de 3 alcanza) ascienden a una réplica.
+# Los servicios no le hablan a un pod fijo: le preguntan a Sentinel quién es el principal.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redis-scripts
+  namespace: tpi
+data:
+  # Quién es el principal ahora: lo que diga algún Sentinel de los otros pods. Si no contesta
+  # ninguno (primer arranque o se reinició todo), el principal es redis-0.
+  find-master.sh: |
+    ME="$(hostname).redis-headless.tpi.svc.cluster.local"
+    MASTER=""
+    for i in 0 1 2; do
+      S="redis-$i.redis-headless.tpi.svc.cluster.local"
+      [ "$S" = "$ME" ] && continue
+      A=$(timeout 3 redis-cli -h "$S" -p 26379 -a "$REDIS_PASSWORD" --no-auth-warning \
+            sentinel get-master-addr-by-name tpi 2>/dev/null | head -1)
+      case "$A" in redis-*) MASTER="$A"; break ;; esac
+    done
+    [ -z "$MASTER" ] && MASTER="redis-0.redis-headless.tpi.svc.cluster.local"
+  redis.sh: |
+    . /scripts/find-master.sh
+    set -- redis-server --appendonly yes --appendfsync everysec \
+      --requirepass "$REDIS_PASSWORD" --masterauth "$REDIS_PASSWORD" \
+      --replica-announce-ip "$ME" --replica-announce-port 6379
+    if [ "$MASTER" != "$ME" ]; then
+      echo "arranco como réplica de $MASTER"
+      set -- "$@" --replicaof "$MASTER" 6379
+    else
+      echo "arranco como principal"
+    fi
+    exec "$@"
+  sentinel.sh: |
+    . /scripts/find-master.sh
+    echo "sentinel vigila a $MASTER"
+    cat > /sentinel/sentinel.conf <<EOF
+    port 26379
+    sentinel resolve-hostnames yes
+    sentinel announce-hostnames yes
+    sentinel announce-ip $ME
+    requirepass $REDIS_PASSWORD
+    sentinel sentinel-pass $REDIS_PASSWORD
+    sentinel monitor tpi $MASTER 6379 2
+    sentinel auth-pass tpi $REDIS_PASSWORD
+    sentinel down-after-milliseconds tpi 5000
+    sentinel failover-timeout tpi 20000
+    sentinel parallel-syncs tpi 1
+    EOF
+    exec redis-server /sentinel/sentinel.conf --sentinel
+---
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
   name: redis
   namespace: tpi
 spec:
-  serviceName: redis
-  replicas: 1
+  serviceName: redis-headless
+  replicas: 3
+  podManagementPolicy: Parallel
   selector:
     matchLabels:
       app: redis
@@ -23,17 +74,19 @@ spec:
           operator: Equal
           value: infra
           effect: NoSchedule
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app: redis
       containers:
         - name: redis
-          image: redis:7-alpine
-          args:
-            - redis-server
-            - --appendonly
-            - "yes"
-            - --appendfsync
-            - everysec
-            - --requirepass
-            - $(REDIS_PASSWORD)
+          image: redis:7.4-alpine
+          command: ["sh", "/scripts/redis.sh"]
           env:
             - name: REDIS_PASSWORD
               valueFrom:
@@ -44,8 +97,8 @@ spec:
             - name: redis
               containerPort: 6379
           readinessProbe:
-            tcpSocket:
-              port: redis
+            exec:
+              command: ["sh", "-c", "redis-cli -a \"$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
             periodSeconds: 10
           resources:
             requests:
@@ -56,6 +109,42 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /data
+            - name: scripts
+              mountPath: /scripts
+        - name: sentinel
+          image: redis:7.4-alpine
+          command: ["sh", "/scripts/sentinel.sh"]
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: redis-auth
+                  key: password
+          ports:
+            - name: sentinel
+              containerPort: 26379
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "redis-cli -p 26379 -a \"$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              memory: 64Mi
+          volumeMounts:
+            - name: sentinel
+              mountPath: /sentinel
+            - name: scripts
+              mountPath: /scripts
+      volumes:
+        - name: scripts
+          configMap:
+            name: redis-scripts
+        # Sentinel reescribe su config (réplicas y otros Sentinel que descubre); se rearma en cada arranque.
+        - name: sentinel
+          emptyDir: {}
   volumeClaimTemplates:
     - metadata:
         name: data
@@ -65,14 +154,32 @@ spec:
           requests:
             storage: 5Gi
 ---
+# Headless: nombres DNS fijos por pod (redis-0.redis-headless...), que es lo que anuncian Redis y Sentinel.
 apiVersion: v1
 kind: Service
 metadata:
-  name: redis
+  name: redis-headless
   namespace: tpi
 spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
   selector:
     app: redis
   ports:
     - name: redis
       port: 6379
+    - name: sentinel
+      port: 26379
+---
+# Para los servicios: le preguntan acá quién es el principal (REDIS_SENTINELS en tpi-config).
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-sentinel
+  namespace: tpi
+spec:
+  selector:
+    app: redis
+  ports:
+    - name: sentinel
+      port: 26379

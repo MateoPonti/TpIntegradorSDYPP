@@ -1,13 +1,38 @@
-# RabbitMQ on the infra node pool. Credentials come from the rabbitmq-auth
-# Secret that Pipeline 2 creates from GitHub Secrets (never from this file).
+# RabbitMQ con 3 nodos en cluster en el node pool infra. Las colas son quorum: cada una se copia en los 3
+# nodos y Raft elige un líder, así que si se cae un nodo las otras dos copias siguen atendiendo.
+# Las credenciales y la cookie de Erlang salen del Secret rabbitmq-auth que crea el Pipeline 2
+# (nunca de este archivo).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rabbitmq-config
+  namespace: tpi
+data:
+  enabled_plugins: |
+    [rabbitmq_management,rabbitmq_prometheus,rabbitmq_peer_discovery_k8s].
+  # Peer discovery k8s (4.x): no consulta la API de Kubernetes. El pod -0 arranca el cluster y los
+  # demás se unen a él, calculando su nombre a partir del propio (por eso el nombre largo con el
+  # Service headless).
+  20-cluster.conf: |
+    cluster_formation.peer_discovery_backend = k8s
+    cluster_partition_handling = pause_minority
+    # Las colas que se declaran cuando todavía hay un solo nodo quedan con 1 copia: esto las lleva a 3
+    # cuando entran los otros nodos (y saca las copias de nodos que ya no están).
+    quorum_queue.continuous_membership_reconciliation.enabled = true
+    quorum_queue.continuous_membership_reconciliation.target_group_size = 3
+    quorum_queue.continuous_membership_reconciliation.auto_remove = true
+    quorum_queue.continuous_membership_reconciliation.interval = 60000
+---
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
   name: rabbitmq
   namespace: tpi
 spec:
-  serviceName: rabbitmq
-  replicas: 1
+  serviceName: rabbitmq-headless
+  replicas: 3
+  # Parallel: si se reinician los 3 juntos, ninguno espera a que otro esté Ready para arrancar.
+  podManagementPolicy: Parallel
   selector:
     matchLabels:
       app: rabbitmq
@@ -23,9 +48,25 @@ spec:
           operator: Equal
           value: infra
           effect: NoSchedule
+      # Hoy hay un solo nodo infra; si se agregan más, reparte los pods entre ellos.
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app: rabbitmq
+      terminationGracePeriodSeconds: 60
       containers:
         - name: rabbitmq
-          image: rabbitmq:4-management
+          image: rabbitmq:4.4-management
+          # La cookie tiene que ser igual en los 3 nodos. El entrypoint le pasa el dueño a rabbitmq.
+          command:
+            - sh
+            - -c
+            - install -m 400 /cookie/erlang-cookie /var/lib/rabbitmq/.erlang.cookie && exec docker-entrypoint.sh rabbitmq-server
           ports:
             - name: amqp
               containerPort: 5672
@@ -33,7 +74,19 @@ spec:
               containerPort: 15672
             - name: prometheus
               containerPort: 15692
+            - name: epmd
+              containerPort: 4369
+            - name: cluster
+              containerPort: 25672
           env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: RABBITMQ_USE_LONGNAME
+              value: "true"
+            - name: RABBITMQ_NODENAME
+              value: rabbit@$(POD_NAME).rabbitmq-headless.tpi.svc.cluster.local
             - name: RABBITMQ_DEFAULT_USER
               valueFrom:
                 secretKeyRef:
@@ -52,13 +105,32 @@ spec:
             timeoutSeconds: 10
           resources:
             requests:
-              cpu: 250m
+              cpu: 200m
               memory: 512Mi
             limits:
               memory: 1Gi
           volumeMounts:
             - name: data
               mountPath: /var/lib/rabbitmq
+            - name: config
+              mountPath: /etc/rabbitmq/enabled_plugins
+              subPath: enabled_plugins
+            - name: config
+              mountPath: /etc/rabbitmq/conf.d/20-cluster.conf
+              subPath: 20-cluster.conf
+            - name: cookie
+              mountPath: /cookie
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: rabbitmq-config
+        - name: cookie
+          secret:
+            secretName: rabbitmq-auth
+            items:
+              - key: erlang-cookie
+                path: erlang-cookie
   volumeClaimTemplates:
     - metadata:
         name: data
@@ -68,6 +140,27 @@ spec:
           requests:
             storage: 5Gi
 ---
+# Headless: le da a cada pod un nombre DNS fijo (rabbitmq-0.rabbitmq-headless...) para que los nodos se
+# encuentren entre sí, aun antes de estar Ready.
+apiVersion: v1
+kind: Service
+metadata:
+  name: rabbitmq-headless
+  namespace: tpi
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app: rabbitmq
+  ports:
+    - name: amqp
+      port: 5672
+    - name: epmd
+      port: 4369
+    - name: cluster
+      port: 25672
+---
+# Para los servicios: reparte las conexiones entre los nodos. Cualquier nodo atiende cualquier cola.
 apiVersion: v1
 kind: Service
 metadata:
