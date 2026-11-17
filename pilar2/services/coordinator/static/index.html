@@ -3,52 +3,24 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>TPI Blockchain</title>
-<style>
-  :root {
-    --bg: #f6f7f9; --card: #ffffff; --text: #1c2430; --muted: #5b6573; --line: #dde1e6;
-    --accent: #1f5fa8; --ok: #1d7a46; --bad: #b3261e; --warn: #9a6700; --mono: ui-monospace, Consolas, monospace;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root { --bg: #12161c; --card: #1b2129; --text: #e6e9ee; --muted: #98a2b0; --line: #2c3440;
-            --accent: #6aa8f0; --ok: #4cc283; --bad: #f2867d; --warn: #e3b341; }
-  }
-  * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 system-ui, sans-serif; }
-  header { padding: 18px 16px 6px; max-width: 1200px; margin: 0 auto; }
-  h1 { margin: 0; font-size: 22px; }
-  header p { margin: 4px 0 0; color: var(--muted); }
-  main { max-width: 1200px; margin: 0 auto; padding: 10px 16px 40px; display: grid; gap: 14px;
-         grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
-  section { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px; min-width: 0; }
-  section.wide { grid-column: 1 / -1; }
-  h2 { margin: 0 0 10px; font-size: 16px; }
-  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; }
-  .stat b { display: block; font-size: 20px; }
-  .stat span { color: var(--muted); font-size: 13px; }
-  .ok { color: var(--ok); } .bad { color: var(--bad); } .warn { color: var(--warn); }
-  table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
-  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
-  th { color: var(--muted); font-weight: 600; }
-  .scroll { overflow-x: auto; }
-  code, .mono { font-family: var(--mono); font-size: 12.5px; }
-  form { display: grid; gap: 8px; }
-  .row { display: flex; gap: 8px; flex-wrap: wrap; }
-  .row > * { flex: 1 1 120px; }
-  input, button { font: inherit; padding: 8px 10px; border-radius: 7px; border: 1px solid var(--line);
-                  background: var(--bg); color: var(--text); min-width: 0; }
-  button { background: var(--accent); border-color: var(--accent); color: #fff; cursor: pointer; flex: 0 0 auto; }
-  .out { font-family: var(--mono); font-size: 12.5px; white-space: pre-wrap; word-break: break-all;
-         color: var(--muted); margin: 8px 0 0; }
-  tr.click { cursor: pointer; } tr.click:hover td { background: var(--bg); }
-  .pill { display: inline-block; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line); font-size: 12px; }
-</style>
+<title>SDMER Blockchain</title>
+<link rel="stylesheet" href="/assets/sdmer.css">
 </head>
 <body>
-<header>
-  <h1>TPI Blockchain distribuida</h1>
-  <p>Explorador del coordinator. Se actualiza cada 3 s con la API pública (<code>/status</code>, <code>/chain</code>, <code>/blocks</code>, <code>/miners</code>).</p>
-</header>
+<div class="topbar"><div class="in">
+  <a class="brand" href="/"><i></i>SDMER</a>
+  <nav><a href="/" class="on">Blockchain</a><a href="/unirse">Minar con nosotros</a></nav>
+  <a class="btn sm" href="/unirse">Unite</a>
+</div></div>
+<div class="hero">
+  <h1>Blockchain <span class="grad">distribuida</span></h1>
+  <p>Explorador en vivo de la cadena del pool SDMER: bloques, transacciones, cuentas y mineros. Se actualiza cada 3 s.</p>
+</div>
+<div class="cta"><div class="in">
+  <div><b>¿Querés minar con nosotros?</b><span>Sumá tu PC al pool con CPU o con una placa NVIDIA y cobrá por cada
+    nonce que recorrés. Creás tu cuenta y tu worker en un minuto.</span></div>
+  <a class="btn" href="/unirse">Unirme al pool →</a>
+</div></div>
 <main>
   <section class="wide">
     <h2>Estado</h2>

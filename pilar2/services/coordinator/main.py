@@ -267,3 +267,15 @@ async def unirse():
 @app.get("/unirse/config")
 async def unirse_config():
     return {"gateway": GATEWAY_PUBLIC_URL, "repo": REPO_URL}
+
+
+ASSETS = {"sdmer.css": "text/css", "nacl-fast.min.js": "text/javascript"}
+
+
+@app.get("/assets/{name}", include_in_schema=False)
+async def assets(name: str):
+    """Estilo común de las dos páginas y TweetNaCl (Ed25519 en el navegador: crypto.subtle no existe sin HTTPS)."""
+    if name not in ASSETS:
+        raise HTTPException(404, "no existe")
+    return FileResponse(Path(__file__).with_name("static") / "assets" / name, media_type=ASSETS[name],
+                        headers={"Cache-Control": "public, max-age=300"})
