@@ -24,8 +24,9 @@ en su propio namespace **`tpi`**. El 17/11/2026 se sacó el TP3 del cluster (nam
 
 | Qué | Dónde |
 |---|---|
-| Frontend, API y `/status` | `http://35.223.237.60` (IP fija `tpi-coordinator`) |
-| Gateway de los mineros | `http://34.63.209.225` (IP fija `tpi-gateway`) |
+| Frontend, API y `/status` | **`https://35-223-237-60.sslip.io`** (y `http://35.223.237.60`, IP fija `tpi-coordinator`, hoy en Traefik) |
+| Portal para unirse al pool | `https://35-223-237-60.sslip.io/unirse` |
+| Gateway de los mineros | **`https://gateway.35-223-237-60.sslip.io`** (por Traefik) y `http://34.63.209.225` (IP fija `tpi-gateway`, para los pods del k3s) |
 | Imágenes | `us-central1-docker.pkg.dev/tp3distribuidos/tp3/tpi-{coordinator,pool,gateway}:<sha>` |
 | Prometheus, Grafana y Loki | Los que instaló el TP3 (namespace `monitoring`, siguen ahí). Leen nuestros pods con `k8s/observability/` |
 | Grafana | `http://136.80.214.178`, dashboard **TPI Blockchain** (usuario y clave en el secret `grafana-admin` de `monitoring`) |
@@ -82,6 +83,15 @@ todo (para eso hay que sumar nodos al pool `infra`; los manifiestos ya reparten 
   en `pilar2/tests/test_sistema.py` mata el principal.
 - Para migrar desde la versión de 1 réplica hubo que borrar los StatefulSets (el `serviceName` no se puede cambiar;
   los PVC quedan) y el Service `redis` viejo: `$K -n tpi delete sts rabbitmq redis; $K -n tpi delete svc redis`.
+
+**HTTPS** (17/11/2026, opción A: gratis, dentro del cluster). Traefik (namespace `traefik`, helm chart 42.4.0)
+tiene la IP fija `tpi-coordinator` y reparte por nombre: `35-223-237-60.sslip.io` → coordinator y
+`gateway.35-223-237-60.sslip.io` → gateway. cert-manager (namespace `cert-manager`, v1.21.2) saca y renueva solo
+el certificado de Let's Encrypt (desafío HTTP-01). `sslip.io` resuelve esos nombres a la IP, así no hace falta
+comprar un dominio (Let's Encrypt no firma una IP sola). HTTP sigue abierto para `bench.py` y los mineros ya
+configurados. Se eligió Traefik y no ingress-nginx porque ingress-nginx ya no se mantiene. Manifiestos e
+instalación en `k8s/https/`. Ojo: si se mueve la IP, el primer desafío puede fallar por timeout; se reintenta con
+`kubectl -n tpi delete certificate tpi-tls`.
 
 **Dashboard:** `k8s/observability/dashboard-tpi.yaml` es un ConfigMap con la etiqueta `grafana_dashboard`; el
 sidecar de Grafana lo carga solo. 14 paneles: altura, pendientes, prefijo, hashrate por tipo y por minero, tiempo

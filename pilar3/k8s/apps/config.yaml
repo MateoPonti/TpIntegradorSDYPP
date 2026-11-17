@@ -9,8 +9,8 @@ data:
   # Redis con Sentinel (1 principal + 2 réplicas): los servicios le preguntan a Sentinel quién es el principal.
   REDIS_SENTINELS: redis-sentinel.tpi.svc.cluster.local:26379
   REDIS_MASTER_NAME: tpi
-  # Página /unirse: a dónde da de alta los workers el navegador (IP fija tpi-gateway).
-  GATEWAY_PUBLIC_URL: http://34.63.209.225
+  # Página /unirse: a dónde da de alta los workers el navegador y a dónde se conectan (HTTPS por Traefik).
+  GATEWAY_PUBLIC_URL: https://gateway.35-223-237-60.sslip.io
   # --- Prefijo (decidido el 13/11): automático por hashrate real, para que un bloque tarde < BLOCK_TARGET_SECONDS.
   # Para las pruebas de carga de prefijos 1 a 8: DIFFICULTY_MODE=fixed y DIFFICULTY_PREFIX con los ceros.
   DIFFICULTY_MODE: auto

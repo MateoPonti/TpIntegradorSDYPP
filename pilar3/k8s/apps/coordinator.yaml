@@ -66,9 +66,9 @@ metadata:
   name: coordinator
   namespace: tpi
 spec:
-  type: LoadBalancer
-  # IP estática reservada (gcloud compute addresses: tpi-coordinator)
-  loadBalancerIP: 35.223.237.60
+  # Desde el 17/11 la IP fija tpi-coordinator (35.223.237.60) la tiene Traefik (pilar3/k8s/https), que da HTTPS
+  # y pasa todo al coordinator: este Service queda interno.
+  type: ClusterIP
   selector:
     app: coordinator
   ports:
