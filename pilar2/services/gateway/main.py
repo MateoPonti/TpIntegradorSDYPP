@@ -457,6 +457,9 @@ async def keepalive(request: Request, ident: dict | None = Depends(auth)):
     account = body.get("account") or f"miner:{miner_id}"
     if not isinstance(account, str) or len(account) > 64 or account == "recompensa":
         raise HTTPException(400, "account inválida")
+    if not account.startswith("miner:") and not await state["r"].exists(keys.account_pubkey(account)):
+        # El premio solo va a una cuenta con dueño (20/11): si no, el primero que registre ese nombre se lo queda.
+        raise HTTPException(400, f"MINER_ACCOUNT {account} no es una cuenta registrada (crearla en /cuenta)")
     value = {"miner_id": miner_id, "type": kind, "hashrate": float(body.get("hashrate") or 0),
              "account": account, "ts": time.time(),
              "trial": bool(await state["r"].exists(keys.worker_trial(miner_id)))}

@@ -213,13 +213,20 @@ Así el gateway y el coordinator ni se enteran de quién minó, y el binario CUD
   sin firma, porque es lo que hace el `bench.py` de la cátedra (no se puede modificar). Son las únicas cuentas
   sin firma. No se pueden registrar esos nombres, ni `recompensa` ni los que empiezan con `miner:`.
 - Una tx de un sender que no es del génesis y no está registrado se rechaza (`400`, cuenta no registrada).
+- **El destino tiene que existir** (decidido el 20/11, opción A): una cuenta del génesis, una registrada con clave,
+  una compartida o una colecta abierta. Si no, `400 la cuenta destino no existe`. Vale también para las propuestas
+  de una cuenta compartida. Por qué: en Bitcoin se puede mandar a una dirección que nadie usó, porque la dirección
+  sale de la clave (hash de la pública) y nadie puede apropiársela después. Acá el nombre se elige y la clave se
+  asocia después: plata mandada a `mateoo` por error se la quedaba el primero que registrara `mateoo`.
+- **No se puede registrar un nombre que ya tiene saldo** (`409`): cubre lo que quedó de antes de la regla (en GKE,
+  `asdasdasasdasd` y `sda`, 40,00 en total, quedan sin dueño).
+- **La cuenta de cobro de un minero tiene que estar registrada** (`MINER_ACCOUNT`, en el keep-alive; si no, `400` y el
+  agente lo avisa en el log). La de por defecto, `miner:<id>`, sigue valiendo: nadie la puede registrar.
 - **Limitación conocida (decidido el 20/11, opción B):** las cuentas del génesis (`user-0..96`) no firman, así que
   cualquiera puede mover plata de ellas a cualquier cuenta. Se deja así porque `bench.py` de la cátedra no firma. Se
   evaluó que sin firma solo puedan pagarle a otra cuenta del génesis (`bench.py` solo usa esas) y quedó descartado.
 - Cliente: `pilar2/tools/cuenta.py` (`claves`, `registrar`, `enviar`). `GET /balances/<cuenta>` dice si está registrada y su último `seq`.
-- **Pendiente (solo para el `MINER_TOKEN` compartido):** las cuentas de cobro de los mineros (`MINER_ACCOUNT`, ej. `mateo`) reciben premios sin estar
-  registradas. Los workers dados de alta en `/unirse` ya cobran en su cuenta registrada. Para gastar esa plata el dueño tiene que registrar ese nombre con su clave; hasta que se ate
-  el `MINER_ACCOUNT` a una clave (con el alta de workers), el primero que registre el nombre se queda con la cuenta.
+- ~~Pendiente: `MINER_ACCOUNT` sin registrar~~ → **resuelto el 20/11**: tiene que ser una cuenta registrada (ver arriba).
 
 ### Páginas: explorador, billetera y alta de workers (20/11/2026)
 

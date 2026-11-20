@@ -186,8 +186,11 @@ class Miner:
     def heartbeat_loop(self) -> None:
         while not self.stop.is_set():
             try:
-                self.gw.call("POST", "/keepalive", {"miner_id": self.id, "type": self.kind, "hashrate": self.hashrate,
-                                                    "account": self.account})
+                status, _ = self.gw.call("POST", "/keepalive", {"miner_id": self.id, "type": self.kind,
+                                                                "hashrate": self.hashrate, "account": self.account})
+                if status == 400:  # sin keep-alive el pool no lo cuenta como vivo
+                    log.error("keep-alive rechazado: MINER_ACCOUNT=%s tiene que ser una cuenta registrada (/cuenta)",
+                              self.account)
             except OSError as exc:
                 log.warning("keep-alive falló: %s", exc)
             self.stop.wait(self.keepalive)

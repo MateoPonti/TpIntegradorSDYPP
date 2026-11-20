@@ -93,6 +93,16 @@ async def _crowdfund_closed(tx: dict) -> str | None:
     return None if crowdfund.is_open(raw) else "la colecta ya cerró"
 
 
+async def _receiver_exists(name: str) -> bool:
+    """El destino tiene que existir (decidido el 20/11): cuenta del génesis, registrada con clave, compartida o una
+    colecta (si está abierta lo controla _crowdfund_closed). Como el nombre se elige y la clave se asocia después,
+    plata mandada a un nombre libre (un error de tipeo) se la quedaría el primero que lo registre."""
+    if cuentas.is_genesis(name) or crowdfund.of_account(name) is not None:
+        return True
+    r = state["r"]
+    return bool(await r.exists(keys.account_pubkey(name)) or await r.exists(multisig.key(name)))
+
+
 async def _contributed(tx: dict) -> None:
     """Aporte admitido: se anota para la liquidación (devolución o pago)."""
     cid = crowdfund.of_account(tx["receiver"])
@@ -113,6 +123,9 @@ async def _submit(body) -> tuple[int, dict]:
     if reason := await _crowdfund_closed(tx):
         TX_REJECTED.labels("colecta").inc()
         return 400, {"error": reason}
+    if not await _receiver_exists(tx["receiver"]):
+        TX_REJECTED.labels("destino inexistente").inc()
+        return 400, {"error": f"la cuenta destino no existe: {tx['receiver']}"}
     seq = ""
     if not cuentas.is_genesis(tx["sender"]):
         # Cuenta propia: tiene que estar registrada y la tx firmada con su clave (opción A del 17/11).
@@ -209,6 +222,9 @@ async def register_account(request: Request):
         raise HTTPException(400, "firma inválida")
     if await state["r"].exists(multisig.key(account)):
         raise HTTPException(409, "ese nombre es una cuenta compartida")
+    if await state["r"].exists(keys.balance(account)) or await state["r"].exists(keys.pending_out(account)):
+        # Ya recibió plata sin tener dueño (de antes de exigir que el destino exista): registrarlo sería quedársela.
+        raise HTTPException(409, "ese nombre ya tiene saldo sin dueño: elegí otro")
     if not await state["r"].set(keys.account_pubkey(account), pubkey.lower(), nx=True):
         raise HTTPException(409, "la cuenta ya está registrada")
     log(logger, "cuenta registrada", account=account)
@@ -334,6 +350,8 @@ async def propose(account: str, request: Request):
     nonce = body.get("nonce")
     if not isinstance(nonce, str) or not 1 <= len(nonce) <= 64:
         raise HTTPException(400, "nonce inválido")
+    if not await _receiver_exists(tx["receiver"]):
+        raise HTTPException(400, f"la cuenta destino no existe: {tx['receiver']}")
     message = multisig.payment_message(account, tx["receiver"], tx["amount"], nonce)
     pid, r = multisig.proposal_id(message), state["r"]
     if await r.exists(multisig.proposal_key(pid)):
