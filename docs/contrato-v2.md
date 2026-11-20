@@ -431,7 +431,7 @@ dificultad total de cada uno en la ventana. [M1]
 3. ~~Recuperación y cambio de claves~~ → **decidido (20/11): no se hace.** Perder el `.key` es perder la cuenta,
    como en Bitcoin. La revocación de workers ya está (canario fallado).
 4. ~~Multifirma~~ → **decidido y hecho (20/11):** m de n elegido al crear (**mínimo 2 firmas**: con 1 no habría aprobación extra), vence a las 24 h por hora del servidor,
-   la crea un dueño sin que los demás acepten (como Safe), dueños y mínimo fijos, id = hash del texto firmado (como
+   la crea un dueño y **cada uno de los demás tiene que aceptar** firmando la misma definición (cambiado el 20/11: sin eso se podía meter a cualquiera en cuentas, spam; como Polkadot), dueños y mínimo fijos, id = hash del texto firmado (como
    Polkadot). Ver `pilar2/README.md` en main.
 5. ~~Fee~~ → **decidido y hecho (20/11), modelo de Bitcoin:** comisión fija de 0,10 por tx que cobran los mineros
    del bloque junto con el subsidio, y halving del subsidio (50,00 a la mitad cada 1.000 bloques, total < 100.000).
