@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Mi cuenta · SDMER</title>
-<link rel="stylesheet" href="/assets/sdmer.css?v=4">
+<link rel="stylesheet" href="/assets/sdmer.css?v=5">
 <script src="/assets/nacl-fast.min.js"></script>
-<script src="/assets/claves.js?v=4"></script>
+<script src="/assets/claves.js?v=5"></script>
 </head>
 <body>
 <header class="topbar"><div class="in">
@@ -62,6 +62,7 @@
       <input id="monto" placeholder="monto (ej. 12,50)" inputmode="decimal">
       <button id="enviar">Enviar</button>
     </div>
+    <div class="hint" id="total3" style="margin:8px 0 0"></div>
     <div class="msg" id="msg3"></div>
     </div>
     <h2>Movimientos <span class="right muted">desde que abriste la página</span></h2>
@@ -80,6 +81,7 @@
       <input id="gMonto" placeholder="monto" inputmode="decimal">
       <button id="gEnviar">Enviar</button>
     </div>
+    <div class="hint" id="total4" style="margin:8px 0 0"></div>
     <div class="msg" id="msg4"></div>
     </div>
   </section>
@@ -188,24 +190,35 @@ $("enviar").onclick = async () => {
     const seq = (info.seq || 0) + 1;
     const r = await post("/transactions", { sender: cuenta, receiver: para, amount: (cents / 100).toFixed(2), seq,
                                             signature: firmar(par, `tx:${cuenta}:${para}:${cents}:${seq}`) });
-    say("msg3", `Enviada (pendiente hasta que se mine): ${r.tx_id}`, true);
+    say("msg3", `Enviada: ${money(cents)} + ${money(fee)} de comisión (pendiente hasta que se mine): ${r.tx_id}`, true);
     seguir(r.tx_id, "msg3");
     saldo = await (await fetch("/balances/" + encodeURIComponent(cuenta))).json();
     dibujarSaldo();
   } catch (e) { say("msg3", e.message); }
 };
 
-// La comisión la fija el servidor: se muestra la que dice /status.
+// La comisión la fija el servidor: se muestra la que dice /status. Antes de enviar se ve el total que se va a
+// descontar, como hacen las billeteras (MetaMask muestra el gas estimado y el total).
+let fee = 10;
 fetch("/status").then((r) => r.json()).then((s) => {
-  if (s.economy) document.querySelectorAll(".fee").forEach((e) => { e.textContent = money(s.economy.tx_fee_cents); });
+  if (s.economy) fee = s.economy.tx_fee_cents;
+  document.querySelectorAll(".fee").forEach((e) => { e.textContent = money(fee); });
+  mostrarTotal("monto", "total3"); mostrarTotal("gMonto", "total4");
 }).catch(() => {});
+function mostrarTotal(input, out) {
+  let texto = `Comisión: ${money(fee)}.`;
+  try { const c = centavos($(input).value); texto = `Monto ${money(c)} + comisión ${money(fee)} = <b>${money(c + fee)}</b> que se descuentan de la cuenta.`; } catch { /* monto vacío o inválido */ }
+  $(out).innerHTML = texto;
+}
+$("monto").oninput = () => mostrarTotal("monto", "total3");
+$("gMonto").oninput = () => mostrarTotal("gMonto", "total4");
 
 $("gEnviar").onclick = async () => {
   try {
     const cents = centavos($("gMonto").value);
     const r = await post("/transactions", { sender: $("gDe").value.trim(), receiver: $("gPara").value.trim(),
                                             amount: (cents / 100).toFixed(2) });
-    say("msg4", `Enviada (pendiente hasta que se mine): ${r.tx_id}`, true);
+    say("msg4", `Enviada: ${money(cents)} + ${money(fee)} de comisión (pendiente hasta que se mine): ${r.tx_id}`, true);
     if (ws === null) conectar();
     seguir(r.tx_id, "msg4");
   } catch (e) { say("msg4", e.message); }
