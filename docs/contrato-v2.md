@@ -16,9 +16,9 @@ dice "propuesta" lo confirma el grupo; lo que dice **Hecho** ya está programado
 | # | Punto | Estado |
 |---|---|---|
 | 1 | Registro de workers y personas (clave pública y privada) | **Hecho** (17/11) |
-| 2 | Cuenta compartida / fee, crowdfunding (transferencia con aprobación extra) | En parte (20/11): cuenta compartida y comisión hechas; falta el crowdfunding |
+| 2 | Cuenta compartida / fee, crowdfunding (transferencia con aprobación extra) | **Hecho** (20/11): cuenta compartida, comisión y colectas |
 | 3 | Notificar por websocket, para no gastar ciclos de gusto | **Hecho** (20/11) |
-| 4 | Gateway: el worker funciona y "dice la verdad" + clasificación por potencia y recompensa + websocket | En parte (falta el websocket de los workers y decidir las shares) |
+| 4 | Gateway: el worker funciona y "dice la verdad" + clasificación por potencia y recompensa + websocket | **Hecho** (20/11): shares PROP, en prueba, límite por cuenta y websocket |
 | 5 | KEDA, colas quorum, recreación del bloque por cambio de dificultad | **Hecho** (13/11; RabbitMQ con 3 nodos el 17/11) |
 
 ---
@@ -111,6 +111,22 @@ dice "propuesta" lo confirma el grupo; lo que dice **Hecho** ya está programado
 **Diferencias con contrato-1:** ahí la fee la cobraba el minero y se priorizaban las que pagan más, y el
 crowdfunding cerraba en un bloque límite.
 
+### Qué hicimos: colectas (20/11/2026)
+
+- **Todo o nada**, con meta, beneficiario (cuenta registrada o compartida) y **cierre por hora del servidor**
+  (entre 60 s y 7 días). La crea una cuenta registrada firmando
+  `crowdfund:create:<id>:<beneficiario>:<meta>:<cierre>` (`POST /crowdfunds`).
+- **Aportar es una tx firmada común** a la cuenta `colecta:<id>`, que nadie puede gastar a mano (el nombre
+  `colecta:` está reservado). Un aporte después del cierre da `400`.
+- Al cierre el líder la liquida: si llegó a la meta, todo al beneficiario; si no, a cada uno lo que aportó.
+- **La comisión del aporte no se devuelve** (como Bitcoin, Ethereum y los crowdloans de Polkadot: ya la cobró el
+  minero). Las tx de la liquidación las arma el sistema y **no pagan comisión**: nadie paga dos veces.
+- Se liquida cuando todos los aportes están en un bloque y pasaron 30 s del cierre. Pasar a `liquidando` es un Lua
+  y las tx tienen id fijo (`colecta-<id>-<cuenta>`): si el líder se cae a mitad, el siguiente repite sin pagar dos
+  veces (la diferencia con el Word: no hace falta que el aportante pida la devolución, como en Polkadot; la hace
+  el sistema).
+- Probado en compose y en GKE: una colecta que llegó a la meta y pagó, y otra que no llegó y devolvió.
+
 ---
 
 ## 3. Notificaciones por WebSocket
@@ -173,11 +189,21 @@ participantes (Monero, Zcash).
 - **Premio proporcional** a los nonces completados (`coordinator/reward.py`), pagado en el bloque siguiente.
   Ojo: ahí la variable se llama `shares`, pero cuenta nonces completados, **no** son shares de Stratum.
 
-### 4.2 Qué falta
+### 4.2 Qué hicimos el 20/11/2026
 
-- **WebSocket**: los mineros siguen pidiendo tarea cada 1 s (`GET /tasks/next`).
-- **Shares** al estilo Stratum (mejora a confirmar).
 - ~~Identidad propia de cada worker~~: **hecho** el 17/11 (token propio, ver 4.3).
+- **Shares con reparto PROP.** Cada tarea trae un `share_prefix` más corto que el del bloque (~32 shares por
+  tarea). El minero devuelve esos nonces (`--share-prefix` / `--max-shares` en `miner_gpu` y `miner_cpu.py`; sin el
+  flag, la salida es la del kit). El coordinator recalcula el MD5 de cada una, descarta repetidas y cada una pesa
+  16^largo (ponderada por dificultad, como P2Pool). Un "no encontré" sin minar ya no cobra. PPS y PPLNS descartados.
+- **WebSocket** `/ws/miners` en el gateway: **solo avisa** "hay tareas" y "bloque sellado" (corta el motor). Las
+  tareas se siguen pidiendo y entregando por HTTP, así que si se corta no se pierde trabajo. Es menos que lo que
+  proponía el Word (todo por WSS, como Stratum): no hizo falta reescribir el protocolo de préstamos.
+- **En prueba:** 1 canario cada 5 tareas y sin premio hasta pasar 3. **Máximo 10 workers por cuenta** (los
+  revocados cuentan). Costo de alta y colateral descartados: una cuenta nueva no tiene plata.
+- **Arreglo:** con token propio, el `worker` de cada resultado sale del token. Antes lo mandaba el agente y un
+  worker podía firmar con otro nombre y saltearse la prueba (lo encontramos probando).
+- La cuarentena queda como estaba (sí o no); la reputación queda descartada.
 
 ### 4.3 Alta de workers y token (hecho el 17/11: página pública `/unirse`)
 
@@ -189,7 +215,8 @@ Hoy no hay forma de sumarse: el token es **uno solo**, en una variable de entorn
 **Se eligió la página pública.** Del 4.5 quedaron hechos los puntos 2, 3 y la revocación del 4: token del
 servidor, se guarda su hash, el `miner_id` sale del token y un canario fallado revoca el token. El 5 quedó
 resuelto atando cada worker a una cuenta con clave (el alta va firmada). Falta el estado **en prueba** (más
-canarios y sin premio al principio) y decidir si el alta tiene costo (pendiente 9).
+canarios y sin premio al principio) y decidir si el alta tiene costo (pendiente 9). **Las dos cosas quedaron hechas
+el 20/11** (ver 4.2).
 
 ### 4.4 Problemas de la cuarentena actual si el alta es pública
 
@@ -401,19 +428,21 @@ dificultad total de cada uno en la ventana. [M1]
 
 1. ~~Workers: mTLS o firma de desafío~~ → **decidido**: token propio por HTTPS, sin mTLS; gateway público.
 2. ~~Alta de workers~~ → **decidido**: página pública `/unirse`, alta firmada por la cuenta. Queda el límite de altas (ver 9).
-3. Recuperación y cambio de claves de las cuentas (hoy: si perdés el `.key`, perdés la cuenta). La revocación de
-   workers ya está (canario fallado).
+3. ~~Recuperación y cambio de claves~~ → **decidido (20/11): no se hace.** Perder el `.key` es perder la cuenta,
+   como en Bitcoin. La revocación de workers ya está (canario fallado).
 4. ~~Multifirma~~ → **decidido y hecho (20/11):** m de n elegido al crear, vence a las 24 h por hora del servidor,
    la crea un dueño sin que los demás acepten (como Safe), dueños y mínimo fijos, id = hash del texto firmado (como
    Polkadot). Ver `pilar2/README.md` en main.
 5. ~~Fee~~ → **decidido y hecho (20/11), modelo de Bitcoin:** comisión fija de 0,10 por tx que cobran los mineros
    del bloque junto con el subsidio, y halving del subsidio (50,00 a la mitad cada 1.000 bloques, total < 100.000).
    Se descartó quemarla: con el subsidio en 0 los mineros no cobrarían nada. Sin priorizar tx por fee.
-6. Crowdfunding: cierre por hora o por bloque; si se devuelve la fee del aporte.
-7. Shares: si se adoptan, y con qué reparto (PROP, PPS o PPLNS).
+6. ~~Crowdfunding~~ → **decidido y hecho (20/11):** cierre por hora del servidor; la comisión del aporte no se
+   devuelve; la liquidación no cobra comisión.
+7. ~~Shares~~ → **decidido y hecho (20/11):** sí, ponderadas por dificultad, con reparto PROP.
 8. Agregar el punto 5 al Word ampliado.
-9. Alta pública: costo creciente, colateral o ninguno de los dos.
-10. Cuarentena binaria (como hoy) o reputación.
+9. ~~Alta pública~~ → **decidido y hecho (20/11):** ni costo ni colateral; límite de 10 workers por cuenta y estado
+   en prueba.
+10. ~~Cuarentena o reputación~~ → **decidido (20/11):** la cuarentena como estaba, más el estado en prueba.
 11. ~~Privacidad del saldo~~ → **decidido** (20/11): todo público, como Bitcoin y Ethereum (ver punto 3).
 
 > Las tablas de las secciones 1 a 4 se armaron con conocimiento previo. La sección "Blockchains más parecidas"
