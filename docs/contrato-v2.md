@@ -1,8 +1,8 @@
 # Contrato v2 — TP Integrador · Grupo SDMER
 
-Borrador del 14/11/2026. Junta lo que hay en `docs/contrato-1.md`, el Word *"Contrato SDMER ampliado puntos 1
-a 4"* (13/11) y lo charlado después. **Nada de esto está decidido**: lo que dice "propuesta" lo confirma el
-grupo.
+Borrador del 14/11/2026, **actualizado el 20/11/2026** con lo que ya se hizo. Junta lo que hay en
+`docs/contrato-1.md`, el Word *"Contrato SDMER ampliado puntos 1 a 4"* (13/11) y lo charlado después. Lo que
+dice "propuesta" lo confirma el grupo; lo que dice **Hecho** ya está programado y desplegado en GKE.
 
 ## 0. Qué pidió el profe
 
@@ -15,11 +15,11 @@ grupo.
 
 | # | Punto | Estado |
 |---|---|---|
-| 1 | Registro de workers y personas (clave pública y privada) | Por hacer |
+| 1 | Registro de workers y personas (clave pública y privada) | **Hecho** (17/11) |
 | 2 | Cuenta compartida / fee, crowdfunding (transferencia con aprobación extra) | Por hacer |
-| 3 | Notificar por websocket, para no gastar ciclos de gusto | Por hacer |
-| 4 | Gateway: el worker funciona y "dice la verdad" + clasificación por potencia y recompensa + websocket | En parte |
-| 5 | KEDA, colas quorum, recreación del bloque por cambio de dificultad | Hecho |
+| 3 | Notificar por websocket, para no gastar ciclos de gusto | **Hecho** (20/11) |
+| 4 | Gateway: el worker funciona y "dice la verdad" + clasificación por potencia y recompensa + websocket | En parte (falta el websocket de los workers y decidir las shares) |
+| 5 | KEDA, colas quorum, recreación del bloque por cambio de dificultad | **Hecho** (13/11; RabbitMQ con 3 nodos el 17/11) |
 
 ---
 
@@ -45,8 +45,26 @@ grupo.
   de la clave con la que su dueño gasta.
 - mTLS no hace privado al gateway: si se pide que sea privado a nivel de red, hace falta además una VPN.
 
-**Diferencia con contrato-1:** ahí los workers entraban firmando un texto al azar (EIP-4361). **mTLS o firma
-de desafío: lo decide el grupo.**
+**Diferencia con contrato-1:** ahí los workers entraban firmando un texto al azar (EIP-4361).
+
+### Qué hicimos (17/11/2026)
+
+- **Personas:** cuentas con **Ed25519**. La única forma de tener una cuenta propia es registrarla con la clave
+  pública (`POST /accounts/register`, firmando `register:<cuenta>:<clave>`). Cada tx de una cuenta registrada va
+  firmada sobre `tx:<sender>:<receiver>:<centavos>:<seq>`; el `seq` tiene que ser el siguiente y se controla en
+  el mismo Lua que reserva el saldo (anti-replay, como la secuencia de Stellar). Las cuentas del génesis
+  (`user-0..96`) no firman porque las usa `bench.py`, que no se puede modificar.
+- **Billetera `/cuenta`** (20/11): crear la cuenta sin minar, abrirla con el `.key`, saldo en vivo y enviar tx
+  firmadas. Las claves se generan en el navegador; la privada nunca va al servidor.
+- **Workers: token propio por HTTPS, no mTLS.** El dueño firma `worker:<cuenta>:<worker>` en `/unirse` y el
+  gateway le da un token (`secrets.token_urlsafe(32)`); en Redis queda solo su sha256. El `miner_id` y la cuenta
+  de cobro salen del token. La conexión va por HTTPS (TLS: el gateway muestra su certificado de Let's Encrypt).
+  **mTLS descartado (decisión del grupo, 20/11):** pediría una autoridad propia que emita y revoque un
+  certificado por worker, y con alta pública eso es mucho trabajo para una protección parecida. La diferencia
+  que queda: con mTLS la clave del worker nunca viaja; con el token, uno copiado sirve hasta que se revoca.
+- **Clave del worker separada de la del dueño** (como pide el Word y como coldkey/hotkey de Bittensor): el token
+  del worker no sirve para gastar; para mover plata hace falta el `.key` de la cuenta.
+- **Gateway público** a nivel de red (sin VPN): el alta es pública, como pensó el profe.
 
 ---
 
@@ -115,6 +133,22 @@ respuesta es "no". Eso son los "ciclos de gusto" del punto 3.
 | **Stellar Horizon** | Streaming con **cursor**: al reconectarse se pide "desde el último evento que vi" y no se pierde nada. |
 | Fabric | Eventos de bloque, pedibles desde un bloque dado. |
 
+### Qué hicimos (20/11/2026)
+
+Lo que propone el Word, tal cual (abajo): servicio **notifier** (2 réplicas), una cola `block.events.<pod>` por
+réplica, **outbox** (`events:outbox`, guardado en el mismo Lua que sella el bloque y publicado con reintentos;
+los repetidos se descartan por `event_id`) y **foto del estado** al suscribirse, con la altura de la cadena como
+versión (primero suscribirse y después la foto, como recomienda Kaspa). Temas: `blocks`, `tx` (avisa cuando se
+confirma, como `submitAndWatch` de Polkadot) y `account` (cada movimiento con el saldo nuevo, como Electrum).
+Protecciones: `Origin`, límites de suscripciones, conexiones y tamaño, sesión de 1 h y corte del cliente lento.
+El explorador y `/cuenta` ya no preguntan cada 3 s. Probado en GKE: tx confirmada avisada a los 8,6 s.
+
+**Privacidad (decidido el 20/11, opción A): todo público.** Cualquiera se suscribe a cualquier cuenta sin firmar,
+igual que en Bitcoin (Electrum), Ethereum (`eth_subscribe`), Solana (`accountSubscribe`), Stellar y Polkadot. No
+muestra nada nuevo: saldos y tx ya son públicos en `/balances` y `/chain`. Descartados: pedir firma para
+suscribirse (Hyperledger Fabric; habría que cerrar también la API y el explorador) y cifrar montos y
+participantes (Monero, Zcash).
+
 ### Qué propone el Word ampliado
 
 - Servicio **notifier** que mantiene las conexiones; recibe eventos de RabbitMQ con una cola por réplica (una
@@ -143,16 +177,19 @@ respuesta es "no". Eso son los "ciclos de gusto" del punto 3.
 
 - **WebSocket**: los mineros siguen pidiendo tarea cada 1 s (`GET /tasks/next`).
 - **Shares** al estilo Stratum (mejora a confirmar).
-- **Identidad propia de cada worker**: todos usan el mismo `MINER_TOKEN` (depende del punto 1 y del 4.3).
+- ~~Identidad propia de cada worker~~: **hecho** el 17/11 (token propio, ver 4.3).
 
-### 4.3 Alta de workers y token (falta)
+### 4.3 Alta de workers y token (hecho el 17/11: página pública `/unirse`)
 
 Hoy no hay forma de sumarse: el token es **uno solo**, en una variable de entorno. Dos opciones:
 
 - **Página pública de alta** (la que pensó el profe): cualquiera pide unirse y recibe su credencial propia.
 - **Token generado por el servidor y entregado por el grupo**: más simple, pero cerrado.
 
-La página es un componente nuevo: lo confirma el grupo.
+**Se eligió la página pública.** Del 4.5 quedaron hechos los puntos 2, 3 y la revocación del 4: token del
+servidor, se guarda su hash, el `miner_id` sale del token y un canario fallado revoca el token. El 5 quedó
+resuelto atando cada worker a una cuenta con clave (el alta va firmada). Falta el estado **en prueba** (más
+canarios y sin premio al principio) y decidir si el alta tiene costo (pendiente 9).
 
 ### 4.4 Problemas de la cuarentena actual si el alta es pública
 
@@ -210,8 +247,8 @@ Con workers propios no importa; con alta pública es el agujero principal.
 **Hecho** el 13/11 (sin investigación de protocolos, pero va en el contrato):
 
 - **KEDA**: mineros CPU todo o nada (8 sin GPU y con trabajo, 0 a los 60 s, 0 con GPU), consultando cada 5 s.
-- **Colas quorum**: `mining.tasks`, `mining.results` y `mining.dlq`. Con un nodo de RabbitMQ dan durabilidad y
-  límite de entregas, no alta disponibilidad.
+- **Colas quorum**: `mining.tasks`, `mining.results` y `mining.dlq`. Desde el 17/11 RabbitMQ tiene **3 nodos**:
+  cada cola quorum tiene una copia en cada uno y Raft elige el líder, así que si se cae un nodo siguen andando.
 - **Recreación del bloque**: si cae el hashrate, el coordinator rearma el bloque en curso con un prefijo más
   corto (mismas tx, `block_id` nuevo).
 
@@ -355,16 +392,17 @@ dificultad total de cada uno en la ventana. [M1]
 
 | Punto | De dónde |
 |---|---|
-| 1 | Ed25519 + secuencia por cuenta (Stellar). Worker = hotkey, dueño = coldkey, alta pública con costo creciente (Bittensor). Workers: certificados (Fabric) o desafío firmado (Ethereum). |
+| 1 | **Hecho:** Ed25519 + secuencia por cuenta (Stellar); worker con credencial propia separada de la clave del dueño (hotkey/coldkey de Bittensor), con token por HTTPS en vez de certificados. Queda como idea: alta pública con costo creciente (Bittensor). |
 | 2 | Multifirma con depósito y aprobación sobre el hash (Polkadot), vencimiento en bloques (Cardano), dirección = hash de firmantes y umbral (Algorand). Fee fija con subasta solo si se llena el bloque (Stellar). Crowdfunding con cierre en bloque y devolución a pedido (Polkadot crowdloans). |
-| 3 | Suscripción por `tx_id` con estados (Polkadot). Reconexión: suscribirse primero y después pedir el estado (Kaspa). Niveles de confirmación (Solana). |
+| 3 | **Hecho:** suscripción por `tx_id` (Polkadot), reconexión suscribiéndose primero y después pidiendo el estado (Kaspa). Niveles de confirmación (Solana): no, hay un solo nivel (confirmada al sellar). |
 | 4 | Reputación en vez de cuarentena binaria (Golem), período de prueba / auditoría (Akash), colateral opcional (Bittensor), shares por dificultad con PPLNS (P2Pool, Stratum), doble verificación de rangos sin solución (Golem, BOINC). |
 
 ## Pendiente de decidir
 
-1. Workers: **mTLS o firma de desafío**; gateway privado a nivel de red o no.
-2. **Alta de workers**: página pública o token entregado por el grupo; límite de altas.
-3. Recuperación y revocación de claves.
+1. ~~Workers: mTLS o firma de desafío~~ → **decidido**: token propio por HTTPS, sin mTLS; gateway público.
+2. ~~Alta de workers~~ → **decidido**: página pública `/unirse`, alta firmada por la cuenta. Queda el límite de altas (ver 9).
+3. Recuperación y cambio de claves de las cuentas (hoy: si perdés el `.key`, perdés la cuenta). La revocación de
+   workers ya está (canario fallado).
 4. Multifirma: umbral y vencimiento de propuestas.
 5. Fee: monto, a quién va, si prioriza tx.
 6. Crowdfunding: cierre por hora o por bloque; si se devuelve la fee del aporte.
@@ -372,6 +410,7 @@ dificultad total de cada uno en la ventana. [M1]
 8. Agregar el punto 5 al Word ampliado.
 9. Alta pública: costo creciente, colateral o ninguno de los dos.
 10. Cuarentena binaria (como hoy) o reputación.
+11. ~~Privacidad del saldo~~ → **decidido** (20/11): todo público, como Bitcoin y Ethereum (ver punto 3).
 
 > Las tablas de las secciones 1 a 4 se armaron con conocimiento previo. La sección "Blockchains más parecidas"
 > sí tiene fuentes, consultadas el 14/11/2026. Antes de pasar algo de las tablas al informe, buscarle fuente.

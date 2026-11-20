@@ -1,16 +1,16 @@
 # Contrato 1 — TP Integrador · Grupo SDMER
 
-Contrato inicial del grupo, 13/11/2026. Son las funcionalidades que el grupo se compromete a tener en la
+Contrato inicial del grupo, 13/11/2026 (estado actualizado el 20/11/2026). Son las funcionalidades que el grupo se compromete a tener en la
 blockchain, más allá del TP base. Para los puntos 1 a 4 se agregó una **investigación inicial**: de qué
 protocolo o estándar de una blockchain real tomaríamos cada uno. Es una propuesta: el protocolo final de cada
 punto lo confirma el grupo.
 
 | # | Punto (tal como lo definió el grupo) | Estado |
 |---|---|---|
-| 1 | Servicio de registro de workers y personas (clave pública y privada) | Por hacer |
+| 1 | Servicio de registro de workers y personas (clave pública y privada) | **Hecho** (17/11): cuentas con Ed25519 + `seq`; workers con token propio por HTTPS desde `/unirse` (no mTLS) |
 | 2 | Cuenta compartida / fee, crowdfunding (transferencia con aprobación extra) | Por hacer |
-| 3 | Notificar por websocket, para no gastar ciclos de gusto | Por hacer |
-| 4 | El gateway comprueba que el worker funciona y "dice la verdad" + clasificación de nodo por potencia y recompensa + websocket | **En parte** (canarios, calibración, clases y premio ya están; falta el websocket) |
+| 3 | Notificar por websocket, para no gastar ciclos de gusto | **Hecho** (20/11): servicio `notifier`, outbox y foto del estado al reconectarse; suscripciones públicas (como Bitcoin y Ethereum) |
+| 4 | El gateway comprueba que el worker funciona y "dice la verdad" + clasificación de nodo por potencia y recompensa + websocket | **En parte** (canarios, calibración, clases, premio y token propio por worker ya están; faltan el websocket y decidir las shares) |
 | 5 | KEDA: ajuste de escalado dinámico, colas con quorum, recreación de un bloque a partir del cambio de dificultad | **Hecho** |
 
 Dependencias: el **1** (claves y firmas) es la base del **2** (no se puede aprobar un pago sin firmas) y mejora
@@ -46,15 +46,6 @@ guarda él y con ella **firma**; la pública queda registrada y con ella el sist
 - **Workers:** se registran con su clave pública. Para entrar al gateway firman un texto al azar que les manda el
   gateway (como EIP-4361), en vez de presentar el token compartido. Cada resultado va firmado.
 - **Registro:** una transacción `registrar` que asocia un nombre (`mateo`) a una clave pública, como un alias.
-
-**Falta: cómo se da de alta un worker.** Hoy todos usan el mismo `MINER_TOKEN` y no hay forma de sumarse.
-Dos opciones:
-- **Página pública de alta:** cualquiera entra, pide unirse y recibe su credencial propia. **Es la que pensó el
-  profe.** Como cualquier desconocido podría minar, los canarios, la cuarentena y poder revocar un worker solo
-  pasan a ser imprescindibles.
-- **Token generado por el servidor y entregado por el grupo:** más simple y cerrado, pero no es abierto.
-
-Pendiente de confirmar por el grupo (la página es un componente nuevo).
 
 ---
 
