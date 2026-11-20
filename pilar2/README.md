@@ -208,6 +208,9 @@ Así el gateway y el coordinator ni se enteran de quién minó, y el binario CUD
   sin firma, porque es lo que hace el `bench.py` de la cátedra (no se puede modificar). Son las únicas cuentas
   sin firma. No se pueden registrar esos nombres, ni `recompensa` ni los que empiezan con `miner:`.
 - Una tx de un sender que no es del génesis y no está registrado se rechaza (`400`, cuenta no registrada).
+- **Limitación conocida (decidido el 20/11, opción B):** las cuentas del génesis (`user-0..96`) no firman, así que
+  cualquiera puede mover plata de ellas a cualquier cuenta. Se deja así porque `bench.py` de la cátedra no firma. Se
+  evaluó que sin firma solo puedan pagarle a otra cuenta del génesis (`bench.py` solo usa esas) y quedó descartado.
 - Cliente: `pilar2/tools/cuenta.py` (`claves`, `registrar`, `enviar`). `GET /balances/<cuenta>` dice si está registrada y su último `seq`.
 - **Pendiente (solo para el `MINER_TOKEN` compartido):** las cuentas de cobro de los mineros (`MINER_ACCOUNT`, ej. `mateo`) reciben premios sin estar
   registradas. Los workers dados de alta en `/unirse` ya cobran en su cuenta registrada. Para gastar esa plata el dueño tiene que registrar ese nombre con su clave; hasta que se ate
