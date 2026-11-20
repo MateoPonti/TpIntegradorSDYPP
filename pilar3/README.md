@@ -242,6 +242,19 @@ Escalado: KEDA consulta `GET /scaling` del gateway y fija las réplicas en `desi
 
 ## Mediciones (sección 3.3)
 
+**Hechas el 20/11/2026:** [`loadtest/resultados/2026-11-20-completa/`](loadtest/resultados/2026-11-20-completa/README.md)
+(bulks de 1 a 100.000, prefijos 1 a 8, fragmentación 1 a 50 %, CPU contra GPU con el mismo prefijo y entrada y
+salida de la GPU), corridas con [`loadtest/completa/correr.sh`](loadtest/completa/correr.sh) desde un pod dentro de
+GKE. Resumen:
+- Con el **mismo prefijo** la GPU gana claro: con 8 ceros, 19 s contra 251 s (13 veces); con 7 ceros, de 3 a 8 veces.
+- Hasta 6 ceros los dos dan ~10 s: el límite es la **ventana de 10 s**, no el minado.
+- En **automático** la GPU tarda más, porque el pool sube el prefijo a 8: usa la potencia para subir la dificultad.
+  Con carga continua cada bloque tarda ~14 s y el sistema se atrasa (mejora posible, no decidida).
+- Al entrar la GPU, el prefijo sube a 8 en 5 s; al salir, el bloque se rearma a los 19 s y KEDA vuelve a levantar
+  los 8 pods CPU.
+- Se encontró que el HPA tiraba pedidos al bajar réplicas (142 errores en una corrida de 10.000): arreglado con
+  `preStop` y una ventana de 300 s; después, 0 errores.
+
 ```bash
 kubectl -n tpi get svc coordinator gateway    # IPs públicas (contexto GKE)
 cd loadtest

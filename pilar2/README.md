@@ -431,6 +431,10 @@ Además de las del Word: `mining:current` (candidato que se mina), `tx:status` (
 - ~~Firmas Ed25519~~: hechas el 17/11 (cuentas con clave). RabbitMQ con 3 réplicas y Redis con Sentinel también
   (17/11, ver `pilar3/README.md`).
 - ~~Emisión sin tope~~ → **resuelto el 20/11 con el modelo de Bitcoin** (ver "Premio, halving y comisión" arriba).
+- **Prefijo automático con GPU** (pruebas de carga del 20/11): elige 8 ceros porque el minado promedio es 4,3 s, pero
+  de punta a punta cada bloque tarda ~14 s y, con tx llegando todo el tiempo, el sistema se atrasa. Sin decidir:
+  elegir el prefijo con el tiempo real de los últimos bloques, o un margen mayor. Ver
+  `pilar3/loadtest/resultados/2026-11-20-completa/README.md`.
 - **Limitación conocida:** perder el `.key` es perder la cuenta. No hay recuperación ni cambio de clave (decidido
   el 20/11: como en Bitcoin).
 - **Limitación conocida:** la calibración confía en los `hashes` y `engine_seconds` que informa el minero. Uno

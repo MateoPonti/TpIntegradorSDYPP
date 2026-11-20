@@ -53,6 +53,12 @@ spec:
                 secretKeyRef:
                   name: gateway-auth
                   key: miner-token
+          # Al apagarse (el HPA saca réplicas o hay rollout), sigue atendiendo 10 s mientras Kubernetes lo saca del
+          # Service. Sin esto, los pedidos que llegan en esos segundos fallan (medido el 20/11: 142 errores en 10.000).
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "10"]
           readinessProbe:
             httpGet:
               path: /health
@@ -110,7 +116,7 @@ spec:
   behavior:
     scaleDown:
       # Miners poll in bursts: without a window the HPA flaps between blocks.
-      stabilizationWindowSeconds: 120
+      stabilizationWindowSeconds: 300  # 20/11: con 120 s bajaba de 5 a 2 en plena carga
 ---
 apiVersion: policy/v1
 kind: PodDisruptionBudget

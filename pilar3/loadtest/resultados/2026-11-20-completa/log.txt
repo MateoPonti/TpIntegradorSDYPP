@@ -1,0 +1,130 @@
+[13:52:59] === fase gpu ===
+[13:52:59] GPU encendida (pid 889)
+[13:54:08] config modo=auto prefijo=00000 fragmento=10
+[13:54:08] bench bulks_gpu.csv bulks=1,10,100,1000,10000 repeat=3 dif=auto frag=10 gpu=1 cpu=0
+bulk=     1 difficulty=auto fragment=10.0% confirm_median_s=11.633 errors=0
+bulk=    10 difficulty=auto fragment=10.0% confirm_median_s=11.306 errors=0
+bulk=   100 difficulty=auto fragment=10.0% confirm_median_s=12.704 errors=0
+bulk=  1000 difficulty=auto fragment=10.0% confirm_median_s=14.744 errors=0
+bulk= 10000 difficulty=auto fragment=10.0% confirm_median_s=57.037 errors=0
+[13:59:23] bench bulks_gpu.csv bulks=100000 repeat=1 dif=auto frag=10 gpu=1 cpu=0
+bulk=100000 difficulty=auto fragment=10.0% confirm_median_s=569.032 errors=0
+[14:09:34] config modo=fixed prefijo=0 fragmento=10
+[14:09:34] bench prefijos_gpu.csv bulks=100 repeat=3 dif=0 frag=10 gpu=1 cpu=0
+bulk=   100 difficulty=0 fragment=10.0% confirm_median_s=9.581 errors=0
+[14:10:38] config modo=fixed prefijo=00 fragmento=10
+[14:10:38] bench prefijos_gpu.csv bulks=100 repeat=3 dif=00 frag=10 gpu=1 cpu=0
+bulk=   100 difficulty=00 fragment=10.0% confirm_median_s=10.708 errors=0
+[14:11:45] config modo=fixed prefijo=000 fragmento=10
+[14:11:45] bench prefijos_gpu.csv bulks=100 repeat=3 dif=000 frag=10 gpu=1 cpu=0
+bulk=   100 difficulty=000 fragment=10.0% confirm_median_s=9.639 errors=0
+[14:12:45] config modo=fixed prefijo=0000 fragmento=10
+[14:12:45] bench prefijos_gpu.csv bulks=100 repeat=3 dif=0000 frag=10 gpu=1 cpu=0
+bulk=   100 difficulty=0000 fragment=10.0% confirm_median_s=9.625 errors=0
+[14:13:45] config modo=fixed prefijo=00000 fragmento=10
+[14:13:45] bench prefijos_gpu.csv bulks=100 repeat=3 dif=00000 frag=10 gpu=1 cpu=0
+bulk=   100 difficulty=00000 fragment=10.0% confirm_median_s=8.598 errors=0
+[14:14:46] config modo=fixed prefijo=000000 fragmento=10
+[14:14:46] bench prefijos_gpu.csv bulks=100 repeat=3 dif=000000 frag=10 gpu=1 cpu=0
+bulk=   100 difficulty=000000 fragment=10.0% confirm_median_s=9.633 errors=0
+[14:15:47] config modo=fixed prefijo=0000000 fragmento=10
+[14:15:47] bench prefijos_gpu.csv bulks=100 repeat=3 dif=0000000 frag=10 gpu=1 cpu=0
+bulk=   100 difficulty=0000000 fragment=10.0% confirm_median_s=18.994 errors=0
+[14:17:33] config modo=fixed prefijo=00000000 fragmento=10
+[14:17:33] bench prefijos_gpu.csv bulks=100 repeat=3 dif=00000000 frag=10 gpu=1 cpu=0
+bulk=   100 difficulty=00000000 fragment=10.0% confirm_median_s=250.84 errors=0
+[14:29:16] config modo=fixed prefijo=00000000 fragmento=1
+[14:29:16] bench fragmentos_gpu.csv bulks=100 repeat=3 dif=00000000 frag=1 gpu=1 cpu=0
+[14:31:58] === fase cpu_fragmentos ===
+[14:32:33] config modo=fixed prefijo=0000000 fragmento=1
+[14:32:33] 8 mineros CPU listos
+[14:32:33] bench fragmentos_cpu.csv bulks=100 repeat=3 dif=0000000 frag=1 gpu=0 cpu=8
+bulk=   100 difficulty=0000000 fragment=1.0% confirm_median_s=32.313 errors=0
+[14:36:13] config modo=fixed prefijo=0000000 fragmento=5
+[14:36:13] 8 mineros CPU listos
+[14:36:13] bench fragmentos_cpu.csv bulks=100 repeat=3 dif=0000000 frag=5 gpu=0 cpu=8
+bulk=   100 difficulty=0000000 fragment=5.0% confirm_median_s=46.725 errors=0
+[14:39:58] config modo=fixed prefijo=0000000 fragmento=10
+[14:39:58] 8 mineros CPU listos
+[14:39:58] bench fragmentos_cpu.csv bulks=100 repeat=3 dif=0000000 frag=10 gpu=0 cpu=8
+bulk=   100 difficulty=0000000 fragment=10.0% confirm_median_s=98.166 errors=0
+[14:44:52] config modo=fixed prefijo=0000000 fragmento=25
+[14:44:53] 8 mineros CPU listos
+[14:44:53] bench fragmentos_cpu.csv bulks=100 repeat=3 dif=0000000 frag=25 gpu=0 cpu=8
+bulk=   100 difficulty=0000000 fragment=25.0% confirm_median_s=22.972 errors=0
+[14:46:34] config modo=fixed prefijo=0000000 fragmento=50
+[14:46:34] 8 mineros CPU listos
+[14:46:35] bench fragmentos_cpu.csv bulks=100 repeat=3 dif=0000000 frag=50 gpu=0 cpu=8
+bulk=   100 difficulty=0000000 fragment=50.0% confirm_median_s=90.767 errors=0
+[14:51:11] === fase gpu ===
+[14:51:15] GPU encendida y conectada (pid 1293)
+[14:52:18] config modo=auto prefijo=00000 fragmento=10
+[14:52:18] bench bulks_gpu.csv bulks=1,10,100,1000,10000 repeat=3 dif=auto frag=10 gpu=1 cpu=0
+bulk=     1 difficulty=auto fragment=10.0% confirm_median_s=18.616 errors=0
+bulk=    10 difficulty=auto fragment=10.0% confirm_median_s=8.354 errors=0
+bulk=   100 difficulty=auto fragment=10.0% confirm_median_s=33.122 errors=0
+bulk=  1000 difficulty=auto fragment=10.0% confirm_median_s=16.687 errors=0
+bulk= 10000 difficulty=auto fragment=10.0% confirm_median_s=167.998 errors=142
+[15:04:37] bench bulks_gpu.csv bulks=100000 repeat=1 dif=auto frag=10 gpu=1 cpu=0
+bulk=100000 difficulty=auto fragment=10.0% confirm_median_s=1377.211 errors=0
+[15:28:10] config modo=fixed prefijo=0 fragmento=10
+[15:28:10] bench prefijos_gpu.csv bulks=100 repeat=3 dif=0 frag=10 gpu=1 cpu=0
+bulk=   100 difficulty=0 fragment=10.0% confirm_median_s=9.842 errors=0
+[15:29:14] config modo=fixed prefijo=00 fragmento=10
+[15:29:14] bench prefijos_gpu.csv bulks=100 repeat=3 dif=00 frag=10 gpu=1 cpu=0
+bulk=   100 difficulty=00 fragment=10.0% confirm_median_s=9.732 errors=0
+[15:30:18] config modo=fixed prefijo=000 fragmento=10
+[15:30:18] bench prefijos_gpu.csv bulks=100 repeat=3 dif=000 frag=10 gpu=1 cpu=0
+bulk=   100 difficulty=000 fragment=10.0% confirm_median_s=10.508 errors=0
+[15:31:28] config modo=fixed prefijo=0000 fragmento=10
+[15:31:28] bench prefijos_gpu.csv bulks=100 repeat=3 dif=0000 frag=10 gpu=1 cpu=0
+bulk=   100 difficulty=0000 fragment=10.0% confirm_median_s=10.52 errors=0
+[15:32:36] config modo=fixed prefijo=00000 fragmento=10
+[15:32:36] bench prefijos_gpu.csv bulks=100 repeat=3 dif=00000 frag=10 gpu=1 cpu=0
+bulk=   100 difficulty=00000 fragment=10.0% confirm_median_s=9.542 errors=0
+[15:33:37] config modo=fixed prefijo=000000 fragmento=10
+[15:33:37] bench prefijos_gpu.csv bulks=100 repeat=3 dif=000000 frag=10 gpu=1 cpu=0
+bulk=   100 difficulty=000000 fragment=10.0% confirm_median_s=9.611 errors=0
+[15:34:46] config modo=fixed prefijo=0000000 fragmento=10
+[15:34:46] bench prefijos_gpu.csv bulks=100 repeat=3 dif=0000000 frag=10 gpu=1 cpu=0
+bulk=   100 difficulty=0000000 fragment=10.0% confirm_median_s=8.507 errors=0
+[15:35:44] config modo=fixed prefijo=00000000 fragmento=10
+[15:35:44] bench prefijos_gpu.csv bulks=100 repeat=3 dif=00000000 frag=10 gpu=1 cpu=0
+bulk=   100 difficulty=00000000 fragment=10.0% confirm_median_s=18.972 errors=0
+[15:37:17] config modo=fixed prefijo=00000000 fragmento=1
+[15:37:17] bench fragmentos_gpu.csv bulks=100 repeat=3 dif=00000000 frag=1 gpu=1 cpu=0
+bulk=   100 difficulty=00000000 fragment=1.0% confirm_median_s=14.354 errors=0
+[15:38:54] config modo=fixed prefijo=00000000 fragmento=5
+[15:38:54] bench fragmentos_gpu.csv bulks=100 repeat=3 dif=00000000 frag=5 gpu=1 cpu=0
+bulk=   100 difficulty=00000000 fragment=5.0% confirm_median_s=12.852 errors=0
+[15:40:41] config modo=fixed prefijo=00000000 fragmento=10
+[15:40:41] bench fragmentos_gpu.csv bulks=100 repeat=3 dif=00000000 frag=10 gpu=1 cpu=0
+bulk=   100 difficulty=00000000 fragment=10.0% confirm_median_s=17.815 errors=0
+[15:42:09] config modo=fixed prefijo=00000000 fragmento=25
+[15:42:09] bench fragmentos_gpu.csv bulks=100 repeat=3 dif=00000000 frag=25 gpu=1 cpu=0
+bulk=   100 difficulty=00000000 fragment=25.0% confirm_median_s=16.809 errors=0
+[15:43:27] config modo=fixed prefijo=00000000 fragmento=50
+[15:43:27] bench fragmentos_gpu.csv bulks=100 repeat=3 dif=00000000 frag=50 gpu=1 cpu=0
+bulk=   100 difficulty=00000000 fragment=50.0% confirm_median_s=14.973 errors=0
+[15:44:19] === fase entrada ===
+[15:44:19] GPU apagada
+[15:44:52] config modo=auto prefijo=00000 fragmento=10
+[15:45:25] 8 mineros CPU listos
+[15:45:25] entrada/salida: 0 s solo CPU
+15:47:25 entra la GPU
+15:49:55 sale la GPU
+[15:52:49] === fase mismo_prefijo (0000000) ===
+[15:52:53] GPU encendida y conectada (pid 1894)
+[15:53:41] config modo=fixed prefijo=0000000 fragmento=10
+[15:53:41] bench mismo_prefijo_gpu.csv bulks=1,10,100,1000,10000 repeat=3 dif=0000000 frag=10 gpu=1 cpu=0
+bulk=     1 difficulty=0000000 fragment=10.0% confirm_median_s=13.412 errors=0
+bulk=    10 difficulty=0000000 fragment=10.0% confirm_median_s=10.329 errors=0
+bulk=   100 difficulty=0000000 fragment=10.0% confirm_median_s=9.692 errors=0
+bulk=  1000 difficulty=0000000 fragment=10.0% confirm_median_s=8.471 errors=0
+bulk= 10000 difficulty=0000000 fragment=10.0% confirm_median_s=52.009 errors=0
+[15:59:03] GPU apagada
+[15:59:38] config modo=fixed prefijo=0000000 fragmento=10
+[15:59:49] 8 mineros CPU listos
+[15:59:49] bench mismo_prefijo_cpu.csv bulks=1,10,100,1000,10000 repeat=3 dif=0000000 frag=10 gpu=0 cpu=8
+[16:18:49] config modo=auto prefijo=00000 fragmento=10
+[16:18:49] === listo mismo_prefijo: ConfigMap de vuelta en auto 00000 10 ===
