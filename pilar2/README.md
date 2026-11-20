@@ -300,8 +300,25 @@ Además de las del Word: `mining:current` (candidato que se mina), `tx:status` (
 - ~~Parámetros CUDA~~: medidos el 17/11 (256 hilos, 48 bloques, K = 256, batch 2^28; `MINER_CHUNK`,
   `MIN_RANGE_GPU` y `CALIB_RANGE_GPU` = 1.000 M). Ver `pilar1/README.md`.
 - **Dos colas** (`tasks.gpu` / `tasks.cpu`): se decide después de medir si GPU y CPU minando juntos cambia algo.
-- **A futuro, sin hacer:** firmas Ed25519 en las tx (hoy cualquiera puede mandar una tx en nombre de otra cuenta).
-  RabbitMQ con 3 réplicas y Redis con Sentinel ya están hechos (17/11, ver `pilar3/README.md`).
+- ~~Firmas Ed25519~~: hechas el 17/11 (cuentas con clave). RabbitMQ con 3 réplicas y Redis con Sentinel también
+  (17/11, ver `pilar3/README.md`).
+- **Emisión sin tope (encontrado el 20/11, sin programar).** Cada bloque emite un premio nuevo de 50,00 y solo se
+  arma un bloque si hay alguna tx pendiente. Mandarse plata a uno mismo es gratis (no mueve saldo), así que un minero
+  puede mandarse 0,01 y cobrar el premio del bloque que eso genera (los 50 si es el único minero). Sin tx no hay
+  bloque ni premio, así que no se puede minar "en vacío". El ritmo ya está limitado (como mucho un bloque por
+  ventana de 10 s, unos 300 por minuto), pero la **plata total no tiene tope**.
+  - Comparación: en Bitcoin también se cobra el premio minando bloques sin tx, y no es trampa. Lo que evita la plata
+    infinita es que los bloques salen a ritmo fijo (uno cada 10 min) y que el premio se divide a la mitad cada
+    210.000 bloques (halving): nunca va a haber más de 21 millones. La comisión no lo evita.
+  - "Gas" es la comisión de Ethereum: se paga por unidad de trabajo porque las tx pueden ejecutar contratos; desde
+    EIP-1559 una parte (la base fee) se quema y otra (la propina) va al validador. Nosotros solo tenemos
+    transferencias, que cuestan todas lo mismo: sirve una comisión fija, como Stellar.
+  - **Propuesta (falta que el grupo confirme los números):** (1) **halving**: el premio baja a la mitad cada
+    `HALVING_BLOCKS` (propuesta 1.000); con 50 de premio, el total emitido tiende a 100.000 y nunca lo pasa;
+    (2) **comisión quemada** de `TX_FEE_CENTS` (propuesta 0,10) por tx, que es la fee del punto 2 del contrato: no
+    evita la emisión (0,10 contra 50 de premio sigue conviniendo), pero hace que las tx basura cuesten. Decidido:
+    la comisión **se quema** (no va al minero ni a una cuenta del pool), como la base fee de Ethereum. Hay que
+    adaptar `verify_chain` (premio según la altura, comisión en cada tx) y reservar `amount + comisión` en el Lua.
 - **Limitación conocida:** la calibración confía en los `hashes` y `engine_seconds` que informa el minero. Uno
   que mienta puede inflar su hashrate inicial hasta que lo atrapa un canario (en la prueba local, en su primera
   tarea real).
