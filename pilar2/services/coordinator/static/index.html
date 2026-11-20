@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Explorador · SDMER</title>
-<link rel="stylesheet" href="/assets/sdmer.css?v=2">
+<link rel="stylesheet" href="/assets/sdmer.css?v=4">
 </head>
 <body>
 <header class="topbar"><div class="in">
@@ -117,6 +117,7 @@ async function refreshStatus() {
     ["Prefijo", `<span class="mono">${esc(plan.prefix ?? "—")}</span> <span class="muted" style="font-size:13px">(${esc(plan.mode ?? "")})</span>`],
     ["Hashrate del pool", rate(plan.hashrate)],
     ["Mineros", `${s.miners.gpu} GPU · ${s.miners.cpu} CPU`],
+    ["Premio por bloque", s.economy ? `${money(s.economy.next_subsidy_cents)} <span class="muted" style="font-size:13px">+ comisiones</span>` : "—"],
     ["Avisos", wsOpen ? '<span class="dot ok"></span>en vivo' : '<span class="dot bad"></span>cada 3 s'],
   ];
   $("stats").innerHTML = cells.map(([k, v]) => `<div class="stat"><span>${k}</span><b>${v}</b></div>`).join("");
@@ -181,16 +182,18 @@ async function showBlock(i, scroll) {
     ["Prefijo", `<span class="mono">${esc(b.prefix || "—")}</span>`],
     ["Nonce", `<span class="mono">${esc(b.nonce)}</span>`],
     ["Minero", `<span class="mono">${esc(b.miner ?? "—")}</span>`],
-    ["Premio", b.reward_cents != null ? `${money(b.reward_cents)} (se paga en el bloque ${b.index + 1})` : "—"],
+    ["Premio", b.reward_cents == null ? "—" : `${money(b.reward_cents)}${b.subsidy_cents != null
+      ? ` = ${money(b.subsidy_cents)} de subsidio + ${money(b.fees_cents)} de comisiones` : ""} (se paga en el bloque ${b.index + 1})`],
     ["Rearmado", b.rearmed ? `sí, ${b.rearmed} vez/veces (se fue hashrate)` : "no"],
     ["Comprobación", "md5(hash anterior + tx_digest + nonce) = hash, y el hash empieza con el prefijo"],
   ];
   $("blockInfo").innerHTML = rows.map(([k, v]) => `<tr><th>${k}</th><td>${v}</td></tr>`).join("");
   $("txTitle").textContent = `Transacciones (${b.transactions.length - rewards.length} de usuarios, ${rewards.length} de premio)`;
-  $("blockTxs").innerHTML = "<tr><th>#</th><th>tx_id</th><th>Tipo</th><th>De</th><th>Para</th><th class=\"num\">Monto</th></tr>" +
+  $("blockTxs").innerHTML = "<tr><th>#</th><th>tx_id</th><th>Tipo</th><th>De</th><th>Para</th><th class=\"num\">Monto</th><th class=\"num\">Comisión</th></tr>" +
     b.transactions.map((t, n) => `<tr><td>${n + 1}</td><td class="mono">${esc(t.tx_id)}</td>
       <td>${t.sender === "recompensa" ? `<span class="tag ok">premio del ${t.reward_for}</span>` : t.signature ? '<span class="tag">firmada</span>' : '<span class="tag">transferencia</span>'}</td>
-      <td>${t.sender === "recompensa" ? "—" : accLink(t.sender)}</td><td>${accLink(t.receiver)}</td><td class="num">${money(t.amount)}</td></tr>`).join("");
+      <td>${t.sender === "recompensa" ? "—" : accLink(t.sender)}</td><td>${accLink(t.receiver)}</td><td class="num">${money(t.amount)}</td>
+      <td class="num muted">${t.fee ? money(t.fee) : "—"}</td></tr>`).join("");
   if (scroll) $("detail").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 

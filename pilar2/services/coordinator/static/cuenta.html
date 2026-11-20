@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Mi cuenta · SDMER</title>
-<link rel="stylesheet" href="/assets/sdmer.css?v=3">
+<link rel="stylesheet" href="/assets/sdmer.css?v=4">
 <script src="/assets/nacl-fast.min.js"></script>
-<script src="/assets/claves.js?v=3"></script>
+<script src="/assets/claves.js?v=4"></script>
 </head>
 <body>
 <header class="topbar"><div class="in">
@@ -55,7 +55,8 @@
     <h2>Enviar</h2>
     <div class="body">
     <p class="hint">La transferencia sale firmada con tu clave y con el número de secuencia siguiente, así nadie
-       puede repetirla.</p>
+       puede repetirla. Cada transferencia paga una comisión de <b class="fee">0,10</b> aparte del monto, que cobran
+       los mineros del bloque (como en Bitcoin).</p>
     <div class="row">
       <input id="para" maxlength="64" placeholder="para (ej. user-2)" autocomplete="off">
       <input id="monto" placeholder="monto (ej. 12,50)" inputmode="decimal">
@@ -70,7 +71,8 @@
   <section>
     <h2>Cuentas de prueba del génesis</h2>
     <div class="body">
-    <p class="hint"><code>user-0</code> a <code>user-96</code> arrancan con saldo y no firman, porque las usa el
+    <p class="hint"><code>user-0</code> a <code>user-96</code> arrancan con saldo y no firman (también pagan la
+       comisión de <b class="fee">0,10</b>), porque las usa el
        <code>bench.py</code> de la cátedra. Sirven para probar sin crear una cuenta.</p>
     <div class="row">
       <input id="gDe" placeholder="de (ej. user-1)">
@@ -192,6 +194,11 @@ $("enviar").onclick = async () => {
     dibujarSaldo();
   } catch (e) { say("msg3", e.message); }
 };
+
+// La comisión la fija el servidor: se muestra la que dice /status.
+fetch("/status").then((r) => r.json()).then((s) => {
+  if (s.economy) document.querySelectorAll(".fee").forEach((e) => { e.textContent = money(s.economy.tx_fee_cents); });
+}).catch(() => {});
 
 $("gEnviar").onclick = async () => {
   try {

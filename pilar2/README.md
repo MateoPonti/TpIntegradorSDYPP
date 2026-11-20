@@ -119,6 +119,8 @@ Así el gateway y el coordinator ni se enteran de quién minó, y el binario CUD
 {"v":1,"task_id":"…","block_id":"3-1a2b3c4d","worker":"gpu-PC","from":0,"to":104857,"found":true,"nonce":48213,"hash":"00000…","hashes":48214,"seconds":0.21,"engine_seconds":0.01}
 // tx de premio (primera del bloque siguiente; sender reservado)
 {"tx_id":"reward-3-mateo","sender":"recompensa","receiver":"mateo","amount":4500,"ts":…,"reward_for":3}
+// tx común: el servidor le agrega la comisión (fee) al aceptarla
+{"tx_id":"…","sender":"user-1","receiver":"user-2","amount":1050,"fee":10,"ts":…}
 // block.solved (coordinator → outbox → block.events.<pod>: lo escuchan el gateway y el notifier)
 {"v":1,"event_id":"block-3","type":"block.solved","block_id":"3-1a2b3c4d","index":3,"block_hash":"00000…","timestamp":…,"miner":"gpu-PC",
  "txs":[{"tx_id":"…","sender":"user-1","receiver":"user-2","amount":1050}]}
@@ -287,6 +289,36 @@ un bloque y pregunta cada 15 s solo lo que no tiene aviso (mineros, tx pendiente
   cuenta en la otra réplica, reconexión con foto al día, evento repetido en el outbox avisado una sola vez y origen
   ajeno rechazado.
 
+### Premio, halving y comisión (modelo de Bitcoin, 20/11/2026)
+
+**El problema que había:** cada bloque emitía 50,00 nuevos para siempre y solo se arma un bloque si hay alguna tx.
+Mandarse plata a uno mismo era gratis, así que un minero podía mandarse 0,01, generar el bloque y cobrar el premio:
+la plata total no tenía tope (el ritmo sí: como mucho un bloque por ventana de 10 s).
+
+**Cómo quedó, igual que Bitcoin:**
+- **Halving:** el subsidio (la plata nueva de cada bloque) es `BLOCK_REWARD_CENTS` (50,00) en los bloques 1 a
+  `HALVING_BLOCKS` (1.000) y baja a la mitad en cada tramo siguiente (25,00, 12,50…). En centavos enteros llega a 0
+  después de unos 13 halvings, así que en total se emiten menos de 100.000. En Bitcoin es 50 BTC cada 210.000 bloques
+  y un tope de 21 millones.
+- **Comisión:** cada tx paga `TX_FEE_CENTS` (0,10) aparte del monto; también las autotransferencias y las de las
+  cuentas del génesis. El disponible tiene que alcanzar para monto + comisión (se reserva todo junto en el Lua). Al
+  sellar, la comisión sale del sender y se suma al premio del bloque: `reward_cents = subsidio + comisiones`, que se
+  reparte en el bloque siguiente igual que antes (según los nonces de cada minero). Cuando el subsidio llegue a 0,
+  los mineros cobran solo las comisiones, como en Bitcoin. La comisión no va en la firma: es fija y la pone el
+  servidor (se ve en `GET /status` → `economy`).
+- **El truco de mandarse plata a uno mismo:** mientras haya subsidio sigue dando premio, pero entre todos los mineros
+  no se pueden sacar más de 100.000 en total. Cuando el subsidio llega a 0 deja de servir: pagás 0,10 y, si minás
+  vos, te vuelven los mismos 0,10.
+- Se evaluó **quemar** la comisión (como la base fee de Ethereum) y se descartó: cuando el subsidio llega a 0, los
+  mineros no cobrarían nada. "Gas" es el nombre de la comisión en Ethereum: se paga por unidad de trabajo porque las
+  tx pueden ejecutar contratos; nosotros solo tenemos transferencias, así que alcanza con una comisión fija.
+- Cada bloque guarda `subsidy_cents`, `fees_cents` y `reward_cents`, y cada tx su `fee`. `verify_chain` comprueba que el
+  subsidio sea el que toca según la altura y que las comisiones sumen las de las tx. Los bloques de antes del 20/11
+  (premio fijo de 50,00, sin comisión) se siguen aceptando.
+- Para mostrar el halving en la defensa sin esperar 1.000 bloques: `HALVING_BLOCKS` más chico en el ConfigMap.
+  Ojo: `verify_chain` usa el valor actual, así que cambiarlo con la cadena andando hace que los bloques viejos ya no
+  cuadren; conviene hacerlo con la cadena reseteada.
+
 ### Claves de Redis
 
 Además de las del Word: `mining:current` (candidato que se mina), `tx:status` (dónde está cada tx),
@@ -302,23 +334,7 @@ Además de las del Word: `mining:current` (candidato que se mina), `tx:status` (
 - **Dos colas** (`tasks.gpu` / `tasks.cpu`): se decide después de medir si GPU y CPU minando juntos cambia algo.
 - ~~Firmas Ed25519~~: hechas el 17/11 (cuentas con clave). RabbitMQ con 3 réplicas y Redis con Sentinel también
   (17/11, ver `pilar3/README.md`).
-- **Emisión sin tope (encontrado el 20/11, sin programar).** Cada bloque emite un premio nuevo de 50,00 y solo se
-  arma un bloque si hay alguna tx pendiente. Mandarse plata a uno mismo es gratis (no mueve saldo), así que un minero
-  puede mandarse 0,01 y cobrar el premio del bloque que eso genera (los 50 si es el único minero). Sin tx no hay
-  bloque ni premio, así que no se puede minar "en vacío". El ritmo ya está limitado (como mucho un bloque por
-  ventana de 10 s, unos 300 por minuto), pero la **plata total no tiene tope**.
-  - Comparación: en Bitcoin también se cobra el premio minando bloques sin tx, y no es trampa. Lo que evita la plata
-    infinita es que los bloques salen a ritmo fijo (uno cada 10 min) y que el premio se divide a la mitad cada
-    210.000 bloques (halving): nunca va a haber más de 21 millones. La comisión no lo evita.
-  - "Gas" es la comisión de Ethereum: se paga por unidad de trabajo porque las tx pueden ejecutar contratos; desde
-    EIP-1559 una parte (la base fee) se quema y otra (la propina) va al validador. Nosotros solo tenemos
-    transferencias, que cuestan todas lo mismo: sirve una comisión fija, como Stellar.
-  - **Propuesta (falta que el grupo confirme los números):** (1) **halving**: el premio baja a la mitad cada
-    `HALVING_BLOCKS` (propuesta 1.000); con 50 de premio, el total emitido tiende a 100.000 y nunca lo pasa;
-    (2) **comisión quemada** de `TX_FEE_CENTS` (propuesta 0,10) por tx, que es la fee del punto 2 del contrato: no
-    evita la emisión (0,10 contra 50 de premio sigue conviniendo), pero hace que las tx basura cuesten. Decidido:
-    la comisión **se quema** (no va al minero ni a una cuenta del pool), como la base fee de Ethereum. Hay que
-    adaptar `verify_chain` (premio según la altura, comisión en cada tx) y reservar `amount + comisión` en el Lua.
+- ~~Emisión sin tope~~ → **resuelto el 20/11 con el modelo de Bitcoin** (ver "Premio, halving y comisión" arriba).
 - **Limitación conocida:** la calibración confía en los `hashes` y `engine_seconds` que informa el minero. Uno
   que mienta puede inflar su hashrate inicial hasta que lo atrapa un canario (en la prueba local, en su primera
   tarea real).

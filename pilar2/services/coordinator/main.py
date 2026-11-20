@@ -18,7 +18,8 @@ from tpi_common.web import install_common_routes
 
 from . import accounts as cuentas
 from . import ledger
-from .blocks import Chain
+from .blocks import BLOCK_REWARD_CENTS, HALVING_BLOCKS, Chain
+from .reward import block_subsidy
 
 logger = setup_logging("coordinator")
 POLL = env_float("BLOCK_POLL_SECONDS", 1.0)  # duda 5 (propuesta): loop cada 1 s
@@ -98,7 +99,9 @@ async def _submit(body) -> tuple[int, dict]:
             TX_REJECTED.labels("firma inválida").inc()
             return 400, {"error": "firma inválida"}
         tx.update(seq=seq, signature=body["signature"])  # quedan en el bloque: cualquiera puede re-verificar
-    rc = await state["reserve"](keys=ledger.reserve_keys(tx), args=[tx["tx_id"], tx["amount"], json.dumps(tx), str(seq)])
+    tx["fee"] = ledger.TX_FEE_CENTS  # no va en la firma: es fija y la pone el servidor
+    total = tx["amount"] + tx["fee"]  # el disponible tiene que alcanzar para monto + comisión
+    rc = await state["reserve"](keys=ledger.reserve_keys(tx), args=[tx["tx_id"], total, json.dumps(tx), str(seq)])
     if rc < 0:
         reason = ledger.RESERVE_ERRORS[rc]
         TX_REJECTED.labels(reason).inc()
@@ -250,6 +253,10 @@ async def status():
         "pool_plan": json.loads(plan) if (plan := await r.get(keys.POOL_PLAN)) else None,
         "pool_signal": json.loads(signal) if signal else None,
         "leader": await r.get(keys.COORD_LEADER),
+        # Modelo de Bitcoin (20/11): subsidio con halving + comisión fija que cobran los mineros
+        "economy": {"base_reward_cents": BLOCK_REWARD_CENTS, "halving_blocks": HALVING_BLOCKS,
+                    "tx_fee_cents": ledger.TX_FEE_CENTS,
+                    "next_subsidy_cents": block_subsidy(await r.llen(keys.CHAIN), BLOCK_REWARD_CENTS, HALVING_BLOCKS)},
     }
 
 

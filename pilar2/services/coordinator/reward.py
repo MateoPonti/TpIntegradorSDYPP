@@ -6,7 +6,18 @@ Se paga a la cuenta de cobro de cada minero (MINER_ACCOUNT del agente; por defec
 dirección que pone un minero de Bitcoin en su bloque. Así los pods de KEDA, que cambian de nombre, y la
 GPU de la misma persona cobran todos en la misma cuenta: sus partes se suman."""
 
-REWARD_SENDER = "recompensa"  # plata nueva: no sale de ninguna cuenta
+REWARD_SENDER = "recompensa"  # el subsidio es plata nueva; las comisiones ya las pagaron los que mandaron tx
+
+
+def block_subsidy(index: int, base_cents: int, halving_blocks: int) -> int:
+    """Premio nuevo del bloque `index` (como Bitcoin, decidido el 20/11): `base_cents` en los primeros
+    `halving_blocks` bloques y a la mitad en cada tramo siguiente. En centavos enteros llega a 0, así que la plata
+    que se emite en total tiene tope (con 50,00 y 1.000 bloques, menos de 100.000). Después los mineros cobran solo
+    las comisiones."""
+    if index < 1:
+        return 0
+    halvings = (index - 1) // halving_blocks
+    return base_cents >> halvings if halvings < 64 else 0
 
 
 def miner_account(miner_id: str) -> str:

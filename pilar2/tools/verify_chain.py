@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Recorre la cadena por la API pública del coordinator y verifica cada bloque:
 enlace con el anterior, tx_digest, hash MD5, prefijo y el premio a los mineros (las tx de
-`recompensa` del bloque i pagan el bloque i-1 y suman exactamente su `reward_cents`).
+`recompensa` del bloque i pagan el bloque i-1 y suman exactamente su `reward_cents`). Desde el 20/11 el premio es
+subsidio con halving + comisiones (modelo de Bitcoin): se comprueba que el subsidio sea el que toca según la altura
+(parámetros de GET /status) y que las comisiones sumen las de las tx del bloque.
 Sirve después de reiniciar Redis (¿se perdió algo con appendfsync everysec?) y en la defensa.
 
     python pilar2/tools/verify_chain.py --url http://localhost:8000
@@ -43,8 +45,31 @@ def check_rewards(block: dict, prev_block: dict | None) -> list[str]:
     return errors
 
 
-def check_block(block: dict, prev_hash: str, prev_block: dict | None = None) -> list[str]:
-    errors = check_rewards(block, prev_block)
+def subsidy(index: int, base_cents: int, halving_blocks: int) -> int:
+    """Igual que coordinator/reward.py: block_subsidy (este script es solo stdlib y no lo importa)."""
+    if index < 1:
+        return 0
+    halvings = (index - 1) // halving_blocks
+    return base_cents >> halvings if halvings < 64 else 0
+
+
+def check_economy(block: dict, economy: dict | None) -> list[str]:
+    """Bloques sellados desde el 20/11: reward_cents = subsidio (con halving) + comisiones de sus tx."""
+    if "subsidy_cents" not in block:
+        return []  # bloque de antes del halving: premio fijo
+    errors = []
+    fees = sum(int(t.get("fee", 0)) for t in block["transactions"] if t["sender"] != REWARD_SENDER)
+    if block.get("fees_cents") != fees:
+        errors.append("fees_cents no suma las comisiones de las tx")
+    if block.get("reward_cents") != block["subsidy_cents"] + fees:
+        errors.append("reward_cents no es subsidio + comisiones")
+    if economy and block["subsidy_cents"] != subsidy(block["index"], economy["base_reward_cents"], economy["halving_blocks"]):
+        errors.append("el subsidio no es el que toca según la altura (halving)")
+    return errors
+
+
+def check_block(block: dict, prev_hash: str, prev_block: dict | None = None, economy: dict | None = None) -> list[str]:
+    errors = check_rewards(block, prev_block) + check_economy(block, economy)
     if block["previous_hash"] != prev_hash:
         errors.append("previous_hash no coincide con el bloque anterior")
     digest = hashlib.sha256(canonical(block["transactions"]).encode("utf-8")).hexdigest()
@@ -61,10 +86,11 @@ def check_block(block: dict, prev_hash: str, prev_block: dict | None = None) -> 
 def verify(base_url: str) -> int:
     base_url = base_url.rstrip("/")
     height = get(f"{base_url}/chain?limit=1")["height"]
+    economy = get(f"{base_url}/status").get("economy")
     prev, prev_block, bad = "0" * 32, None, 0
     for i in range(height):
         block = get(f"{base_url}/blocks/{i}")
-        errors = check_block(block, prev, prev_block)
+        errors = check_block(block, prev, prev_block, economy)
         status = "ok" if not errors else "; ".join(errors)
         print(f"#{i} {block['block_hash']} prefix={block['prefix']!r} txs={len(block['transactions'])} {status}")
         bad += bool(errors)

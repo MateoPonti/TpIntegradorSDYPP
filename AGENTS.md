@@ -107,7 +107,7 @@ Es un **pool de minería colaborativo**: todos minan el mismo bloque, cada uno e
 - **Tamaño de rango:** fragmentación `16^largo × POOL_FRAGMENT_PERCENT`, con un mínimo según si mina una GPU o solo CPU. Una sola cola (dos colas: se decide después de medir).
 - **Mineros CPU:** todo o nada. Sin GPU y con trabajo, `CPU_MINERS_MAX`; 60 s sin trabajo, 0; con GPU, 0. La GPU no va en KEDA.
 - **Gateway:** calibración al arrancar cada worker, canarios (1 de cada 20 tareas) y cuarentena (canario fallado o 3 préstamos vencidos seguidos). Nada de esto mina en GCP.
-- **Premio proporcional** a los nonces completados, pagado con tx `sender="recompensa"` en el bloque siguiente.
+- **Premio proporcional** a los nonces completados, pagado con tx `sender="recompensa"` en el bloque siguiente. **Modelo de Bitcoin** (20/11): el subsidio (50,00) baja a la mitad cada `HALVING_BLOCKS` (1.000) y cada tx paga `TX_FEE_CENTS` (0,10) que se suma al premio de ese bloque; la comisión **no** se quema.
 - Al menos **2 réplicas por servicio**. [Enunciado]
 
 ## 4. Infraestructura y despliegue (Pilar 3)

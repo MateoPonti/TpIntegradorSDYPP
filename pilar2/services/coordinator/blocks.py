@@ -21,11 +21,12 @@ from tpi_common.config import DIFFICULTY_PREFIX, env_float, env_int, env_str
 from tpi_common.logs import log
 from tpi_common.store import alive_workers
 
-from .reward import REWARD_SENDER, miner_account, reward_transactions, shares_by_account
+from .reward import REWARD_SENDER, block_subsidy, miner_account, reward_transactions, shares_by_account
 
 MAX_TX_PER_BLOCK = env_int("MAX_TX_PER_BLOCK", 1000)
 BLOCK_WINDOW = env_float("BLOCK_WINDOW_SECONDS", 10)
-BLOCK_REWARD_CENTS = env_int("BLOCK_REWARD_CENTS", 5000)
+BLOCK_REWARD_CENTS = env_int("BLOCK_REWARD_CENTS", 5000)  # subsidio inicial
+HALVING_BLOCKS = env_int("HALVING_BLOCKS", 1000)          # el subsidio baja a la mitad cada tantos bloques
 MODE = env_str("DIFFICULTY_MODE", "auto")
 TARGET = env_float("BLOCK_TARGET_SECONDS", 10)
 REARM_FACTOR = env_float("REARM_FACTOR", 6)          # rearmar si va a tardar más de 6 x el objetivo
@@ -94,11 +95,14 @@ for _, raw in ipairs(txs) do
   if tx['sender'] == '""" + REWARD_SENDER + """' then
     redis.call('INCRBY', 'balance:' .. tx['receiver'], tx['amount'])
   else
+    local fee = tonumber(tx['fee'] or 0)
     if tx['sender'] ~= tx['receiver'] then
       redis.call('DECRBY', 'balance:' .. tx['sender'], tx['amount'])
       redis.call('INCRBY', 'balance:' .. tx['receiver'], tx['amount'])
     end
-    redis.call('DECRBY', 'pending_out:' .. tx['sender'], tx['amount'])
+    -- la comisión sale del sender acá y vuelve como parte del premio del bloque siguiente
+    if fee > 0 then redis.call('DECRBY', 'balance:' .. tx['sender'], fee) end
+    redis.call('DECRBY', 'pending_out:' .. tx['sender'], tx['amount'] + fee)
   end
   redis.call('HSET', KEYS[7], tx['tx_id'], ARGV[5])
 end
@@ -195,18 +199,20 @@ class Chain:
             await self._publish_batch(cur)
 
     async def _rewards(self, index: int) -> list[dict]:
-        """Premio del bloque anterior, repartido según los nonces que completó cada minero."""
+        """Premio del bloque anterior (subsidio + comisiones, su `reward_cents`), repartido según los nonces que
+        completó cada minero."""
         prev_index = index - 1
         if prev_index < 1:
             return []
         shares = await self.r.hgetall(keys.block_shares(prev_index))
         raw = await self.r.get(keys.block(prev_index))
-        finder = json.loads(raw).get("miner") if raw else None
+        prev = json.loads(raw) if raw else {}
+        finder = prev.get("miner")
         miners = list(shares) + ([finder] if finder else [])
         accounts = {m: a for m in miners if (a := await self.r.get(keys.miner_account(m)))}
         finder_account = (accounts.get(finder) or miner_account(finder)) if finder else None
-        return reward_transactions(prev_index, shares_by_account(shares, accounts), BLOCK_REWARD_CENTS,
-                                   finder_account, round(time.time(), 3))
+        return reward_transactions(prev_index, shares_by_account(shares, accounts),
+                                   int(prev.get("reward_cents", BLOCK_REWARD_CENTS)), finder_account, round(time.time(), 3))
 
     async def _assemble(self) -> dict | None:
         first = await self.r.lindex(keys.TX_PENDING, 0)
@@ -339,10 +345,13 @@ class Chain:
     async def _seal_block(self, cur: dict, res: dict, nonce: int) -> str:
         index = cur["index"]
         txs = [json.loads(t) for t in await self.r.lrange(keys.tx_inflight(index), 0, -1)]
+        subsidy = block_subsidy(index, BLOCK_REWARD_CENTS, HALVING_BLOCKS)
+        fees = sum(int(t.get("fee", 0)) for t in txs if t["sender"] != REWARD_SENDER)
         block = {"index": index, "previous_hash": cur["previous_hash"], "transactions": txs,
                  "tx_digest": cur["tx_digest"], "prefix": cur["prefix"], "nonce": nonce,
                  "block_hash": res["hash"], "timestamp": time.time(), "miner": res.get("worker"),
-                 "reward_cents": BLOCK_REWARD_CENTS, "rearmed": cur.get("rearmed", 0)}
+                 "subsidy_cents": subsidy, "fees_cents": fees, "reward_cents": subsidy + fees,
+                 "rearmed": cur.get("rearmed", 0)}
         rc = await self._seal(
             keys=[keys.CHAIN_TIP, keys.MINING_CURRENT, keys.CHAIN, keys.block(index), keys.hash_key(res["hash"]),
                   keys.tx_inflight(index), keys.TX_STATUS, keys.block_next_from(index),

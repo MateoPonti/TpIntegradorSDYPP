@@ -44,7 +44,9 @@ data:
   BLOCK_WINDOW_SECONDS: "10"
   MAX_TX_PER_BLOCK: "1000"
   BLOCK_POLL_SECONDS: "1"
-  BLOCK_REWARD_CENTS: "5000"       # premio por bloque (50,00), repartido según los nonces completados
+  BLOCK_REWARD_CENTS: "5000"       # subsidio inicial por bloque (50,00), repartido según los nonces completados
+  HALVING_BLOCKS: "1000"           # el subsidio baja a la mitad cada 1.000 bloques (modelo de Bitcoin, total < 100.000)
+  TX_FEE_CENTS: "10"               # comisión por tx (0,10): la cobran los mineros del bloque junto con el subsidio
   POOL_PERIOD_SECONDS: "5"        # cada 5 s, para que KEDA levante mineros enseguida
   GATEWAY_HEALTH_URL: http://gateway.tpi.svc.cluster.local/health   # para GET /status
   NOTIFIER_HEALTH_URL: http://notifier.tpi.svc.cluster.local/health

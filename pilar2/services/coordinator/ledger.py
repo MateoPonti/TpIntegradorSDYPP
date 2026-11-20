@@ -3,6 +3,7 @@
 Modelo de cuentas: disponible = balance - pending_out. La reserva es atómica en Lua para que
 dos tx simultáneas del mismo usuario no gasten dos veces la misma plata. Montos en centavos enteros.
 """
+import os
 import time
 import uuid
 from decimal import Decimal, InvalidOperation
@@ -12,6 +13,9 @@ from tpi_common import keys
 from .reward import REWARD_SENDER
 
 MAX_AMOUNT_CENTS = 10**12  # tope: el Lua de sellado convierte números con %.14g
+# Comisión fija por tx (decidido el 20/11, como Bitcoin): la paga el sender aparte del monto y la cobran los mineros
+# del bloque junto con el premio. Hace que mandar tx basura (o a uno mismo) cueste.
+TX_FEE_CENTS = int(os.getenv("TX_FEE_CENTS", "10"))
 MAX_NAME = 64
 
 # KEYS: balance:<sender>, pending_out:<sender>, tx:pending, tx:seen, tx:status, account:<sender>:seq

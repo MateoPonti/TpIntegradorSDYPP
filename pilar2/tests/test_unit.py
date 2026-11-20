@@ -293,3 +293,23 @@ def test_notifier_cuts_slow_clients_instead_of_buffering():
     assert not client.push({"n": "uno de más"})
     assert client.queue.qsize() == 1 and client.queue.get_nowait() is notifier.CLOSE
     assert isinstance(client.queue, asyncio.Queue)
+
+
+# ---- Halving y comisión (modelo de Bitcoin, 20/11) ----
+
+def test_subsidy_halves_and_total_is_capped():
+    assert [reward.block_subsidy(i, 5000, 1000) for i in (0, 1, 1000, 1001, 2001)] == [0, 5000, 5000, 2500, 1250]
+    total = sum(reward.block_subsidy(i, 5000, 10) for i in range(1, 10 * 40))
+    assert total < 5000 * 10 * 2 and reward.block_subsidy(10 * 20, 5000, 10) == 0  # tope y llega a 0
+    assert verify_chain.subsidy(1001, 5000, 1000) == reward.block_subsidy(1001, 5000, 1000)
+
+
+def test_verify_chain_checks_subsidy_and_fees():
+    eco = {"base_reward_cents": 5000, "halving_blocks": 1000}
+    txs = [{"tx_id": "a", "sender": "u", "receiver": "v", "amount": 100, "fee": 10},
+           {"tx_id": "r", "sender": "recompensa", "receiver": "m", "amount": 5000, "reward_for": 1}]
+    ok = {"index": 2, "transactions": txs, "subsidy_cents": 5000, "fees_cents": 10, "reward_cents": 5010}
+    assert verify_chain.check_economy(ok, eco) == []
+    assert verify_chain.check_economy({**ok, "reward_cents": 6000}, eco)  # premio inflado
+    assert verify_chain.check_economy({**ok, "subsidy_cents": 9000, "reward_cents": 9010}, eco)  # subsidio que no toca
+    assert verify_chain.check_economy({"index": 1, "transactions": [], "reward_cents": 5000}, eco) == []  # bloque viejo
