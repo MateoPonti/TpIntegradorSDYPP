@@ -338,7 +338,7 @@ async def _definition(account: str) -> dict:
 
 @app.post("/multisig/{account}/proposals", status_code=201)
 async def propose(account: str, request: Request):
-    """Un dueño propone un pago y lo firma. Si el mínimo es 1, se admite enseguida."""
+    """Un dueño propone un pago y lo firma: su firma es la primera (el mínimo es 2 o más)."""
     d = await _definition(account)
     body = await _json(request)
     if not isinstance(body, dict):

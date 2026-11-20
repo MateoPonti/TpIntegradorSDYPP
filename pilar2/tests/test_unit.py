@@ -321,7 +321,8 @@ def test_multisig_definition_and_messages():
     from coordinator import multisig
 
     assert multisig.check_definition("centro", ["mateo", "ana", "mateo", "fede"], 2) == (["mateo", "ana", "fede"], 2)
-    for owners, m in ((["mateo"], 1), (["a", "b"], 3), (["a", "b"], 0), (["centro", "a"], 1), ("a,b", 1)):
+    for owners, m in ((["mateo"], 1), (["a", "b"], 3), (["a", "b"], 0), (["a", "b", "c"], 1), (["centro", "a"], 2),
+                      ("a,b", 2)):
         with pytest.raises(ValueError):
             multisig.check_definition("centro", owners, m)
     msg = multisig.payment_message("centro", "imprenta", 50000, "n1")

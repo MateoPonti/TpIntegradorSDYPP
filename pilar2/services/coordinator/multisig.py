@@ -65,8 +65,9 @@ def check_definition(account: str, owners, threshold) -> tuple[list[str], int]:
         raise ValueError(f"entre 2 y {MAX_OWNERS} dueños")
     if account in owners:
         raise ValueError("la cuenta compartida no puede ser dueña de sí misma")
-    if isinstance(threshold, bool) or not isinstance(threshold, int) or not 1 <= threshold <= len(owners):
-        raise ValueError("threshold: entre 1 y la cantidad de dueños")
+    # Mínimo 2 firmas (20/11): el contrato pide una transferencia con aprobación extra; con 1, cualquier dueño gasta solo.
+    if isinstance(threshold, bool) or not isinstance(threshold, int) or not 2 <= threshold <= len(owners):
+        raise ValueError("threshold: entre 2 y la cantidad de dueños (con 1 no habría aprobación extra)")
     return owners, threshold
 
 

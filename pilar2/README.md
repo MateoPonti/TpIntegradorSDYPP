@@ -329,6 +329,8 @@ Polkadot: un dueño propone un pago, los demás firman lo mismo y al juntar el m
 | `POST /multisig/proposals/{id}/sign` | Otro dueño firma el mismo texto |
 | `GET /multisig/{cuenta}` · `GET /multisig/proposals/{id}` · `GET /multisig?owner=` | Ver la cuenta y sus propuestas, una propuesta, y las cuentas de un dueño |
 
+- **Mínimo 2 firmas** (20/11): el contrato pide una transferencia con *aprobación extra*; con 1, cualquier dueño gastaría
+  solo y sería una cuenta común con varios dueños. El que propone ya firma, así que con 2 de 3 alcanza con otro más.
 - El **id de la propuesta es el hash del texto firmado** (como Polkadot): cambiar el monto o el destino da otra
   propuesta, así que las firmas de una no sirven para la otra.
 - Una firma por dueño (firmar dos veces no suma). Agregar la firma y ver si se llegó al mínimo es **un solo Lua**
