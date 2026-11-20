@@ -3,136 +3,148 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>SDMER Blockchain</title>
-<link rel="stylesheet" href="/assets/sdmer.css">
+<title>Explorador · SDMER</title>
+<link rel="stylesheet" href="/assets/sdmer.css?v=2">
 </head>
 <body>
-<div class="topbar"><div class="in">
-  <a class="brand" href="/"><i></i>SDMER</a>
-  <nav><a href="/" class="on">Blockchain</a><a href="/cuenta">Mi cuenta</a><a href="/unirse">Minar con nosotros</a></nav>
-  <a class="btn sm" href="/unirse">Unite</a>
-</div></div>
-<div class="hero">
-  <h1>Blockchain <span class="grad">distribuida</span></h1>
-  <p>Explorador en vivo de la cadena del pool SDMER: bloques, transacciones, cuentas y mineros. Se actualiza solo cuando se sella un bloque.
-     Para mandar plata, entrá a <a href="/cuenta">Mi cuenta</a>.</p>
-</div>
-<div class="cta"><div class="in">
-  <div><b>¿Querés minar con nosotros?</b><span>Sumá tu PC al pool con CPU o con una placa NVIDIA y cobrá por cada
-    nonce que recorrés. Creás tu cuenta y tu worker en un minuto.</span></div>
-  <a class="btn" href="/unirse">Unirme al pool →</a>
-</div></div>
-<main>
-  <section class="wide">
-    <h2>Estado</h2>
-    <div class="stats" id="stats"></div>
+<header class="topbar"><div class="in">
+  <a class="brand" href="/">SDMER<small>blockchain</small></a>
+  <nav><a href="/" class="on">Explorador</a><a href="/cuenta">Mi cuenta</a><a href="/unirse">Minar</a></nav>
+  <form class="search" id="search">
+    <input name="q" placeholder="Buscar por bloque #, tx_id o cuenta" autocomplete="off" required>
+    <button>Buscar</button>
+  </form>
+</div></header>
+
+<main class="page">
+  <section><div class="stats" id="stats"></div></section>
+
+  <section id="result" hidden>
+    <h2 id="resultTitle">Resultado<a href="#" class="right" id="resultClose">cerrar</a></h2>
+    <div class="scroll"><table class="kv" id="resultBody"></table></div>
   </section>
 
-  <section>
-    <h2>Saldo y estado de una tx</h2>
-    <form id="bal">
-      <div class="row"><input name="user" placeholder="usuario o cuenta de cobro (ej. user-1, mateo)" required><button>Ver saldo</button></div>
-    </form>
-    <div class="out" id="balOut"></div>
-    <form id="txq" style="margin-top:10px">
-      <div class="row"><input name="id" placeholder="tx_id" required><button>Ver tx</button></div>
-    </form>
-    <div class="out" id="txqOut"></div>
-  </section>
+  <div class="grid2">
+    <section>
+      <h2>Últimos bloques</h2>
+      <div class="scroll"><table id="latestBlocks"></table></div>
+      <div class="foot"><a href="#chainSec">Ver todos los bloques</a></div>
+    </section>
+    <section>
+      <h2>Últimas transacciones</h2>
+      <div class="scroll"><table id="latestTxs"></table></div>
+      <div class="foot"><a href="/cuenta">Enviar una transacción</a></div>
+    </section>
+  </div>
 
-  <section class="wide">
-    <h2>Mis workers <span class="pill" id="poolSum"></span></h2>
-    <div class="row" style="margin-bottom:8px">
-      <input id="mine" placeholder="tu cuenta (ej. mateo) para ver tus workers" autocomplete="off">
-    </div>
-    <div class="scroll"><table id="miners"></table></div>
-  </section>
-
-  <section class="wide">
-    <h2>Cuentas <span class="pill" id="accCount"></span></h2>
-    <div class="row" style="margin-bottom:8px">
-      <input id="accFilter" placeholder="buscar cuenta (ej. user-1, mateo)">
-      <select id="accType" style="flex:0 1 200px;font:inherit;padding:8px 10px;border-radius:7px;border:1px solid var(--line);background:var(--bg);color:var(--text)">
-        <option value="">todas</option><option value="minero">cuentas de cobro de mineros</option><option value="usuario">usuarios</option>
-      </select>
-    </div>
-    <div class="scroll" style="max-height:420px;overflow-y:auto"><table id="accounts"></table></div>
-  </section>
-
-  <section class="wide">
-    <h2>Cadena de bloques <span class="pill">tocá un bloque para ver todas sus transacciones</span></h2>
-    <div class="row" style="margin-bottom:8px">
-      <button id="newer" type="button">← Más nuevos</button>
-      <span class="out" id="pageInfo" style="margin:0;align-self:center;flex:2 1 160px"></span>
-      <button id="older" type="button">Más viejos →</button>
-      <form id="goto" class="row" style="flex:1 1 220px;display:flex">
-        <input name="n" placeholder="ir al bloque #" inputmode="numeric" required><button>Ver</button>
-      </form>
-    </div>
+  <section id="chainSec">
+    <h2>Bloques <span class="right"><span id="pageInfo"></span></span></h2>
     <div class="scroll"><table id="blocks"></table></div>
+    <div class="foot row" style="justify-content:center">
+      <button class="sec" id="newer" type="button">← Más nuevos</button>
+      <button class="sec" id="older" type="button">Más viejos →</button>
+    </div>
   </section>
 
-  <section class="wide" id="detail">
+  <section id="detail">
     <h2 id="detailTitle">Bloque</h2>
-    <div class="scroll"><table id="blockInfo"></table></div>
-    <h2 style="margin-top:14px" id="txTitle">Transacciones</h2>
+    <div class="scroll"><table class="kv" id="blockInfo"></table></div>
+    <h2 id="txTitle" style="border-top:1px solid var(--line)">Transacciones</h2>
     <div class="scroll" style="max-height:460px;overflow-y:auto"><table id="blockTxs"></table></div>
   </section>
+
+  <div class="grid2">
+    <section>
+      <h2>Cuentas <span class="right muted" id="accCount"></span></h2>
+      <div class="body row" style="padding-bottom:0">
+        <input id="accFilter" placeholder="filtrar (ej. user-1, mateo)">
+        <select id="accType" style="flex:0 1 190px">
+          <option value="">todas</option><option value="minero">cobro de mineros</option><option value="usuario">usuarios</option>
+        </select>
+      </div>
+      <div class="scroll" style="max-height:420px;overflow-y:auto;margin-top:10px"><table id="accounts"></table></div>
+    </section>
+    <section>
+      <h2>Mis workers <span class="right muted" id="poolSum"></span></h2>
+      <div class="body" style="padding-bottom:0">
+        <input id="mine" placeholder="tu cuenta (ej. mateo)" autocomplete="off">
+      </div>
+      <div class="scroll" style="margin-top:10px"><table id="miners"></table></div>
+      <div class="foot"><a href="/unirse">Sumar un worker</a></div>
+    </section>
+  </div>
 </main>
+<footer>SDMER · TP Integrador de Sistemas Distribuidos y Programación Paralela (UNLu, 2026) ·
+  API pública: <a href="/status">/status</a> · <a href="/chain">/chain</a> · <a href="/miners">/miners</a></footer>
+
 <script>
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const money = (c) => (c / 100).toLocaleString("es-AR", { minimumFractionDigits: 2 });
 const rate = (h) => h == null ? "—" : h >= 1e9 ? (h / 1e9).toFixed(2) + " GH/s" : h >= 1e6 ? (h / 1e6).toFixed(2) + " MH/s" : (h / 1e3).toFixed(1) + " kH/s";
+const short = (h, n = 10) => h ? `${esc(h.slice(0, n))}…` : "—";
 const get = async (path) => { const r = await fetch(path); if (!r.ok) throw new Error(r.status); return r.json(); };
+const ago = (ts) => {
+  if (!ts) return "génesis";
+  const s = Math.max(0, Math.round(Date.now() / 1000 - ts));
+  return s < 60 ? `hace ${s} s` : s < 3600 ? `hace ${Math.round(s / 60)} min` : s < 86400 ? `hace ${Math.round(s / 3600)} h`
+    : new Date(ts * 1000).toLocaleString("es-AR");
+};
 const cache = new Map();
-
-async function refreshStatus() {
-  const s = await get("/status");
-  const m = s.mining, plan = s.pool_plan || {};
-  const cards = [
-    ["Altura de la cadena", s.chain_height],
-    ["Tx pendientes", s.pending_transactions],
-    ["Minando", m ? `#${m.index} · ${esc(m.prefix)} · ${m.seconds} s${m.rearmed ? " · rearmado" : ""}` : "nada"],
-    ["Prefijo del pool", `${esc(plan.prefix ?? "—")} <span class="pill">${esc(plan.mode ?? "")}</span>`],
-    ["Hashrate del pool", rate(plan.hashrate)],
-    ["Mineros vivos", `GPU ${s.miners.gpu} · CPU ${s.miners.cpu}`],
-    ["Avisos", wsOpen ? '<span class="ok">en vivo</span> <span class="pill">websocket</span>' : '<span class="bad">preguntando cada 3 s</span>'],
-  ];
-  $("stats").innerHTML = cards.map(([k, v]) => `<div class="stat"><b>${v}</b><span>${k}</span></div>`).join("");
-  return s.chain_height;
-}
-
-// Como en los pools: el público ve el total; cada dueño busca su cuenta y ve sus workers (con el hashrate que
-// informa el worker y el que mide el pool con lo que entregó). El detalle de todos está en Grafana.
-let miners = [];
-function drawMiners() {
-  const kinds = ["gpu", "cpu"].map((k) => `${k.toUpperCase()} ${miners.filter((m) => m.kind === k).length}`).join(" · ");
-  $("poolSum").textContent = `${miners.length} conectados · ${kinds}`;
-  const q = $("mine").value.trim();
-  const mine = miners.filter((m) => q && m.account === q);
-  $("miners").innerHTML = "<tr><th>Worker</th><th>Tipo</th><th>Estado</th><th>Clase</th><th>Hashrate real</th><th>Efectivo</th><th>Informado por el worker</th></tr>" +
-    (mine.length ? mine.map((x) => `<tr><td class="mono">${esc(x.miner_id)}</td><td>${esc(x.kind)}</td>
-      <td>${x.quarantined ? '<span class="bad">en cuarentena</span>' : '<span class="ok">minando</span>'}</td><td>${esc(x.class ?? "—")}</td>
-      <td>${rate(x.motor)}</td><td>${rate(x.efectivo)}</td><td>${rate(x.declared)}</td></tr>`).join("")
-      : `<tr><td colspan="7">${q ? `La cuenta "${esc(q)}" no tiene workers conectados.` : "Escribí tu cuenta para ver tus workers."}</td></tr>`);
-}
-async function refreshMiners() {
-  miners = await get("/miners");
-  drawMiners();
-}
-$("mine").oninput = drawMiners;
-
 async function block(i) {
   if (!cache.has(i)) cache.set(i, await get(`/blocks/${i}`));
   return cache.get(i);
 }
+const blockLink = (i) => `<a href="#" data-b="${i}">${i}</a>`;
+const accLink = (a) => `<a href="#" data-a="${esc(a)}" class="mono">${esc(a)}</a>`;
+// Un solo manejador para los links de bloque y de cuenta de todas las tablas.
+document.addEventListener("click", (ev) => {
+  const a = ev.target.closest("a[data-b], a[data-a]");
+  if (!a) return;
+  ev.preventDefault();
+  if (a.dataset.b !== undefined) goTo(Number(a.dataset.b));
+  else showAccount(a.dataset.a);
+});
 
-// Cadena: páginas de PAGE bloques, del más nuevo al más viejo. `pageTop` = bloque más nuevo de la página
+// ---- Números de arriba ----
+async function refreshStatus() {
+  const s = await get("/status");
+  const m = s.mining, plan = s.pool_plan || {};
+  const cells = [
+    ["Altura", s.chain_height - 1],
+    ["Tx pendientes", s.pending_transactions],
+    ["Minando ahora", m ? `#${m.index} · ${m.seconds} s${m.rearmed ? " · rearmado" : ""}` : "nada"],
+    ["Prefijo", `<span class="mono">${esc(plan.prefix ?? "—")}</span> <span class="muted" style="font-size:13px">(${esc(plan.mode ?? "")})</span>`],
+    ["Hashrate del pool", rate(plan.hashrate)],
+    ["Mineros", `${s.miners.gpu} GPU · ${s.miners.cpu} CPU`],
+    ["Avisos", wsOpen ? '<span class="dot ok"></span>en vivo' : '<span class="dot bad"></span>cada 3 s'],
+  ];
+  $("stats").innerHTML = cells.map(([k, v]) => `<div class="stat"><span>${k}</span><b>${v}</b></div>`).join("");
+  return s.chain_height;
+}
+
+// ---- Últimos bloques y últimas transacciones ----
+async function refreshLatest() {
+  const idx = [];
+  for (let i = height - 1; i >= Math.max(0, height - 6); i--) idx.push(i);
+  const bs = await Promise.all(idx.map(block));
+  $("latestBlocks").innerHTML = "<tr><th>Bloque</th><th>Hace</th><th>Minero</th><th class=\"num\">Tx</th><th>Hash</th></tr>" +
+    bs.map((b) => `<tr><td>${blockLink(b.index)}</td><td class="muted">${ago(b.timestamp)}</td>
+      <td class="mono">${esc(b.miner ?? "—")}</td><td class="num">${b.transactions.length}</td>
+      <td class="mono">${short(b.block_hash)}</td></tr>`).join("");
+  const txs = bs.flatMap((b) => b.transactions.map((t) => ({ ...t, block: b.index, time: b.timestamp }))).slice(0, 8);
+  $("latestTxs").innerHTML = "<tr><th>tx_id</th><th>De</th><th>Para</th><th class=\"num\">Monto</th><th>Bloque</th></tr>" +
+    (txs.length ? txs.map((t) => `<tr><td class="mono">${short(t.tx_id, 12)}</td>
+      <td>${t.sender === "recompensa" ? '<span class="tag ok">premio</span>' : accLink(t.sender)}</td>
+      <td>${accLink(t.receiver)}</td><td class="num">${money(t.amount)}</td><td>${blockLink(t.block)}</td></tr>`).join("")
+      : '<tr><td colspan="5" class="muted">Todavía no hay transacciones.</td></tr>');
+}
+
+// ---- Cadena paginada y detalle ----
+// Páginas de PAGE bloques, del más nuevo al más viejo. `pageTop` = bloque más nuevo de la página
 // (null = seguir siempre el último). `selected` = bloque que se muestra en el detalle.
 const PAGE = 20;
 let height = 0, pageTop = null, selected = null;
-const when = (b) => b.timestamp ? new Date(b.timestamp * 1000).toLocaleString("es-AR") : "génesis";
 
 async function refreshBlocks() {
   const hi = Math.min(pageTop ?? height - 1, height - 1), lo = Math.max(0, hi - PAGE + 1);
@@ -142,13 +154,13 @@ async function refreshBlocks() {
   $("pageInfo").textContent = `bloques ${lo} a ${hi} de ${height - 1}`;
   $("newer").disabled = hi >= height - 1;
   $("older").disabled = lo <= 0;
-  $("blocks").innerHTML = "<tr><th>#</th><th>Hash</th><th>Hash anterior</th><th>Prefijo</th><th>Tx</th><th>Premios</th><th>Minero</th><th>Hora</th></tr>" +
+  $("blocks").innerHTML = "<tr><th>Bloque</th><th>Hace</th><th>Hash</th><th>Hash anterior</th><th>Prefijo</th><th class=\"num\">Tx</th><th class=\"num\">Premios</th><th>Minero</th></tr>" +
     bs.map((b) => {
       const rewards = b.transactions.filter((t) => t.sender === "recompensa").length;
-      const sel = b.index === selected ? ' style="outline:2px solid var(--accent)"' : "";
-      return `<tr class="click" data-i="${b.index}"${sel}><td><b>${b.index}</b></td><td class="mono">${esc(b.block_hash.slice(0, 12))}…</td>
-        <td class="mono">${esc(b.previous_hash.slice(0, 12))}…</td><td class="mono">${esc(b.prefix || "—")}</td>
-        <td>${b.transactions.length - rewards}</td><td>${rewards}</td><td class="mono">${esc(b.miner ?? "—")}</td><td>${when(b)}</td></tr>`;
+      return `<tr class="click${b.index === selected ? " sel" : ""}" data-i="${b.index}"><td>${b.index}</td><td class="muted">${ago(b.timestamp)}</td>
+        <td class="mono">${short(b.block_hash, 14)}</td><td class="mono">${short(b.previous_hash, 14)}</td>
+        <td class="mono">${esc(b.prefix || "—")}</td><td class="num">${b.transactions.length - rewards}</td><td class="num">${rewards}</td>
+        <td class="mono">${esc(b.miner ?? "—")}</td></tr>`;
     }).join("");
   document.querySelectorAll("#blocks tr.click").forEach((tr) => tr.onclick = () => showBlock(Number(tr.dataset.i), true));
   if (selected === null && height > 0) await showBlock(height - 1, false);
@@ -157,29 +169,28 @@ async function refreshBlocks() {
 async function showBlock(i, scroll) {
   const b = await block(i);
   selected = i;
-  document.querySelectorAll("#blocks tr.click").forEach((tr) =>
-    tr.style.outline = Number(tr.dataset.i) === i ? "2px solid var(--accent)" : "");
+  document.querySelectorAll("#blocks tr.click").forEach((tr) => tr.classList.toggle("sel", Number(tr.dataset.i) === i));
   const rewards = b.transactions.filter((t) => t.sender === "recompensa");
   $("detailTitle").textContent = `Bloque #${b.index}${b.index === 0 ? " (génesis)" : ""}`;
-  const prev = b.index > 0 ? `<a href="#" id="prevLink" class="mono">${esc(b.previous_hash)}</a> (bloque #${b.index - 1})` : `<span class="mono">${esc(b.previous_hash)}</span>`;
   const rows = [
+    ["Altura", b.index],
+    ["Hora", b.timestamp ? `${ago(b.timestamp)} (${new Date(b.timestamp * 1000).toLocaleString("es-AR")})` : "génesis"],
     ["Hash", `<span class="mono">${esc(b.block_hash)}</span>`],
-    ["Hash anterior", prev],
+    ["Hash anterior", b.index > 0 ? `<a href="#" data-b="${b.index - 1}" class="mono">${esc(b.previous_hash)}</a>` : `<span class="mono">${esc(b.previous_hash)}</span>`],
     ["tx_digest", `<span class="mono">${esc(b.tx_digest)}</span>`],
     ["Prefijo", `<span class="mono">${esc(b.prefix || "—")}</span>`],
     ["Nonce", `<span class="mono">${esc(b.nonce)}</span>`],
-    ["Lo resolvió", `<span class="mono">${esc(b.miner ?? "—")}</span>`],
-    ["Hora", when(b)],
-    ["Premio de este bloque", b.reward_cents != null ? `${money(b.reward_cents)} (se paga en el bloque #${b.index + 1})` : "—"],
-    ["Rearmado", b.rearmed ? `sí (${b.rearmed} vez/veces, se fue hashrate)` : "no"],
-    ["Comprobación", `md5(hash anterior + tx_digest + nonce) = hash, y el hash empieza con el prefijo`],
+    ["Minero", `<span class="mono">${esc(b.miner ?? "—")}</span>`],
+    ["Premio", b.reward_cents != null ? `${money(b.reward_cents)} (se paga en el bloque ${b.index + 1})` : "—"],
+    ["Rearmado", b.rearmed ? `sí, ${b.rearmed} vez/veces (se fue hashrate)` : "no"],
+    ["Comprobación", "md5(hash anterior + tx_digest + nonce) = hash, y el hash empieza con el prefijo"],
   ];
-  $("blockInfo").innerHTML = rows.map(([k, v]) => `<tr><th>${k}</th><td style="white-space:normal;word-break:break-all">${v}</td></tr>`).join("");
-  if (b.index > 0) $("prevLink").onclick = (ev) => { ev.preventDefault(); goTo(b.index - 1); };
+  $("blockInfo").innerHTML = rows.map(([k, v]) => `<tr><th>${k}</th><td>${v}</td></tr>`).join("");
   $("txTitle").textContent = `Transacciones (${b.transactions.length - rewards.length} de usuarios, ${rewards.length} de premio)`;
-  $("blockTxs").innerHTML = "<tr><th>#</th><th>Tipo</th><th>De</th><th>Para</th><th>Monto</th><th>tx_id</th></tr>" +
-    b.transactions.map((t, n) => `<tr><td>${n + 1}</td><td>${t.sender === "recompensa" ? `<span class="ok">premio del #${t.reward_for}</span>` : "transferencia"}</td>
-      <td class="mono">${esc(t.sender)}</td><td class="mono">${esc(t.receiver)}</td><td>${money(t.amount)}</td><td class="mono">${esc(t.tx_id)}</td></tr>`).join("");
+  $("blockTxs").innerHTML = "<tr><th>#</th><th>tx_id</th><th>Tipo</th><th>De</th><th>Para</th><th class=\"num\">Monto</th></tr>" +
+    b.transactions.map((t, n) => `<tr><td>${n + 1}</td><td class="mono">${esc(t.tx_id)}</td>
+      <td>${t.sender === "recompensa" ? `<span class="tag ok">premio del ${t.reward_for}</span>` : t.signature ? '<span class="tag">firmada</span>' : '<span class="tag">transferencia</span>'}</td>
+      <td>${t.sender === "recompensa" ? "—" : accLink(t.sender)}</td><td>${accLink(t.receiver)}</td><td class="num">${money(t.amount)}</td></tr>`).join("");
   if (scroll) $("detail").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
@@ -189,22 +200,20 @@ async function goTo(i) {
   await refreshBlocks();
   await showBlock(i, true);
 }
-
 $("newer").onclick = () => { pageTop = Math.min(height - 1, (pageTop ?? height - 1) + PAGE); if (pageTop >= height - 1) pageTop = null; refreshBlocks(); };
 $("older").onclick = () => { pageTop = Math.max(PAGE - 1, (pageTop ?? height - 1) - PAGE); refreshBlocks(); };
-$("goto").onsubmit = (ev) => { ev.preventDefault(); goTo(Number(new FormData(ev.target).get("n"))); };
 
-// Cuentas: se piden cada 10 s (recorre todas las claves de saldo); el filtro se aplica en el navegador.
+// ---- Cuentas: se piden cada 4 vueltas (recorre todas las claves de saldo); el filtro es local ----
 let accs = [], accTick = 0;
 function drawAccounts() {
   const q = $("accFilter").value.trim().toLowerCase(), type = $("accType").value;
   const shown = accs.filter((a) => (!q || a.user.toLowerCase().includes(q)) && (!type || a.type === type));
   $("accCount").textContent = `${shown.length} de ${accs.length}`;
-  $("accounts").innerHTML = "<tr><th>Cuenta</th><th>Tipo</th><th>Saldo</th><th>Reservado</th><th>Disponible</th></tr>" +
-    (shown.length ? shown.map((a) => `<tr><td class="mono">${esc(a.user)}</td>
-      <td>${a.type === "minero" ? '<span class="ok">cobro de minero</span>' : "usuario"}</td>
-      <td>${money(a.balance_cents)}</td><td>${money(a.pending_out_cents)}</td><td>${money(a.available_cents)}</td></tr>`).join("")
-      : '<tr><td colspan="5">No hay cuentas que coincidan.</td></tr>');
+  $("accounts").innerHTML = "<tr><th>Cuenta</th><th>Tipo</th><th class=\"num\">Saldo</th><th class=\"num\">Disponible</th></tr>" +
+    (shown.length ? shown.map((a) => `<tr><td>${accLink(a.user)}</td>
+      <td>${a.type === "minero" ? '<span class="tag ok">cobro de minero</span>' : '<span class="tag">usuario</span>'}</td>
+      <td class="num">${money(a.balance_cents)}</td><td class="num">${money(a.available_cents)}</td></tr>`).join("")
+      : '<tr><td colspan="4" class="muted">No hay cuentas que coincidan.</td></tr>');
 }
 async function refreshAccounts() {
   if (accTick++ % 4) return;
@@ -214,6 +223,55 @@ async function refreshAccounts() {
 $("accFilter").oninput = drawAccounts;
 $("accType").onchange = drawAccounts;
 
+// ---- Mis workers: como en los pools, cada dueño busca su cuenta; el detalle de todos está en Grafana ----
+let miners = [];
+function drawMiners() {
+  $("poolSum").textContent = `${miners.length} conectados`;
+  const q = $("mine").value.trim();
+  const mine = miners.filter((m) => q && m.account === q);
+  $("miners").innerHTML = "<tr><th>Worker</th><th>Tipo</th><th>Estado</th><th>Clase</th><th class=\"num\">Real</th><th class=\"num\">Efectivo</th><th class=\"num\">Informado</th></tr>" +
+    (mine.length ? mine.map((x) => `<tr><td class="mono">${esc(x.miner_id)}</td><td>${esc(x.kind)}</td>
+      <td>${x.quarantined ? '<span class="tag bad">cuarentena</span>' : '<span class="tag ok">minando</span>'}</td><td>${esc(x.class ?? "—")}</td>
+      <td class="num">${rate(x.motor)}</td><td class="num">${rate(x.efectivo)}</td><td class="num">${rate(x.declared)}</td></tr>`).join("")
+      : `<tr><td colspan="7" class="muted">${q ? `La cuenta "${esc(q)}" no tiene workers conectados.` : "Escribí tu cuenta para ver tus workers."}</td></tr>`);
+}
+async function refreshMiners() {
+  miners = await get("/miners");
+  drawMiners();
+}
+$("mine").oninput = drawMiners;
+
+// ---- Buscador: número = bloque; si no, tx_id; si no, cuenta ----
+function showResult(title, rows) {
+  $("resultTitle").firstChild.textContent = title;
+  $("resultBody").innerHTML = rows.map(([k, v]) => `<tr><th>${k}</th><td>${v}</td></tr>`).join("");
+  $("result").hidden = false;
+  $("result").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+$("resultClose").onclick = (ev) => { ev.preventDefault(); $("result").hidden = true; watchTx = null; };
+const txState = (t) => t.status === "confirmed" || t.event === "tx.confirmed"
+  ? `<span class="tag ok">confirmada</span> en el bloque ${blockLink(t.block ?? t.index)}`
+  : '<span class="tag">pendiente</span> esperando que se mine (se actualiza solo)';
+async function showAccount(name) {
+  const b = await get(`/balances/${encodeURIComponent(name)}`);
+  showResult(`Cuenta ${name}`, [
+    ["Saldo", money(b.balance_cents)], ["Reservado (en tx pendientes)", money(b.pending_out_cents)],
+    ["Disponible", money(b.available_cents)],
+    ["Tipo", b.registered ? `registrada con clave Ed25519 (seq ${b.seq})` : name.startsWith("user-") ? "cuenta de prueba del génesis (sin firma)" : "sin registrar"],
+  ]);
+}
+async function search(q) {
+  if (/^\d+$/.test(q)) { $("result").hidden = true; return goTo(Number(q)); }
+  try {
+    const t = await get(`/transactions/${encodeURIComponent(q)}`);
+    showResult("Transacción", [["tx_id", `<span class="mono">${esc(t.tx_id)}</span>`], ["Estado", txState(t)]]);
+    if (t.status !== "confirmed") watch(t.tx_id);
+  } catch {
+    await showAccount(q);
+  }
+}
+$("search").onsubmit = (ev) => { ev.preventDefault(); search(new FormData(ev.target).get("q").trim()); };
+
 let busy = false, again = false, lastRefresh = 0;
 async function refresh() {
   if (busy) { again = true; return; }  // llegó un aviso a mitad de una actualización: otra vuelta al terminar
@@ -222,9 +280,9 @@ async function refresh() {
   lastRefresh = Date.now();
   try {
     height = await refreshStatus();
-    await Promise.all([refreshMiners(), refreshBlocks(), refreshAccounts()]);
+    await Promise.all([refreshLatest(), refreshMiners(), refreshBlocks(), refreshAccounts()]);
   } catch (e) {
-    $("stats").innerHTML = `<div class="stat"><b class="bad">sin conexión</b><span>${esc(e.message)}</span></div>`;
+    $("stats").innerHTML = `<div class="stat"><span>Estado</span><b class="bad">sin conexión (${esc(e.message)})</b></div>`;
   } finally {
     busy = false;
     if (again) refresh();
@@ -236,8 +294,6 @@ async function refresh() {
 // vuelve a preguntar cada 3 s y reintenta conectarse; al volver, la foto del estado la pone al día.
 let ws = null, wsOpen = false, wsUrl = null, retry = 1000, reqId = 0, watchTx = null;
 const wsSend = (m) => { if (wsOpen) ws.send(JSON.stringify({ id: ++reqId, ...m })); };
-const txText = (n) => n.status === "confirmed" || n.event === "tx.confirmed"
-  ? `confirmada en el bloque ${n.block ?? n.index} (aviso del notifier)` : "pendiente: te aviso acá cuando se confirme";
 function watch(txId) {
   watchTx = txId;
   wsSend({ op: "subscribe", topic: "tx", tx_id: txId });
@@ -246,8 +302,11 @@ function onNotice(n) {
   if (n.type === "snapshot" && n.height !== undefined && n.tip !== undefined && n.height !== height) refresh();
   if (n.type === "event" && n.event === "block.solved") refresh();
   if ((n.type === "snapshot" || n.type === "event") && n.tx_id && n.tx_id === watchTx) {
-    $("txqOut").textContent = txText(n);
-    if (n.status === "confirmed" || n.event === "tx.confirmed") { watchTx = null; wsSend({ op: "unsubscribe", sub: n.sub }); }
+    if (n.status === "confirmed" || n.event === "tx.confirmed") {
+      showResult("Transacción", [["tx_id", `<span class="mono">${esc(n.tx_id)}</span>`], ["Estado", txState(n)]]);
+      watchTx = null;
+      wsSend({ op: "unsubscribe", sub: n.sub });
+    }
   }
 }
 async function connect() {
@@ -271,24 +330,9 @@ async function connect() {
   };
 }
 
-$("bal").onsubmit = async (ev) => {
-  ev.preventDefault();
-  const u = new FormData(ev.target).get("user");
-  try {
-    const b = await get(`/balances/${encodeURIComponent(u)}`);
-    $("balOut").textContent = `saldo ${money(b.balance_cents)} · reservado ${money(b.pending_out_cents)} · disponible ${money(b.available_cents)}`;
-  } catch (e) { $("balOut").textContent = "error " + e.message; }
-};
-$("txq").onsubmit = async (ev) => {
-  ev.preventDefault();
-  try {
-    const t = await get(`/transactions/${encodeURIComponent(new FormData(ev.target).get("id"))}`);
-    $("txqOut").textContent = t.status === "confirmed" ? `confirmada en el bloque ${t.block} (abajo, en el detalle)` : txText({});
-    if (t.status === "confirmed") await goTo(t.block);
-    else watch(t.tx_id);  // pendiente: el notifier avisa cuando se confirma
-  } catch (e) { $("txqOut").textContent = e.message === "404" ? "no existe" : "error " + e.message; }
-};
-refresh();
+// Búsqueda que viene de la barra de otra página (/?q=...): se hace después de la primera carga.
+const pedido = new URLSearchParams(location.search).get("q");
+refresh().then(() => { if (pedido) { $("search").elements.q.value = pedido; search(pedido.trim()); } });
 connect();
 setInterval(() => { if (!wsOpen || Date.now() - lastRefresh > 15000) refresh(); }, 3000);
 </script>
