@@ -324,12 +324,16 @@ Polkadot: un dueño propone un pago, los demás firman lo mismo y al juntar el m
 
 | Ruta | Qué hace |
 |---|---|
-| `POST /multisig` | Crea la cuenta: `{account, owners, threshold, creator, signature}`. Firma un dueño sobre `multisig:create:<cuenta>:<m>:<dueños separados por coma>`. Los dueños tienen que ser cuentas registradas; no tienen que aceptar (como Safe) |
-| `POST /multisig/{cuenta}/proposals` | Un dueño propone: `{receiver, amount, nonce, signer, signature}`, firmando `multisig:<cuenta>:<para>:<centavos>:<nonce>` |
+| `POST /multisig` | Crea la cuenta: `{account, owners, threshold, creator, signature}`. Firma un dueño sobre `multisig:create:<cuenta>:<m>:<dueños separados por coma>`. Los dueños tienen que ser cuentas registradas. Queda **pendiente** hasta que acepten todos |
+| `POST /multisig/{cuenta}/accept` · `/reject` | Un dueño acepta firmando **la misma definición** que el creador (`multisig:create:…`) o rechaza firmando `multisig:reject:<cuenta>`. Con todos, queda **activa**; con un rechazo, queda **rechazada** |
+ Un dueño propone: `{receiver, amount, nonce, signer, signature}`, firmando `multisig:<cuenta>:<para>:<centavos>:<nonce>` |
 | `POST /multisig/proposals/{id}/sign` | Otro dueño firma el mismo texto |
 | `GET /multisig/{cuenta}` · `GET /multisig/proposals/{id}` · `GET /multisig?owner=` | Ver la cuenta y sus propuestas, una propuesta, y las cuentas de un dueño |
 
-- **Mínimo 2 firmas** (20/11): el contrato pide una transferencia con *aprobación extra*; con 1, cualquier dueño gastaría
+- **Cada dueño tiene que aceptar** (20/11, como Polkadot): antes la creaba uno sin que los demás aceptaran (como Safe), y
+  cualquiera podía meter a otro en cuentas (spam). Pendiente: no recibe plata ni se proponen pagos. Las invitaciones se
+  ven en `/cuenta` (`GET /multisig?owner=` devuelve `accounts` e `invites`). Las cuentas de antes cuentan como activas.
+: el contrato pide una transferencia con *aprobación extra*; con 1, cualquier dueño gastaría
   solo y sería una cuenta común con varios dueños. El que propone ya firma, así que con 2 de 3 alcanza con otro más.
 - El **id de la propuesta es el hash del texto firmado** (como Polkadot): cambiar el monto o el destino da otra
   propuesta, así que las firmas de una no sirven para la otra.
