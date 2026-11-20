@@ -262,6 +262,19 @@ BASE_URL=http://<ip> GPU=1 K3S_KUBECONFIG=~/.kube/k3s.yaml ./matrix.sh
 uv run --with matplotlib python plot.py results.csv --out charts/
 ```
 
+## Pendiente: Cloudflare adelante de Traefik (lo recomendó el profe)
+
+Anotado el 20/11/2026, para hacer si sobra tiempo (después de la entrega o antes de la defensa). Cloudflare se pone
+adelante de Traefik: protección contra DDoS, límite de pedidos y firewall web, caché de lo estático y esconder la IP.
+- **No anda con DuckDNS**: hay que comprar un dominio (~10 USD por año) y pasarle su DNS a Cloudflare.
+- Pasos (~30 min): comprar el dominio → agregarlo en Cloudflare (plan gratis) y cambiar sus *nameservers* → registro
+  A a `35.223.237.60` con el proxy activado (nube naranja) → SSL en modo **Full (strict)** (Traefik sigue con su
+  certificado de Let's Encrypt) → agregar el nombre al Ingress, como `pilar3/k8s/https/sdmer.yaml`.
+- Ojo: el desafío HTTP-01 de cert-manager tiene que pasar por Cloudflare sin redirect (o usar DNS-01 con la API de
+  Cloudflare); los WebSocket se cortan si están quietos más de 100 s (el notifier y el gateway mandan ping cada 20 s,
+  así que no pasa); para esconder la IP de verdad habría que cerrar el acceso directo, que hoy usan `bench.py` y los
+  mineros por `http://35.223.237.60` y `http://34.63.209.225`.
+
 ## Costos: apaguen todo al terminar
 
 ```bash
