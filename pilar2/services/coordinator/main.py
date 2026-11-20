@@ -70,7 +70,8 @@ async def lifespan(app: FastAPI):
     await results.consume(chain.on_result)
     loop = asyncio.create_task(leader_loop(chain, store.Leader(r, keys.COORD_LEADER, POD_NAME)))
     state.update(r=r, conn=conn, chain=chain, reserve=r.register_script(ledger.RESERVE_LUA),
-                 sign=r.register_script(multisig.SIGN_LUA), cf_start=r.register_script(crowdfund.START_LUA))
+                 sign=r.register_script(multisig.SIGN_LUA), cf_start=r.register_script(crowdfund.START_LUA),
+                 accept=r.register_script(multisig.ACCEPT_LUA))
     log(logger, "coordinator listo", pod=POD_NAME)
     yield
     loop.cancel()
@@ -100,7 +101,13 @@ async def _receiver_exists(name: str) -> bool:
     if cuentas.is_genesis(name) or crowdfund.of_account(name) is not None:
         return True
     r = state["r"]
-    return bool(await r.exists(keys.account_pubkey(name)) or await r.exists(multisig.key(name)))
+    if await r.exists(multisig.key(name)):
+        return await _ms_status(name) == "activa"  # una compartida pendiente o rechazada todavía no recibe plata
+    return bool(await r.exists(keys.account_pubkey(name)))
+
+
+async def _ms_status(account: str) -> str:
+    return await state["r"].get(multisig.status_key(account)) or "activa"
 
 
 async def _contributed(tx: dict) -> None:
@@ -298,7 +305,7 @@ async def _sign(pid: str, signer: str, signature: str, d: dict) -> dict:
 
 @app.post("/multisig", status_code=201)
 async def create_multisig(request: Request):
-    """Crea una cuenta compartida. La firma uno de los dueños; los demás no tienen que aceptar (como Safe)."""
+    """Crea una cuenta compartida. La firma uno de los dueños y queda pendiente hasta que acepten los demás."""
     body = await _json(request)
     if not isinstance(body, dict):
         raise HTTPException(400, "se esperaba un objeto JSON")
@@ -323,10 +330,60 @@ async def create_multisig(request: Request):
     d = {"account": account, "owners": owners, "threshold": threshold, "creator": creator, "created": time.time()}
     if not await r.set(multisig.key(account), json.dumps(d), nx=True):
         raise HTTPException(409, "la cuenta compartida ya existe")
+    await r.set(multisig.status_key(account), "pendiente")
+    await r.sadd(multisig.accepted_key(account), creator)
+    await r.sadd(multisig.owner_index(creator), account)
     for owner in owners:
-        await r.sadd(multisig.owner_index(owner), account)
-    log(logger, "cuenta compartida creada", account=account, threshold=threshold, owners=len(owners))
-    return d
+        if owner != creator:
+            await r.sadd(multisig.invites_index(owner), account)
+    log(logger, "cuenta compartida creada (pendiente)", account=account, threshold=threshold, owners=len(owners))
+    return d | await _ms_state(account, d)
+
+
+async def _ms_state(account: str, d: dict) -> dict:
+    accepted = sorted(await state["r"].smembers(multisig.accepted_key(account)))
+    status = await _ms_status(account)
+    if status == "activa" and not accepted:  # cuenta de antes del 20/11: todos cuentan como aceptados
+        accepted = list(d["owners"])
+    return {"status": status, "accepted": accepted, "waiting": [o for o in d["owners"] if o not in accepted]}
+
+
+@app.post("/multisig/{account}/accept")
+async def accept_multisig(account: str, request: Request):
+    """Un dueño acepta firmando el mismo texto que el creador (esos dueños y ese mínimo)."""
+    d, body = await _definition(account), await _json(request)
+    owner = body.get("owner") if isinstance(body, dict) else None
+    if owner not in d["owners"]:
+        raise HTTPException(400, f"{owner} no es dueño de {account}")
+    message = multisig.create_message(account, d["threshold"], d["owners"])
+    if not cuentas.verify(await _owner_key(owner), message, body.get("signature")):
+        raise HTTPException(400, "firma inválida")
+    status = await state["accept"](keys=[multisig.status_key(account), multisig.accepted_key(account),
+                                         multisig.invites_index(owner), multisig.owner_index(owner)],
+                                   args=[owner, len(d["owners"]), account])
+    if status == "rechazada":
+        raise HTTPException(409, "la cuenta compartida fue rechazada por un dueño")
+    log(logger, "dueño aceptó la cuenta compartida", account=account, owner=owner, status=status)
+    return d | await _ms_state(account, d)
+
+
+@app.post("/multisig/{account}/reject")
+async def reject_multisig(account: str, request: Request):
+    """Un dueño que no aceptó la rechaza (firma multisig:reject:<cuenta>): la cuenta no se activa nunca."""
+    d, body = await _definition(account), await _json(request)
+    owner = body.get("owner") if isinstance(body, dict) else None
+    if owner not in d["owners"]:
+        raise HTTPException(400, f"{owner} no es dueño de {account}")
+    if not cuentas.verify(await _owner_key(owner), multisig.reject_message(account), body.get("signature")):
+        raise HTTPException(400, "firma inválida")
+    r = state["r"]
+    if await _ms_status(account) != "pendiente":
+        raise HTTPException(409, "solo se puede rechazar mientras está pendiente")
+    await r.set(multisig.status_key(account), "rechazada")
+    for o in d["owners"]:
+        await r.srem(multisig.invites_index(o), account)
+    log(logger, "cuenta compartida rechazada", account=account, owner=owner)
+    return d | await _ms_state(account, d)
 
 
 async def _definition(account: str) -> dict:
@@ -340,6 +397,8 @@ async def _definition(account: str) -> dict:
 async def propose(account: str, request: Request):
     """Un dueño propone un pago y lo firma: su firma es la primera (el mínimo es 2 o más)."""
     d = await _definition(account)
+    if (status := await _ms_status(account)) != "activa":
+        raise HTTPException(409, f"la cuenta compartida está {status}: tienen que aceptar todos los dueños")
     body = await _json(request)
     if not isinstance(body, dict):
         raise HTTPException(400, "se esperaba un objeto JSON")
@@ -395,13 +454,16 @@ async def get_multisig(account: str, limit: int = 50):
     proposals = [multisig.view(raw, d["threshold"]) for pid in pids if (raw := await r.hgetall(multisig.proposal_key(pid)))]
     bal = int(await r.get(keys.balance(account)) or 0)
     out = int(await r.get(keys.pending_out(account)) or 0)
-    return d | {"balance_cents": bal, "pending_out_cents": out, "available_cents": bal - out, "proposals": proposals}
+    return d | await _ms_state(account, d) | {"balance_cents": bal, "pending_out_cents": out,
+                                              "available_cents": bal - out, "proposals": proposals}
 
 
 @app.get("/multisig")
 async def list_multisig(owner: str):
-    """Las cuentas compartidas de las que `owner` es dueño."""
-    return {"owner": owner, "accounts": sorted(await state["r"].smembers(multisig.owner_index(owner)))}
+    """Las cuentas compartidas de las que `owner` es dueño (aceptadas) y en las que lo invitaron (sin responder)."""
+    r = state["r"]
+    return {"owner": owner, "accounts": sorted(await r.smembers(multisig.owner_index(owner))),
+            "invites": sorted(await r.smembers(multisig.invites_index(owner)))}
 
 
 # ---- Colectas "todo o nada" (punto 2 del contrato) ----
@@ -451,9 +513,9 @@ async def create_crowdfund(request: Request):
     except (ledger.InvalidTx, ValueError) as exc:
         raise HTTPException(400, str(exc)) from exc
     r = state["r"]
-    if not isinstance(beneficiary, str) or not (await r.exists(keys.account_pubkey(beneficiary))
-                                                or await r.exists(multisig.key(beneficiary))):
-        raise HTTPException(400, "beneficiary: tiene que ser una cuenta registrada o compartida")
+    if not isinstance(beneficiary, str) or crowdfund.of_account(beneficiary) is not None \
+            or cuentas.is_genesis(beneficiary) or not await _receiver_exists(beneficiary):
+        raise HTTPException(400, "beneficiary: tiene que ser una cuenta registrada o compartida (activa)")
     if not cuentas.verify(await _owner_key(creator if isinstance(creator, str) else ""),
                           crowdfund.create_message(cid, beneficiary, goal, deadline), body.get("signature")):
         raise HTTPException(400, "firma inválida")

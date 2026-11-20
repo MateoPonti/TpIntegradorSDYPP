@@ -10,7 +10,11 @@ mínimo, el pago se admite (se reserva el saldo con el mismo Lua de siempre) y v
 - Mientras falten firmas no se reserva saldo. Si al llegar al mínimo no alcanza, la propuesta queda rechazada.
 - Vence a las MULTISIG_TTL_SECONDS (24 h) por hora del servidor: los bloques solo salen si hay tx, así que no sirven
   de reloj.
-- Dueños y mínimo quedan fijos. La crea un dueño, sin que los demás acepten (como Safe).
+- Dueños y mínimo quedan fijos.
+- Cada dueño tiene que aceptar (decidido el 20/11, como Polkadot, donde cada firmante aprueba): la crea un dueño y
+  queda **pendiente**; los otros firman el mismo texto de la definición (aceptan esos dueños y ese mínimo) o la
+  rechazan. Recién con todos, queda **activa**. Sin esto cualquiera podía meter a otro en cuentas (spam). Las cuentas
+  creadas antes, sin estado, cuentan como activas.
 """
 import hashlib
 import json
@@ -29,8 +33,43 @@ def key(account: str) -> str:
 
 
 def owner_index(owner: str) -> str:
-    """SET de cuentas compartidas de las que es dueño (para listarlas en /cuenta)."""
+    """SET de cuentas compartidas de las que es dueño (aceptadas; para listarlas en /cuenta)."""
     return f"multisig:of:{owner}"
+
+
+def invites_index(owner: str) -> str:
+    """SET de cuentas compartidas en las que lo pusieron como dueño y todavía no aceptó ni rechazó."""
+    return f"multisig:invites:{owner}"
+
+
+def status_key(account: str) -> str:
+    """STRING pendiente | activa | rechazada. Si no existe (cuentas de antes del 20/11), activa."""
+    return f"multisig:{account}:status"
+
+
+def accepted_key(account: str) -> str:
+    """SET de los dueños que ya aceptaron (el creador acepta al crearla)."""
+    return f"multisig:{account}:accepted"
+
+
+def reject_message(account: str) -> bytes:
+    return f"multisig:reject:{account}".encode()
+
+
+# KEYS: status, accepted, invites:<dueño>, of:<dueño>   ARGV: dueño, cantidad de dueños
+# Anota la aceptación y, si ya aceptaron todos, la activa. Un solo Lua: dos aceptaciones a la vez no se pisan.
+ACCEPT_LUA = """
+local status = redis.call('GET', KEYS[1]) or 'activa'
+if status ~= 'pendiente' then return status end
+redis.call('SADD', KEYS[2], ARGV[1])
+redis.call('SREM', KEYS[3], ARGV[3])
+redis.call('SADD', KEYS[4], ARGV[3])
+if redis.call('SCARD', KEYS[2]) >= tonumber(ARGV[2]) then
+  redis.call('SET', KEYS[1], 'activa')
+  return 'activa'
+end
+return 'pendiente'
+"""
 
 
 def proposals_index(account: str) -> str:

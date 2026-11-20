@@ -72,7 +72,8 @@
   <section id="compartidas" class="off">
     <h2>Cuentas compartidas <span class="right muted">varios dueños, un mínimo de firmas</span></h2>
     <div class="body">
-      <p class="hint">Para mover plata de una cuenta compartida, un dueño propone el pago y los demás lo firman. Cuando
+      <p class="hint">Al crearla, los otros dueños reciben una invitación y la cuenta queda pendiente hasta que acepten todos.
+         Para mover plata de una cuenta compartida, un dueño propone el pago y los demás lo firman. Cuando
          se juntan las firmas mínimas, el pago entra a la cadena. Una propuesta que no junta las firmas vence a las 24 h.
          Los dueños y el mínimo no se pueden cambiar después.</p>
       <div class="row">
@@ -269,6 +270,12 @@ function dibujarCompartida(c) {
       <td>${p.signatures} de ${p.threshold} <span class="muted">(${p.signers.map(esc).join(", ")})</span></td>
       <td class="muted">${vence}</td><td>${accion}</td></tr>`;
   }).join("");
+  if (c.status !== "activa") {  // pendiente (faltan aceptar) o rechazada: no recibe plata ni se propone
+    return `<h2>${esc(c.account)} <span class="right muted">${c.threshold} de ${c.owners.length} firmas</span></h2>
+      <div class="body"><p class="hint"><span class="${c.status === "rechazada" ? "tag bad" : "tag"}">${esc(c.status)}</span>
+        Dueños: ${c.owners.map(esc).join(", ")}.
+        ${c.status === "pendiente" ? `Falta que acepten: <b>${c.waiting.map(esc).join(", ")}</b>. Hasta entonces no recibe plata.` : "Un dueño la rechazó: no se usa."}</p></div>`;
+  }
   return `<h2>${esc(c.account)} <span class="right muted">${c.threshold} de ${c.owners.length} firmas · disponible ${money(c.available_cents)}</span></h2>
     <div class="body">
       <p class="hint">Dueños: ${c.owners.map(esc).join(", ")}</p>
@@ -285,9 +292,16 @@ function dibujarCompartida(c) {
 async function cargarCompartidas() {
   if (!cuenta) return;
   try {
-    const { accounts } = await (await fetch(`/multisig?owner=${encodeURIComponent(cuenta)}`)).json();
-    const datos = await Promise.all(accounts.map((a) => fetch(`/multisig/${encodeURIComponent(a)}`).then((r) => r.json())));
-    $("mLista").innerHTML = datos.map(dibujarCompartida).join("")
+    const { accounts, invites = [] } = await (await fetch(`/multisig?owner=${encodeURIComponent(cuenta)}`)).json();
+    const traer = (a) => fetch(`/multisig/${encodeURIComponent(a)}`).then((r) => r.json());
+    const [datos, invitaciones] = await Promise.all([Promise.all(accounts.map(traer)), Promise.all(invites.map(traer))]);
+    // Invitaciones: te pusieron como dueño. Aceptar = firmar la misma definición que el creador (dueños y mínimo).
+    const inv = invitaciones.filter((c) => c.status === "pendiente").map((c) => `<h2>${esc(c.account)} <span class="right muted">invitación</span></h2>
+      <div class="body"><p class="hint"><b>${esc(c.creator)}</b> te puso como dueño: ${c.threshold} de ${c.owners.length} firmas
+        (dueños: ${c.owners.map(esc).join(", ")}). Si aceptás, podés proponer y firmar pagos de esta cuenta. Tu saldo no se toca.</p>
+        <div class="row"><button data-aceptar="${esc(c.account)}" data-msg="${esc(`multisig:create:${c.account}:${c.threshold}:${c.owners.join(",")}`)}">Aceptar</button>
+        <button class="sec" data-rechazar="${esc(c.account)}">Rechazar</button></div></div>`).join("");
+    $("mLista").innerHTML = inv + datos.map(dibujarCompartida).join("")
       || '<div class="body muted" style="padding-top:0">Todavía no sos dueño de ninguna cuenta compartida.</div>';
   } catch { /* se reintenta en la próxima vuelta */ }
 }
@@ -300,7 +314,7 @@ $("mCrear").onclick = async () => {
     if (!nombre) throw new Error("Poné un nombre para la cuenta compartida.");
     await post("/multisig", { account: nombre, owners, threshold: min, creator: cuenta,
                               signature: firmar(par, `multisig:create:${nombre}:${min}:${owners.join(",")}`) });
-    say("msgM", `Cuenta compartida "${nombre}" creada: ${min} de ${owners.length} firmas.`, true);
+    say("msgM", `Cuenta compartida "${nombre}" creada (${min} de ${owners.length} firmas). Queda pendiente hasta que acepten los demás dueños.`, true);
     cargarCompartidas();
   } catch (e) { say("msgM", e.message); }
 };
@@ -319,6 +333,16 @@ $("mLista").addEventListener("click", async (ev) => {
         signer: cuenta, signature: firmar(par, `multisig:${acc}:${para}:${cents}:${nonce}`) });
       say(msgId, p.status === "admitida" ? "Pago admitido: entra en el próximo bloque." : `Propuesta creada: faltan ${p.missing} firma(s).`, true);
     } catch (e) { say(msgId, e.message); }
+  } else if (b.dataset.aceptar) {
+    try {
+      const c = await post(`/multisig/${encodeURIComponent(b.dataset.aceptar)}/accept`, { owner: cuenta, signature: firmar(par, b.dataset.msg) });
+      say("msgM", c.status === "activa" ? `Aceptaste: aceptaron todos y "${c.account}" ya está activa.` : `Aceptaste. Falta: ${c.waiting.join(", ")}.`, true);
+    } catch (e) { say("msgM", e.message); }
+  } else if (b.dataset.rechazar) {
+    try {
+      await post(`/multisig/${encodeURIComponent(b.dataset.rechazar)}/reject`, { owner: cuenta, signature: firmar(par, `multisig:reject:${b.dataset.rechazar}`) });
+      say("msgM", `Rechazaste "${b.dataset.rechazar}": no se va a activar.`, true);
+    } catch (e) { say("msgM", e.message); }
   } else if (b.dataset.firmar) {
     try {
       const p = await post(`/multisig/proposals/${b.dataset.firmar}/sign`, { signer: cuenta, signature: firmar(par, b.dataset.msg) });
