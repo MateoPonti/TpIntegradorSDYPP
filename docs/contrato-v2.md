@@ -16,7 +16,7 @@ dice "propuesta" lo confirma el grupo; lo que dice **Hecho** ya está programado
 | # | Punto | Estado |
 |---|---|---|
 | 1 | Registro de workers y personas (clave pública y privada) | **Hecho** (17/11) |
-| 2 | Cuenta compartida / fee, crowdfunding (transferencia con aprobación extra) | Por hacer |
+| 2 | Cuenta compartida / fee, crowdfunding (transferencia con aprobación extra) | En parte (20/11): cuenta compartida y comisión hechas; falta el crowdfunding |
 | 3 | Notificar por websocket, para no gastar ciclos de gusto | **Hecho** (20/11) |
 | 4 | Gateway: el worker funciona y "dice la verdad" + clasificación por potencia y recompensa + websocket | En parte (falta el websocket de los workers y decidir las shares) |
 | 5 | KEDA, colas quorum, recreación del bloque por cambio de dificultad | **Hecho** (13/11; RabbitMQ con 3 nodos el 17/11) |
@@ -403,7 +403,9 @@ dificultad total de cada uno en la ventana. [M1]
 2. ~~Alta de workers~~ → **decidido**: página pública `/unirse`, alta firmada por la cuenta. Queda el límite de altas (ver 9).
 3. Recuperación y cambio de claves de las cuentas (hoy: si perdés el `.key`, perdés la cuenta). La revocación de
    workers ya está (canario fallado).
-4. Multifirma: umbral y vencimiento de propuestas.
+4. ~~Multifirma~~ → **decidido y hecho (20/11):** m de n elegido al crear, vence a las 24 h por hora del servidor,
+   la crea un dueño sin que los demás acepten (como Safe), dueños y mínimo fijos, id = hash del texto firmado (como
+   Polkadot). Ver `pilar2/README.md` en main.
 5. ~~Fee~~ → **decidido y hecho (20/11), modelo de Bitcoin:** comisión fija de 0,10 por tx que cobran los mineros
    del bloque junto con el subsidio, y halving del subsidio (50,00 a la mitad cada 1.000 bloques, total < 100.000).
    Se descartó quemarla: con el subsidio en 0 los mineros no cobrarían nada. Sin priorizar tx por fee.
