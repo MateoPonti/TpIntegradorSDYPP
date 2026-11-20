@@ -21,4 +21,4 @@ providers:
   kubernetesIngress:
     enabled: true
   kubernetesCRD:
-    enabled: false
+    enabled: true   # 20/11: para el Middleware que redirige http://sdmer.duckdns.org a https (sdmer.yaml)
