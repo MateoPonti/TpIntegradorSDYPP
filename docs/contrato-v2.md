@@ -439,7 +439,7 @@ dificultad total de cada uno en la ventana. [M1]
 6. ~~Crowdfunding~~ → **decidido y hecho (20/11):** cierre por hora del servidor; la comisión del aporte no se
    devuelve; la liquidación no cobra comisión.
 7. ~~Shares~~ → **decidido y hecho (20/11):** sí, ponderadas por dificultad, con reparto PROP.
-8. Agregar el punto 5 al Word ampliado.
+8. ~~Agregar el punto 5 al Word ampliado~~ → **hecho**: el Word v2 tiene la sección 5.
 9. ~~Alta pública~~ → **decidido y hecho (20/11):** ni costo ni colateral; límite de 10 workers por cuenta y estado
    en prueba.
 10. ~~Cuarentena o reputación~~ → **decidido (20/11):** la cuarentena como estaba, más el estado en prueba.
