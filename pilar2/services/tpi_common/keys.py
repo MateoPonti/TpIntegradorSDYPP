@@ -125,3 +125,8 @@ def block_share_nonces(index: int) -> str:
 def miner_tasks(miner_id: str) -> str:
     """INCR por tarea prestada a ese minero (para darle un canario cada tantas)."""
     return f"miner:{miner_id}:tasks"
+
+
+def miner_leases(miner_id: str) -> str:
+    """ZSET de los préstamos abiertos de un minero (y reservas "r:<uuid>"), para el límite por minero."""
+    return f"miner:{miner_id}:leases"

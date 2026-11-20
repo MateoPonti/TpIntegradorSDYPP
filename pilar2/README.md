@@ -104,7 +104,7 @@ Así el gateway y el coordinator ni se enteran de quién minó, y el binario CUD
 
 | Endpoint | Qué hace |
 |---|---|
-| `GET /tasks/next?miner_id=&kind=` | Saca una tarea de `mining.tasks`, la presta (`lease:<task_id>`) y la devuelve. `204` si no hay o si el minero está en cuarentena. La primera de cada minero es la **calibración** y 1 de cada `CANARY_EVERY` es un **canario**. |
+| `GET /tasks/next?miner_id=&kind=` | Saca una tarea de `mining.tasks`, la presta (`lease:<task_id>`) y la devuelve. `204` si no hay o si el minero está en cuarentena. `204` también si ya tiene `MAX_LEASES_PER_MINER` (2) préstamos abiertos (20/11): uno que pida sin parar no se lleva la tanda entera. La primera de cada minero es la **calibración** y 1 de cada `CANARY_EVERY` es un **canario**. |
 | `POST /tasks/{task_id}/renew` | El agente pregunta entre tramo y tramo. Renueva el préstamo, o `410` si el bloque ya se cerró o el minero está en cuarentena (en ese caso la tarea vuelve a la cola). |
 | `POST /tasks/{task_id}/release` | "No pude": el agente devuelve la tarea cuando se le rompe el motor. Vuelve a la cola al instante (sin esperar los 60 s) y cuenta como falla. `410` si el préstamo ya no existe. |
 | `POST /results` | Publica el resultado en `mining.results` (el coordinator lo verifica de nuevo). Con token propio, el `worker` del resultado sale del token. Las `shares` solo pasan si el resultado es de un préstamo, con el `share_prefix` de esa tarea. |
@@ -259,6 +259,11 @@ propio**; (3) copiar el comando para minar con CPU o GPU.
 - **En prueba** (20/11): un worker nuevo recibe 1 canario cada `TRIAL_CANARY_EVERY` (5) tareas y no cobra hasta pasar
   `TRIAL_CANARIES` (3). Después queda como cualquier otro (1 canario cada 20). Clave `trial:<id>` (no empieza con
   `worker:` porque `alive_workers` escanea `worker:*`). Los pods del k3s no pasan por la prueba.
+- **Límite de préstamos por minero** (20/11): hasta 2 tareas prestadas a la vez (`MAX_LEASES_PER_MINER`). Antes no había
+  límite: un programa que pidiera 100 tareas seguidas se llevaba la tanda entera y el bloque se demoraba hasta que
+  vencían sus préstamos (60 s). Un agente honesto tiene como mucho 1 (pide la siguiente después de entregar); el 2.º
+  lugar sobra para cuando se le cae el programa y la tarea vieja todavía no venció. Se reserva el lugar con un Lua
+  antes de sacar la tarea (`miner:<id>:leases`), así 50 pedidos simultáneos no pasan todos: probado, se prestan 2.
 - **Límite por cuenta** (20/11): hasta `MAX_WORKERS_PER_ACCOUNT` (10) altas; la 11.ª da `429`. Los revocados siguen
   contando, así que mentir cuesta un lugar. Se controla con un Lua (`workers:of:<cuenta>`).
 - Con token propio, el gateway pone el `worker` de cada resultado a partir del token. Antes lo mandaba el agente:

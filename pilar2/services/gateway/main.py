@@ -31,6 +31,7 @@ Decidido el 20/11 (punto 4 del contrato):
   * Límite de MAX_WORKERS_PER_ACCOUNT altas por cuenta (los revocados siguen contando).
   * Shares: el prefijo de las shares lo fija la tarea (no el minero) y solo se reenvían las de un préstamo.
   * WebSocket: solo avisa; las tareas se siguen pidiendo y entregando por HTTP.
+  * Hasta MAX_LEASES_PER_MINER (2) préstamos abiertos por minero: uno que pide sin parar no se lleva la tanda.
 """
 import asyncio
 import contextlib
@@ -68,6 +69,7 @@ RESULTS_KEPT = 20
 TRIAL_CANARY_EVERY = env_int("TRIAL_CANARY_EVERY", 5)
 TRIAL_CANARIES = env_int("TRIAL_CANARIES", 3)
 MAX_WORKERS_PER_ACCOUNT = env_int("MAX_WORKERS_PER_ACCOUNT", 10)
+MAX_LEASES_PER_MINER = env_int("MAX_LEASES_PER_MINER", 2)  # la que mina y una de colchón
 NOTICE_PERIOD = float(env_str("WS_NOTICE_SECONDS", "1"))
 MAX_WS = env_int("WS_MAX_MINERS", 500)
 
@@ -83,11 +85,32 @@ CANARIES = Counter("canaries_total", "Canarios resueltos", ["result"])
 QUARANTINED = Counter("quarantined_total", "Mineros puestos en cuarentena", ["reason"])
 REPUBLISHED = Counter("tasks_republished_total", "Rangos re-publicados de mineros en cuarentena")
 RELEASED = Counter("tasks_released_total", "Tareas devueltas por el minero (se le rompió el motor)")
+LIMITED = Counter("tasks_limited_total", "Pedidos de tarea rechazados porque el minero ya tenía el máximo prestado")
 TRIAL_PASSED = Counter("workers_trial_passed_total", "Workers que pasaron la prueba")
 WS_CONNECTED = Gauge("gateway_ws_miners", "Mineros conectados por WebSocket a esta réplica")
 WS_NOTICES = Counter("gateway_ws_notices_total", "Avisos mandados por WebSocket", ["type"])
 
 state: dict = {"solved": set(), "sockets": set()}
+
+# KEYS: miner:<id>:leases (ZSET de task_id y reservas "r:<uuid>" -> hora)   ARGV: máximo, reserva, ahora
+# Limpia lo que ya no está prestado (el lease se borra al entregar, devolver, recibir 410 o vencer) y las reservas
+# de más de 10 s; si quedan menos que el máximo, agrega la reserva. Un solo Lua: pedidos simultáneos no se cuelan.
+SLOT_LUA = """
+local now = tonumber(ARGV[3])
+local items = redis.call('ZRANGE', KEYS[1], 0, -1, 'WITHSCORES')
+for i = 1, #items, 2 do
+  local m, t = items[i], tonumber(items[i + 1])
+  if string.sub(m, 1, 2) == 'r:' then
+    if now - t > 10 then redis.call('ZREM', KEYS[1], m) end
+  elseif redis.call('EXISTS', 'lease:' .. m) == 0 then
+    redis.call('ZREM', KEYS[1], m)
+  end
+end
+if redis.call('ZCARD', KEYS[1]) >= tonumber(ARGV[1]) then return 0 end
+redis.call('ZADD', KEYS[1], now, ARGV[2])
+redis.call('EXPIRE', KEYS[1], 3600)
+return 1
+"""
 
 # KEYS: workers:of:<cuenta>   ARGV: miner_id, máximo. Agrega el worker si la cuenta no llegó al máximo.
 LIMIT_LUA = """
@@ -228,7 +251,7 @@ async def lifespan(app: FastAPI):
     events = await rabbit.declare_events_queue(channel, exchange, POD_NAME)
     await events.consume(on_event)
     state.update(r=r, conn=conn, channel=channel, exchange=exchange, dlx=dlx, tasks=tasks, get_lock=asyncio.Lock(),
-                 limit=r.register_script(LIMIT_LUA))
+                 limit=r.register_script(LIMIT_LUA), slot=r.register_script(SLOT_LUA))
     reaper = asyncio.create_task(reaper_loop())
     notices = asyncio.create_task(notice_loop())
     if not MINER_TOKEN:
@@ -286,6 +309,25 @@ async def next_task(miner_id: str, kind: str = "cpu", ident: dict | None = Depen
     r = state["r"]
     if await r.exists(keys.quarantine(miner_id)):
         return Response(status_code=204)
+    # Límite de préstamos abiertos por minero (20/11): sin esto, uno que pide sin parar se lleva la tanda entera y
+    # el bloque se demora hasta que vencen sus préstamos. Se reserva el lugar antes de sacar la tarea (Lua), así
+    # muchos pedidos al mismo tiempo no pasan todos el control.
+    slot, leases = "r:" + uuid.uuid4().hex, keys.miner_leases(miner_id)
+    if not await state["slot"](keys=[leases], args=[MAX_LEASES_PER_MINER, slot, time.time()]):
+        LIMITED.inc()
+        return Response(status_code=204)
+    try:
+        out = await pick_task(miner_id, kind)
+        if isinstance(out, dict):  # primero se anota el préstamo y recién después se suelta la reserva
+            await r.zadd(leases, {out["task_id"]: time.time()})
+            await r.expire(leases, 3600)
+    finally:
+        await r.zrem(leases, slot)
+    return out
+
+
+async def pick_task(miner_id: str, kind: str) -> dict | Response:
+    r = state["r"]
     if not await r.exists(keys.miner_calibration(miner_id)):
         return await lend(calibration_task(kind), miner_id, kind, special="calib")
     cur = await current_block()
