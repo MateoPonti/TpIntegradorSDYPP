@@ -32,6 +32,8 @@ Decidido el 20/11 (punto 4 del contrato):
   * Shares: el prefijo de las shares lo fija la tarea (no el minero) y solo se reenvían las de un préstamo.
   * WebSocket: solo avisa; las tareas se siguen pidiendo y entregando por HTTP.
   * Hasta MAX_LEASES_PER_MINER (2) préstamos abiertos por minero: uno que pide sin parar no se lleva la tanda.
+  * La cuarentena crece (5, 10, 20 min… hasta 1 h) con cada una en la última hora, y con token propio la 3.ª
+    revoca el token: pedir tareas y dejarlas vencer a propósito sale caro.
 """
 import asyncio
 import contextlib
@@ -65,6 +67,8 @@ CALIB_PREFIX = "f" * 20  # no aparece nunca: el minero recorre el rango entero
 CANARY_EVERY = env_int("CANARY_EVERY", 20)
 QUARANTINE_AFTER = env_int("QUARANTINE_AFTER_EXPIRED", 3)
 QUARANTINE_SECONDS = env_int("QUARANTINE_SECONDS", 300)
+QUARANTINE_MAX_SECONDS = env_int("QUARANTINE_MAX_SECONDS", 3600)  # tope de la cuarentena que crece
+REVOKE_AFTER_STRIKES = env_int("REVOKE_AFTER_STRIKES", 3)  # con token propio: a la 3.ª cuarentena en 1 h, sin token
 RESULTS_KEPT = 20
 TRIAL_CANARY_EVERY = env_int("TRIAL_CANARY_EVERY", 5)
 TRIAL_CANARIES = env_int("TRIAL_CANARIES", 3)
@@ -85,6 +89,7 @@ CANARIES = Counter("canaries_total", "Canarios resueltos", ["result"])
 QUARANTINED = Counter("quarantined_total", "Mineros puestos en cuarentena", ["reason"])
 REPUBLISHED = Counter("tasks_republished_total", "Rangos re-publicados de mineros en cuarentena")
 RELEASED = Counter("tasks_released_total", "Tareas devueltas por el minero (se le rompió el motor)")
+REVOKED = Counter("tokens_revoked_total", "Tokens de workers revocados", ["reason"])
 LIMITED = Counter("tasks_limited_total", "Pedidos de tarea rechazados porque el minero ya tenía el máximo prestado")
 TRIAL_PASSED = Counter("workers_trial_passed_total", "Workers que pasaron la prueba")
 WS_CONNECTED = Gauge("gateway_ws_miners", "Mineros conectados por WebSocket a esta réplica")
@@ -153,15 +158,29 @@ async def current_block_id() -> str | None:
     return cur["block_id"] if cur else None
 
 
+async def revoke_token(miner_id: str, why: str) -> None:
+    """Alta pública: se borra el token del worker. Para volver tiene que darse de alta con otro nombre (y la cuenta
+    tiene un máximo de altas, contando los revocados)."""
+    if h := await state["r"].get(keys.worker_token_of(miner_id)):
+        if await state["r"].delete(keys.worker_token(h)):
+            REVOKED.labels(why).inc()
+            log(logger, "token revocado", miner_id=miner_id, motivo=why)
+
+
 async def put_in_quarantine(miner_id: str, reason: str, extra: list[tuple[int, int]] = (),
                             distrust: bool = True) -> None:
-    """Cuarentena (tpi_common.quarantine). `distrust`: además no cobra el bloque y se re-publican sus rangos."""
+    """Cuarentena (tpi_common.quarantine). `distrust`: además no cobra el bloque y se re-publican sus rangos.
+    Crece con cada una en la última hora (20/11), y a la REVOKE_AFTER_STRIKES-ésima se revoca el token propio:
+    así no conviene pedir tareas y dejarlas vencer a propósito."""
+    strikes, seconds = await quarantine.strike(state["r"], miner_id, QUARANTINE_SECONDS, QUARANTINE_MAX_SECONDS)
     n = await quarantine.penalize(state["r"], state["exchange"], await current_block(), miner_id, reason,
-                                  QUARANTINE_SECONDS, extra, distrust)
+                                  seconds, extra, distrust)
     QUARANTINED.labels(reason).inc()
     REPUBLISHED.inc(n)
-    log(logger, "minero en cuarentena", miner_id=miner_id, reason=reason, seconds=QUARANTINE_SECONDS,
+    log(logger, "minero en cuarentena", miner_id=miner_id, reason=reason, seconds=seconds, vez=strikes,
         rangos_republicados=n)
+    if strikes >= REVOKE_AFTER_STRIKES:
+        await revoke_token(miner_id, "cuarentenas")
 
 
 async def give_back(lease: dict, why: str) -> None:
@@ -420,9 +439,7 @@ async def finish_canary(lease: dict, res: dict) -> None:
         return
     log(logger, "canario fallado", miner_id=miner, task_from=task["from"], task_to=task["to"])
     await put_in_quarantine(miner, "canario")  # no cobra el bloque y sus "no encontré" van a otros
-    if h := await state["r"].get(keys.worker_token_of(miner)):  # alta pública: mentir le cuesta el token
-        await state["r"].delete(keys.worker_token(h))
-        log(logger, "token revocado", miner_id=miner)
+    await revoke_token(miner, "canario")  # alta pública: mentir le cuesta el token
 
 
 async def record_result(lease: dict, res: dict) -> None:

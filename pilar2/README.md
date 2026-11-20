@@ -259,6 +259,11 @@ propio**; (3) copiar el comando para minar con CPU o GPU.
 - **En prueba** (20/11): un worker nuevo recibe 1 canario cada `TRIAL_CANARY_EVERY` (5) tareas y no cobra hasta pasar
   `TRIAL_CANARIES` (3). Después queda como cualquier otro (1 canario cada 20). Clave `trial:<id>` (no empieza con
   `worker:` porque `alive_workers` escanea `worker:*`). Los pods del k3s no pasan por la prueba.
+- **La cuarentena crece y, con token propio, revoca** (20/11): cada cuarentena en la última hora dura el doble que la
+  anterior (5, 10, 20, 40 min, con tope de 1 h: `QUARANTINE_MAX_SECONDS`), y la 3.ª en una hora
+  (`REVOKE_AFTER_STRIKES`) revoca el token de un worker de `/unirse`. Un "encontré" inválido también revoca, igual
+  que un canario fallado. Así, pedir tareas y dejarlas vencer a propósito sale caro. Cuenta en `miner:<id>:strikes`
+  (vence a la hora). Probado en local: la 3.ª cuarentena duró 20 min y el pedido siguiente dio `401`.
 - **Límite de préstamos por minero** (20/11): hasta 2 tareas prestadas a la vez (`MAX_LEASES_PER_MINER`). Antes no había
   límite: un programa que pidiera 100 tareas seguidas se llevaba la tanda entera y el bloque se demoraba hasta que
   vencían sus préstamos (60 s). Un agente honesto tiene como mucho 1 (pide la siguiente después de entregar); el 2.º

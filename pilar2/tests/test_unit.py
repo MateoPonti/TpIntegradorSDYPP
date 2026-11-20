@@ -398,3 +398,25 @@ def test_crowdfund_deadline_open_and_reserved_names():
     assert crowdfund.view(raw, now=now + 11)["status"] == "cerrando"
     assert crowdfund.of_account("colecta:viaje") == "viaje" and crowdfund.of_account("viaje") is None
     assert accounts.reserved("colecta:viaje")  # nadie puede registrar la cuenta de una colecta
+
+
+def test_quarantine_grows_and_resets_after_an_hour():
+    import asyncio
+
+    from tpi_common import quarantine
+
+    class FakeRedis:
+        def __init__(self):
+            self.n, self.ttl = 0, None
+
+        async def incr(self, key):
+            self.n += 1
+            return self.n
+
+        async def expire(self, key, seconds):
+            self.ttl = seconds
+
+    r = FakeRedis()
+    got = [asyncio.run(quarantine.strike(r, "m", 300, 3600)) for _ in range(6)]
+    assert got == [(1, 300), (2, 600), (3, 1200), (4, 2400), (5, 3600), (6, 3600)]  # al doble, con tope de 1 h
+    assert r.ttl == quarantine.STRIKES_WINDOW  # la cuenta vence sola a la hora de la primera

@@ -130,3 +130,9 @@ def miner_tasks(miner_id: str) -> str:
 def miner_leases(miner_id: str) -> str:
     """ZSET de los préstamos abiertos de un minero (y reservas "r:<uuid>"), para el límite por minero."""
     return f"miner:{miner_id}:leases"
+
+
+def miner_strikes(miner_id: str) -> str:
+    """INCR con TTL de 1 h: cuarentenas del minero en la última hora (la cuarentena crece y, con token propio,
+    a la 3.ª se revoca el token)."""
+    return f"miner:{miner_id}:strikes"

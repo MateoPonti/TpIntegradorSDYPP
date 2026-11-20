@@ -12,6 +12,19 @@ import uuid
 from . import keys, pow, rabbit
 
 
+STRIKES_WINDOW = 3600  # las cuarentenas se cuentan en la última hora
+
+
+async def strike(r, miner_id: str, base: int, cap: int) -> tuple[int, int]:
+    """Anota una cuarentena más (decidido el 20/11) y devuelve (cuántas lleva en la última hora, segundos que
+    dura esta). Crece al doble cada vez: 5, 10, 20, 40 min… hasta `cap`. La cuenta arranca con la primera y se
+    borra sola a la hora."""
+    n = await r.incr(keys.miner_strikes(miner_id))
+    if n == 1:
+        await r.expire(keys.miner_strikes(miner_id), STRIKES_WINDOW)
+    return n, min(cap, base * 2 ** min(n - 1, 20))
+
+
 async def republish(exchange, cur: dict, lo: int, hi: int) -> None:
     task = {"v": 1, "task_id": uuid.uuid4().hex, "block_id": cur["block_id"], "base": cur["base"],
             "prefix": cur["prefix"], "from": int(lo), "to": int(hi), "attempts": 0,

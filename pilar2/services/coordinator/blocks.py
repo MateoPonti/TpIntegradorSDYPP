@@ -32,6 +32,7 @@ TARGET = env_float("BLOCK_TARGET_SECONDS", 10)
 REARM_FACTOR = env_float("REARM_FACTOR", 6)          # rearmar si va a tardar más de 6 x el objetivo
 REARM_MIN_AGE = env_float("REARM_MIN_AGE_SECONDS", 20)  # y el bloque lleva al menos esto (no oscilar)
 QUARANTINE_SECONDS = env_int("QUARANTINE_SECONDS", 300)
+QUARANTINE_MAX_SECONDS = env_int("QUARANTINE_MAX_SECONDS", 3600)
 DEFAULT_RANGE_SIZE = env_int("DEFAULT_RANGE_SIZE", 1_000_000)  # si todavía no hay pool:plan
 TASKS_PER_MINER = env_int("TASKS_PER_MINER_BATCH", 2)  # tamaño de tanda = mineros vivos x esto
 SHARES_PER_TASK = env_int("SHARES_PER_TASK", 32)  # el prefijo de las shares se elige para que salgan ~tantas
@@ -343,11 +344,15 @@ class Chain:
             # cuarentena, no cobra el bloque, y su rango y sus "no encontré" los hace otro minero.
             worker = res.get("worker")
             if worker:
+                strikes, seconds = await quarantine.strike(self.r, worker, QUARANTINE_SECONDS, QUARANTINE_MAX_SECONDS)
                 n = await quarantine.penalize(self.r, self.exchange, cur, worker, "resultado_invalido",
-                                              QUARANTINE_SECONDS, extra=[(lo, hi)])
+                                              seconds, extra=[(lo, hi)])
                 QUARANTINED.labels("resultado_invalido").inc()
                 log(self.logger, "resultado inválido: minero en cuarentena", worker=worker, nonce=nonce,
-                    rangos_republicados=n)
+                    seconds=seconds, vez=strikes, rangos_republicados=n)
+                if h := await self.r.get(keys.worker_token_of(worker)):  # mentira comprobada: como un canario
+                    await self.r.delete(keys.worker_token(h))
+                    log(self.logger, "token revocado", miner_id=worker, motivo="resultado_invalido")
             return "invalid"
         await self._add_shares(cur, res, lo, hi)
         return await self._seal_block(cur, res, nonce)
