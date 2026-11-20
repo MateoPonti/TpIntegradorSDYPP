@@ -18,6 +18,7 @@ from tpi_common.logs import log, setup_logging
 from tpi_common.web import install_common_routes
 
 from . import accounts as cuentas
+from . import crowdfund
 from . import ledger
 from . import multisig
 from .blocks import BLOCK_REWARD_CENTS, HALVING_BLOCKS, Chain
@@ -47,6 +48,7 @@ async def leader_loop(chain: Chain, leader: store.Leader) -> None:
             IS_LEADER.set(1 if is_leader else 0)
             if is_leader:
                 await chain.flush_outbox()  # lo que quedó sin publicar (se cayó RabbitMQ o un pod a mitad)
+                await settle_crowdfunds()
                 await chain.leader_tick()
             PENDING.set(await chain.pending_count())
         except Exception:  # noqa: BLE001 - el loop no se puede morir
@@ -68,7 +70,7 @@ async def lifespan(app: FastAPI):
     await results.consume(chain.on_result)
     loop = asyncio.create_task(leader_loop(chain, store.Leader(r, keys.COORD_LEADER, POD_NAME)))
     state.update(r=r, conn=conn, chain=chain, reserve=r.register_script(ledger.RESERVE_LUA),
-                 sign=r.register_script(multisig.SIGN_LUA))
+                 sign=r.register_script(multisig.SIGN_LUA), cf_start=r.register_script(crowdfund.START_LUA))
     log(logger, "coordinator listo", pod=POD_NAME)
     yield
     loop.cancel()
@@ -80,12 +82,37 @@ app = FastAPI(title="TPI coordinator", lifespan=lifespan)
 install_common_routes(app)
 
 
+async def _crowdfund_closed(tx: dict) -> str | None:
+    """Si la tx aporta a una colecta, que exista y siga abierta. Devuelve el motivo del rechazo."""
+    cid = crowdfund.of_account(tx["receiver"])
+    if cid is None:
+        return None
+    raw = await state["r"].hgetall(crowdfund.key(cid))
+    if not raw:
+        return "no existe esa colecta"
+    return None if crowdfund.is_open(raw) else "la colecta ya cerró"
+
+
+async def _contributed(tx: dict) -> None:
+    """Aporte admitido: se anota para la liquidación (devolución o pago)."""
+    cid = crowdfund.of_account(tx["receiver"])
+    if cid is None:
+        return
+    r = state["r"]
+    await r.hincrby(crowdfund.contrib_key(cid), tx["sender"], tx["amount"])
+    await r.hincrby(crowdfund.key(cid), "raised", tx["amount"])
+    await r.sadd(crowdfund.txs_key(cid), tx["tx_id"])
+
+
 async def _submit(body) -> tuple[int, dict]:
     try:
         tx = ledger.normalize(body)
     except ledger.InvalidTx as exc:
         TX_REJECTED.labels("formato").inc()
         return 400, {"error": str(exc)}
+    if reason := await _crowdfund_closed(tx):
+        TX_REJECTED.labels("colecta").inc()
+        return 400, {"error": reason}
     seq = ""
     if not cuentas.is_genesis(tx["sender"]):
         # Cuenta propia: tiene que estar registrada y la tx firmada con su clave (opción A del 17/11).
@@ -112,6 +139,7 @@ async def _submit(body) -> tuple[int, dict]:
         reason = ledger.RESERVE_ERRORS[rc]
         TX_REJECTED.labels(reason).inc()
         return 400, {"error": reason}
+    await _contributed(tx)
     TX_ACCEPTED.inc()
     return 202, {"tx_id": tx["tx_id"]}
 
@@ -202,6 +230,7 @@ async def accounts(limit: int = 1000):
         if bal == 0 and pend == 0:
             continue
         kind = ("minero" if name in payout or name.startswith("miner:")
+                else "colecta" if name.startswith(crowdfund.PREFIX)
                 else "compartida" if await r.exists(multisig.key(name)) else "usuario")
         out.append({"user": name, "type": kind, "balance_cents": bal, "pending_out_cents": pend,
                     "available_cents": bal - pend})
@@ -225,12 +254,16 @@ async def _admit(pid: str) -> None:
     raw = await r.hgetall(multisig.proposal_key(pid))
     tx = {"tx_id": uuid.uuid4().hex, "sender": raw["account"], "receiver": raw["receiver"],
           "amount": int(raw["amount"]), "ts": round(time.time(), 3), "fee": int(raw["fee"]), **multisig.tx_extra(raw)}
+    if reason := await _crowdfund_closed(tx):
+        await r.hset(multisig.proposal_key(pid), mapping={"status": "rechazada", "reason": reason})
+        return
     rc = await state["reserve"](keys=ledger.reserve_keys(tx), args=[tx["tx_id"], tx["amount"] + tx["fee"], json.dumps(tx), ""])
     if rc < 0:
         await r.hset(multisig.proposal_key(pid), mapping={"status": "rechazada", "reason": ledger.RESERVE_ERRORS[rc]})
         log(logger, "propuesta rechazada", proposal=pid, reason=ledger.RESERVE_ERRORS[rc])
         return
     await r.hset(multisig.proposal_key(pid), mapping={"status": "admitida", "tx_id": tx["tx_id"]})
+    await _contributed(tx)
     TX_ACCEPTED.inc()
     log(logger, "propuesta admitida", proposal=pid, account=tx["sender"], tx_id=tx["tx_id"])
 
@@ -351,6 +384,89 @@ async def get_multisig(account: str, limit: int = 50):
 async def list_multisig(owner: str):
     """Las cuentas compartidas de las que `owner` es dueño."""
     return {"owner": owner, "accounts": sorted(await state["r"].smembers(multisig.owner_index(owner)))}
+
+
+# ---- Colectas "todo o nada" (punto 2 del contrato) ----
+
+async def settle_crowdfunds() -> None:
+    """Liquida las colectas cerradas (solo el líder, en cada vuelta del loop). Ver coordinator/crowdfund.py."""
+    r, now = state["r"], time.time()
+    for cid in await r.zrangebyscore(crowdfund.OPEN_INDEX, 0, now - crowdfund.GRACE):
+        raw = await r.hgetall(crowdfund.key(cid))
+        if raw.get("status") not in ("abierta", "liquidando"):
+            await r.zrem(crowdfund.OPEN_INDEX, cid)
+            continue
+        txs = list(await r.smembers(crowdfund.txs_key(cid)))
+        if txs and "pending" in await r.hmget(keys.TX_STATUS, txs):
+            continue  # falta que algún aporte entre en un bloque: la plata todavía no está en la colecta
+        contrib = await r.hgetall(crowdfund.contrib_key(cid))
+        if not await state["cf_start"](keys=[crowdfund.key(cid)], args=[now, crowdfund.outcome(raw, contrib)]):
+            continue
+        result = await r.hget(crowdfund.key(cid), "result")  # si se retoma una liquidación, el que quedó guardado
+        pays = crowdfund.payments(result, raw, contrib)
+        for receiver, amount in pays:
+            tx = crowdfund.settlement_tx(cid, receiver, amount, result, now)
+            rc = await state["reserve"](keys=ledger.reserve_keys(tx), args=[tx["tx_id"], amount, json.dumps(tx), ""])
+            if rc == -2:
+                log(logger, "colecta sin saldo para liquidar", crowdfund=cid, receiver=receiver)
+                return
+        await r.hset(crowdfund.key(cid), mapping={"status": result, "settled": now})
+        await r.zrem(crowdfund.OPEN_INDEX, cid)
+        log(logger, "colecta liquidada", crowdfund=cid, result=result, txs=len(pays))
+
+
+@app.post("/crowdfunds", status_code=201)
+async def create_crowdfund(request: Request):
+    """Crea una colecta. La firma el que la crea, con su clave (cuenta registrada)."""
+    body = await _json(request)
+    if not isinstance(body, dict):
+        raise HTTPException(400, "se esperaba un objeto JSON")
+    cid, creator, beneficiary = body.get("id"), body.get("creator"), body.get("beneficiary")
+    if not isinstance(cid, str) or not crowdfund.ID.fullmatch(cid):
+        raise HTTPException(400, "id: 3 a 32 minúsculas, números o -")
+    title = body.get("title") or ""
+    if not isinstance(title, str) or len(title) > crowdfund.MAX_TITLE:
+        raise HTTPException(400, f"title: hasta {crowdfund.MAX_TITLE} caracteres")
+    try:
+        goal = ledger.to_cents(body.get("goal"))
+        deadline = crowdfund.check_deadline(body.get("deadline"), time.time())
+    except (ledger.InvalidTx, ValueError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+    r = state["r"]
+    if not isinstance(beneficiary, str) or not (await r.exists(keys.account_pubkey(beneficiary))
+                                                or await r.exists(multisig.key(beneficiary))):
+        raise HTTPException(400, "beneficiary: tiene que ser una cuenta registrada o compartida")
+    if not cuentas.verify(await _owner_key(creator if isinstance(creator, str) else ""),
+                          crowdfund.create_message(cid, beneficiary, goal, deadline), body.get("signature")):
+        raise HTTPException(400, "firma inválida")
+    now = time.time()
+    if not await r.hsetnx(crowdfund.key(cid), "id", cid):
+        raise HTTPException(409, "ya existe una colecta con ese id")
+    await r.hset(crowdfund.key(cid), mapping={"title": title, "creator": creator, "beneficiary": beneficiary,
+                                              "goal": goal, "deadline": deadline, "created": now,
+                                              "status": "abierta", "raised": 0})
+    await r.zadd(crowdfund.INDEX, {cid: now})
+    await r.zadd(crowdfund.OPEN_INDEX, {cid: deadline})
+    log(logger, "colecta creada", crowdfund=cid, creator=creator, goal=goal, deadline=deadline)
+    return crowdfund.view(await r.hgetall(crowdfund.key(cid)))
+
+
+@app.get("/crowdfunds")
+async def list_crowdfunds(limit: int = 50):
+    """Las últimas colectas, abiertas y cerradas."""
+    r = state["r"]
+    ids = await r.zrevrange(crowdfund.INDEX, 0, max(1, min(limit, 200)) - 1)
+    return {"crowdfunds": [crowdfund.view(raw) for cid in ids if (raw := await r.hgetall(crowdfund.key(cid)))],
+            "fee_cents": ledger.TX_FEE_CENTS}
+
+
+@app.get("/crowdfunds/{cid}")
+async def get_crowdfund(cid: str):
+    r = state["r"]
+    raw = await r.hgetall(crowdfund.key(cid))
+    if not raw:
+        raise HTTPException(404, "no existe esa colecta")
+    return crowdfund.view(raw, await r.hgetall(crowdfund.contrib_key(cid)))
 
 
 @app.get("/blocks/{index}")

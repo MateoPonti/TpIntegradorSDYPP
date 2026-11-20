@@ -29,6 +29,14 @@ En Windows `make check` llama a `python3`; si no existe, correr `python tools/ch
 Flags extra (opcionales, con los valores elegidos midiendo): `--threads 256`, `--blocks 0` (= SMs × 8),
 `--batch 268435456` y `--poll 256` (K).
 
+**Agregado del grupo: shares** (20/11, punto 4 del contrato del Pilar 2). `--share-prefix <hex> --max-shares N`
+(N ≤ 1024, por defecto 256) hace que el kernel, además de buscar el prefijo del bloque, anote con `atomicAdd` los
+nonces cuyo hash empieza con ese prefijo más corto (sin cortar la búsqueda) y los agrega como `"shares": [...]` al
+JSON. **Sin el flag la salida es exactamente la del kit**: `make check` sigue 17/17 y `make test` 9/9. Medido en la
+1050 Ti con 1.000 M nonces: 0,88 s sin shares y 0,93 s con prefijo `00000` (~5 % más); las 961 shares encontradas
+(953 esperadas) se verificaron una por una con `hashlib`, y en un rango de 1 M son exactamente las mismas que
+calcula Python. `cpu/miner_cpu.py` acepta los mismos flags.
+
 ## Cómo funciona
 
 ```mermaid

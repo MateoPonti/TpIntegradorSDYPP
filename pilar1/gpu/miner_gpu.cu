@@ -12,6 +12,10 @@
 //   miner_gpu --hash <str>
 //   miner_gpu --base <str> (--prefix <hex> | --difficulty <d>) --from <n0> --to <n1>
 //   stdout: ONE JSON line; exit 0 whether or not a nonce is found.
+//
+// Agregado del grupo (shares, punto 4 del contrato): con --share-prefix <hex> también junta hasta
+// --max-shares nonces cuyo hash empieza con ese prefijo (más corto que el del bloque) y los agrega como
+// "shares": [...] al JSON. Sin el flag, la salida es exactamente la del kit.
 
 #include <cuda_runtime.h>
 
@@ -24,6 +28,7 @@
 
 #define MAX_BASE 160
 #define BUF_BYTES 192  // base (<=160) + 20 decimal digits + MD5 padding = 3 blocks
+#define MAX_SHARES 1024
 
 #define CUDA_CHECK(call)                                                        \
     do {                                                                        \
@@ -156,7 +161,9 @@ __global__ void mine_kernel(const unsigned char *base, int base_len,
                             const unsigned char *prefix, int prefix_len,
                             uint64_t start, uint64_t count, int poll_every, int *found_flag,
                             unsigned long long *out_nonce,
-                            unsigned long long *hash_count) {
+                            unsigned long long *hash_count,
+                            const unsigned char *share, int share_len, int max_shares,
+                            unsigned int *share_count, unsigned long long *shares) {
     unsigned char buf[BUF_BYTES];
     unsigned char digest[16];
     for (int i = 0; i < base_len; ++i) buf[i] = base[i];
@@ -186,6 +193,16 @@ __global__ void mine_kernel(const unsigned char *base, int base_len,
         md5_tail(st, buf, full, len);
         ++done;
         md5_digest(st, digest);
+        if (share_len > 0) {
+            bool sh = true;
+            for (int k = 0; k < share_len; ++k) {
+                if (nibble(digest, k) != share[k]) { sh = false; break; }
+            }
+            if (sh) {  // share: se anota y se sigue buscando (no corta)
+                unsigned int slot = atomicAdd(share_count, 1u);
+                if (slot < (unsigned int)max_shares) shares[slot] = nonce;
+            }
+        }
         bool ok = true;
         for (int k = 0; k < prefix_len; ++k) {
             if (nibble(digest, k) != prefix[k]) { ok = false; break; }
@@ -208,7 +225,8 @@ static void usage() {
     fprintf(stderr,
             "usage: miner_gpu --hash <str>\n"
             "       miner_gpu --base <str> (--prefix <hex> | --difficulty <d>)"
-            " --from <n0> --to <n1> [--threads 256] [--blocks 0] [--batch 268435456] [--poll 256]\n");
+            " --from <n0> --to <n1> [--threads 256] [--blocks 0] [--batch 268435456] [--poll 256]"
+            " [--share-prefix <hex> --max-shares 256]\n");
     exit(2);
 }
 
@@ -220,8 +238,8 @@ static std::string md5_hex(const unsigned char d[16]) {
 
 // JSON-escapes nothing on purpose: hashes and numbers only.
 int main(int argc, char **argv) {
-    const char *hash_input = nullptr, *base = nullptr, *prefix_arg = nullptr;
-    int difficulty = -1, threads = 256, blocks = 0, poll = 256;
+    const char *hash_input = nullptr, *base = nullptr, *prefix_arg = nullptr, *share_arg = nullptr;
+    int difficulty = -1, threads = 256, blocks = 0, poll = 256, max_shares = 256;
     unsigned long long from = 0, to = 4294967295ULL, batch = 1ULL << 28;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
@@ -237,6 +255,8 @@ int main(int argc, char **argv) {
         else if (a == "--blocks") blocks = atoi(v);
         else if (a == "--batch") batch = strtoull(v, nullptr, 10);
         else if (a == "--poll") poll = atoi(v);
+        else if (a == "--share-prefix") share_arg = v;
+        else if (a == "--max-shares") max_shares = atoi(v);
         else usage();
     }
 
@@ -255,18 +275,29 @@ int main(int argc, char **argv) {
     }
 
     if (!base || (!prefix_arg && difficulty < 0) || (prefix_arg && difficulty >= 0) || to < from ||
-        threads < 1 || blocks < 0 || poll < 1 || batch < 1)
+        threads < 1 || blocks < 0 || poll < 1 || batch < 1 || max_shares < 1 || max_shares > MAX_SHARES)
         usage();
     std::string prefix = prefix_arg ? prefix_arg : std::string(difficulty, '0');
     int base_len = (int)strlen(base);
     if (base_len > MAX_BASE || prefix.size() > 32) usage();
-    unsigned char pref[32];
+    std::string share_s = share_arg ? share_arg : "";
+    if (share_arg && (share_s.empty() || share_s.size() > 32)) usage();
+    unsigned char pref[32], spref[32];
+    auto hexval = [](char c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return -1;
+    };
     for (size_t i = 0; i < prefix.size(); ++i) {
-        char c = prefix[i];
-        if (c >= '0' && c <= '9') pref[i] = c - '0';
-        else if (c >= 'a' && c <= 'f') pref[i] = c - 'a' + 10;
-        else if (c >= 'A' && c <= 'F') pref[i] = c - 'A' + 10;
-        else usage();
+        int v = hexval(prefix[i]);
+        if (v < 0) usage();
+        pref[i] = (unsigned char)v;
+    }
+    for (size_t i = 0; i < share_s.size(); ++i) {
+        int v = hexval(share_s[i]);
+        if (v < 0) usage();
+        spref[i] = (unsigned char)v;
     }
 
     if (blocks == 0) {
@@ -276,14 +307,20 @@ int main(int argc, char **argv) {
         blocks = sms * 8;
     }
 
-    unsigned char *d_base, *d_pref;
+    unsigned char *d_base, *d_pref, *d_spref;
     int *d_flag;
-    unsigned long long *d_nonce, *d_count;
+    unsigned int *d_scount;
+    unsigned long long *d_nonce, *d_count, *d_shares;
     CUDA_CHECK(cudaMalloc(&d_base, base_len + 1));
     CUDA_CHECK(cudaMalloc(&d_pref, 32));
     CUDA_CHECK(cudaMalloc(&d_flag, sizeof(int)));
     CUDA_CHECK(cudaMalloc(&d_nonce, sizeof(unsigned long long)));
     CUDA_CHECK(cudaMalloc(&d_count, sizeof(unsigned long long)));
+    CUDA_CHECK(cudaMalloc(&d_spref, 32));
+    CUDA_CHECK(cudaMalloc(&d_scount, sizeof(unsigned int)));
+    CUDA_CHECK(cudaMalloc(&d_shares, MAX_SHARES * sizeof(unsigned long long)));
+    CUDA_CHECK(cudaMemcpy(d_spref, spref, share_s.size(), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemset(d_scount, 0, sizeof(unsigned int)));
     CUDA_CHECK(cudaMemcpy(d_base, base, base_len, cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_pref, pref, prefix.size(), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemset(d_flag, 0, sizeof(int)));
@@ -297,7 +334,8 @@ int main(int argc, char **argv) {
     while (true) {
         unsigned long long n = (to - cur < batch) ? (to - cur + 1) : batch;
         mine_kernel<<<blocks, threads>>>(d_base, base_len, d_pref, (int)prefix.size(),
-                                         cur, n, poll, d_flag, d_nonce, d_count);
+                                         cur, n, poll, d_flag, d_nonce, d_count,
+                                         d_spref, (int)share_s.size(), max_shares, d_scount, d_shares);
         CUDA_CHECK(cudaGetLastError());
         CUDA_CHECK(cudaMemcpy(&found, d_flag, sizeof(int), cudaMemcpyDeviceToHost));
         if (found || to - cur < n) break;  // found, or this was the last batch
@@ -307,8 +345,24 @@ int main(int argc, char **argv) {
 
     unsigned long long hashes = 0, nonce = 0;
     CUDA_CHECK(cudaMemcpy(&hashes, d_count, sizeof(hashes), cudaMemcpyDeviceToHost));
+
+    // ", \"shares\": [n1, n2, ...]" solo si se pidió --share-prefix (la salida del kit no cambia).
+    std::string shares_json;
+    if (share_arg) {
+        unsigned int sc = 0;
+        CUDA_CHECK(cudaMemcpy(&sc, d_scount, sizeof(sc), cudaMemcpyDeviceToHost));
+        unsigned int kept = sc < (unsigned int)max_shares ? sc : (unsigned int)max_shares;
+        static unsigned long long host_shares[MAX_SHARES];
+        if (kept) CUDA_CHECK(cudaMemcpy(host_shares, d_shares, kept * sizeof(unsigned long long), cudaMemcpyDeviceToHost));
+        shares_json = ", \"shares\": [";
+        for (unsigned int i = 0; i < kept; ++i) {
+            if (i) shares_json += ", ";
+            shares_json += std::to_string(host_shares[i]);
+        }
+        shares_json += "]";
+    }
     if (!found) {
-        printf("{\"found\": false, \"hashes\": %llu, \"seconds\": %.6f}\n", hashes, secs);
+        printf("{\"found\": false, \"hashes\": %llu, \"seconds\": %.6f%s}\n", hashes, secs, shares_json.c_str());
         return 0;
     }
     CUDA_CHECK(cudaMemcpy(&nonce, d_nonce, sizeof(nonce), cudaMemcpyDeviceToHost));
@@ -321,7 +375,7 @@ int main(int argc, char **argv) {
     CUDA_CHECK(cudaMemcpy(d_msg, msg.data(), msg.size(), cudaMemcpyHostToDevice));
     hash_kernel<<<1, 1>>>(d_msg, (int)msg.size(), d_dig);
     CUDA_CHECK(cudaMemcpy(dig, d_dig, 16, cudaMemcpyDeviceToHost));
-    printf("{\"found\": true, \"nonce\": %llu, \"hash\": \"%s\", \"hashes\": %llu, \"seconds\": %.6f}\n",
-           nonce, md5_hex(dig).c_str(), hashes, secs);
+    printf("{\"found\": true, \"nonce\": %llu, \"hash\": \"%s\", \"hashes\": %llu, \"seconds\": %.6f%s}\n",
+           nonce, md5_hex(dig).c_str(), hashes, secs, shares_json.c_str());
     return 0;
 }

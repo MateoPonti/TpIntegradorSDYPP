@@ -9,6 +9,9 @@ Sirve para dos cosas:
 
 Reparte el rango en trozos chicos entre procesos (como schedule(dynamic) de OpenMP) y corta
 apenas uno encuentra. Devuelve cualquier nonce válido, no necesariamente el menor (igual que la GPU).
+
+Como miner_gpu, con --share-prefix también devuelve "shares": hasta --max-shares nonces cuyo hash empieza con
+ese prefijo más corto (punto 4 del contrato: prueba del trabajo hecho). Sin el flag, la salida es la del kit.
 """
 from __future__ import annotations
 
@@ -25,29 +28,35 @@ SLICE = 200_000          # nonces por trozo que toma cada proceso
 SEQUENTIAL_BELOW = 400_000  # rangos chicos: no vale la pena levantar procesos
 
 
-def scan(args: tuple[str, str, int, int]) -> tuple[int | None, str | None, int]:
-    """Busca en [lo, hi]. Devuelve (nonce, hash, hashes_hechos)."""
-    base, prefix, lo, hi = args
+def scan(args: tuple) -> tuple[int | None, str | None, int, list[int]]:
+    """Busca en [lo, hi]. Devuelve (nonce, hash, hashes_hechos, shares)."""
+    base, prefix, lo, hi, share, max_shares = args
     seed = hashlib.md5(base.encode("utf-8"))  # el prefijo de la base se procesa una sola vez
+    shares: list[int] = []
     for nonce in range(lo, hi + 1):
         h = seed.copy()
         h.update(str(nonce).encode())
         digest = h.hexdigest()
+        if share and digest.startswith(share) and len(shares) < max_shares:
+            shares.append(nonce)
         if digest.startswith(prefix):
-            return nonce, digest, nonce - lo + 1
-    return None, None, hi - lo + 1
+            return nonce, digest, nonce - lo + 1, shares
+    return None, None, hi - lo + 1, shares
 
 
-def search(base: str, prefix: str, start: int, end: int, workers: int) -> dict:
+def search(base: str, prefix: str, start: int, end: int, workers: int, share: str = "",
+           max_shares: int = 256) -> dict:
     t0 = time.perf_counter()
     if workers <= 1 or end - start + 1 < SEQUENTIAL_BELOW:
-        nonce, digest, hashes = scan((base, prefix, start, end))
+        nonce, digest, hashes, shares = scan((base, prefix, start, end, share, max_shares))
     else:
-        slices = ((base, prefix, lo, min(lo + SLICE - 1, end)) for lo in range(start, end + 1, SLICE))
-        nonce, digest, hashes = None, None, 0
+        slices = ((base, prefix, lo, min(lo + SLICE - 1, end), share, max_shares)
+                  for lo in range(start, end + 1, SLICE))
+        nonce, digest, hashes, shares = None, None, 0, []
         with mp.Pool(workers) as pool:
-            for n, d, h in pool.imap_unordered(scan, slices):
+            for n, d, h, s in pool.imap_unordered(scan, slices):
                 hashes += h
+                shares += s[:max_shares - len(shares)]
                 if n is not None:
                     nonce, digest = n, d
                     pool.terminate()  # corte temprano
@@ -56,6 +65,8 @@ def search(base: str, prefix: str, start: int, end: int, workers: int) -> dict:
     if nonce is not None:
         out.update(nonce=nonce, hash=digest)
     out.update(hashes=hashes, seconds=round(time.perf_counter() - t0, 6))
+    if share:
+        out["shares"] = shares
     return out
 
 
@@ -69,6 +80,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--from", dest="start", type=int, default=0)
     p.add_argument("--to", dest="end", type=int, default=2**32 - 1)
     p.add_argument("--workers", type=int, default=int(os.getenv("CPU_WORKERS", os.cpu_count() or 1)))
+    p.add_argument("--share-prefix", dest="share", default="")
+    p.add_argument("--max-shares", type=int, default=256)
     a = p.parse_args(argv)
     if a.hash_input is not None:
         return a
@@ -81,6 +94,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     a.prefix = a.prefix.lower()
     if not set(a.prefix) <= HEX or len(a.prefix) > 32:
         p.error("--prefix must be at most 32 hex characters")
+    a.share = a.share.lower()
+    if not set(a.share) <= HEX or len(a.share) > 32 or not 1 <= a.max_shares <= 1024:
+        p.error("--share-prefix: hex; --max-shares: 1 a 1024")
     if a.start < 0 or a.end < a.start or a.end > 2**64 - 1:
         p.error("need 0 <= --from <= --to < 2^64")
     return a
@@ -91,7 +107,7 @@ def main(argv: list[str] | None = None) -> int:
     if a.hash_input is not None:
         print(json.dumps({"hash": hashlib.md5(a.hash_input.encode("utf-8")).hexdigest()}))
         return 0
-    print(json.dumps(search(a.base, a.prefix, a.start, a.end, a.workers)), flush=True)
+    print(json.dumps(search(a.base, a.prefix, a.start, a.end, a.workers, a.share, a.max_shares)), flush=True)
     return 0
 
 

@@ -34,6 +34,7 @@ REARM_MIN_AGE = env_float("REARM_MIN_AGE_SECONDS", 20)  # y el bloque lleva al m
 QUARANTINE_SECONDS = env_int("QUARANTINE_SECONDS", 300)
 DEFAULT_RANGE_SIZE = env_int("DEFAULT_RANGE_SIZE", 1_000_000)  # si todavía no hay pool:plan
 TASKS_PER_MINER = env_int("TASKS_PER_MINER_BATCH", 2)  # tamaño de tanda = mineros vivos x esto
+SHARES_PER_TASK = env_int("SHARES_PER_TASK", 32)  # el prefijo de las shares se elige para que salgan ~tantas
 GENESIS_USERS = env_int("GENESIS_USERS", 97)  # user-0..user-96, como bench.py
 GENESIS_BALANCE_CENTS = env_int("GENESIS_BALANCE_CENTS", 100_000_000)
 NONCE_LIMIT = 2**63 - 1  # INCRBY de Redis es int64 con signo
@@ -46,6 +47,7 @@ TASKS_PUBLISHED = Counter("tasks_published_total", "Tareas publicadas en mining.
 EVENTS_PUBLISHED = Counter("outbox_events_published_total", "Eventos del outbox publicados en RabbitMQ")
 REARMED = Counter("blocks_rearmed_total", "Bloques rearmados con un prefijo más corto (cayó el hashrate)")
 QUARANTINED = Counter("quarantined_total", "Mineros puestos en cuarentena", ["reason"])
+SHARES = Counter("shares_total", "Shares recibidas", ["result"])
 BLOCK_TXS = Histogram("block_transactions", "Transacciones por bloque (sin las de premio)",
                       buckets=(1, 10, 50, 100, 250, 500, 1000, 2500, 5000, 10000))
 
@@ -77,7 +79,7 @@ return 1
 """
 
 # KEYS: chain:tip, mining:current, chain, block:<i>, hash:<h>, tx:inflight:<i>, tx:status, block:<i>:next_from,
-#       block:<i-1>:shares (ya pagado en este bloque), events:outbox
+#       block:<i-1>:shares (ya pagado en este bloque), events:outbox, block:<i-1>:sharenonces
 # ARGV: prev_hash, block_id, block_json, block_hash, index, evento block.solved (JSON)
 # El evento se guarda en el outbox en el mismo script que sella (transactional outbox): si el pod muere antes
 # de publicarlo en RabbitMQ, el bloque y su evento quedan los dos, y otro lo publica después.
@@ -106,11 +108,24 @@ for _, raw in ipairs(txs) do
   end
   redis.call('HSET', KEYS[7], tx['tx_id'], ARGV[5])
 end
-redis.call('DEL', KEYS[6], KEYS[2], KEYS[8], KEYS[9])
+redis.call('DEL', KEYS[6], KEYS[2], KEYS[8], KEYS[9], KEYS[11])
 redis.call('RPUSH', KEYS[10], ARGV[6])
 return #txs
 """
 SEAL_ERRORS = {-1: "tip cambió", -2: "bloque viejo", -3: "hash repetido"}
+
+# KEYS: block:<i>:sharenonces, block:<i>:shares   ARGV: minero, peso, nonces...
+# Suma el peso de cada share que todavía no se había pagado en ese bloque (la misma share no cobra dos veces).
+SHARES_LUA = """
+local n = 0
+for i = 3, #ARGV do
+  if redis.call('SADD', KEYS[1], ARGV[i]) == 1 then n = n + 1 end
+end
+if n > 0 then redis.call('HINCRBY', KEYS[2], ARGV[1], n * tonumber(ARGV[2])) end
+redis.call('EXPIRE', KEYS[1], 86400)
+redis.call('EXPIRE', KEYS[2], 86400)
+return n
+"""
 
 # KEYS: chain:tip, chain, block:0, hash:<h>   ARGV: block_json, block_hash, users..., balance
 GENESIS_LUA = """
@@ -164,6 +179,7 @@ class Chain:
         self._rearm = r.register_script(REARM_LUA)
         self._seal = r.register_script(SEAL_LUA)
         self._genesis = r.register_script(GENESIS_LUA)
+        self._shares = r.register_script(SHARES_LUA)
         self.wake = asyncio.Event()  # al sellar, el líder arma el siguiente sin esperar el loop
 
     async def ensure_genesis(self) -> None:
@@ -290,7 +306,8 @@ class Chain:
                 log(self.logger, "espacio de nonces agotado", block_id=cur["block_id"])
                 return
             task = {"v": 1, "task_id": uuid.uuid4().hex, "block_id": cur["block_id"], "base": cur["base"],
-                    "prefix": cur["prefix"], "from": start, "to": min(end - 1, NONCE_LIMIT), "attempts": 0}
+                    "prefix": cur["prefix"], "from": start, "to": min(end - 1, NONCE_LIMIT), "attempts": 0,
+                    "share_prefix": pow.share_prefix(cur["prefix"], size, SHARES_PER_TASK)}
             await self.exchange.publish(rabbit.message(task), routing_key="task.any")
             TASKS_PUBLISHED.inc()
 
@@ -310,12 +327,12 @@ class Chain:
         cur = await self.current()
         lo, hi = int(res["from"]), int(res["to"])
         if cur is None or res.get("block_id") != cur["block_id"]:
-            # El bloque se rearmó (mismo índice, block_id viejo): el rango recorrido cuenta igual para el premio.
+            # El bloque se rearmó (mismo índice y misma base, block_id viejo): sus shares cuentan igual.
             if cur is not None and str(res.get("block_id", "")).startswith(f"{cur['index']}-") and not res.get("found"):
-                await self._add_share(cur["index"], res.get("worker"), hi - lo + 1)
+                await self._add_shares(cur, res, lo, hi)
             return "stale"  # bloque ya sellado o resultado duplicado/tardío
         if not res.get("found"):
-            await self._add_share(cur["index"], res.get("worker"), hi - lo + 1)
+            await self._add_shares(cur, res, lo, hi)
             return "empty"
         try:
             nonce = int(res.get("nonce"))
@@ -332,15 +349,25 @@ class Chain:
                 log(self.logger, "resultado inválido: minero en cuarentena", worker=worker, nonce=nonce,
                     rangos_republicados=n)
             return "invalid"
-        await self._add_share(cur["index"], res.get("worker"), nonce - lo + 1)
+        await self._add_shares(cur, res, lo, hi)
         return await self._seal_block(cur, res, nonce)
 
-    async def _add_share(self, index: int, worker: str | None, nonces: int) -> None:
-        """Trabajo de cada minero en el bloque: el tamaño del rango que fijó el coordinator (hasta el nonce si
-        lo encontró), no los `hashes` que informa el minero. Se suma por índice, así cuenta aunque se rearme."""
-        if worker:
-            await self.r.hincrby(keys.block_shares(index), worker, nonces)
-            await self.r.expire(keys.block_shares(index), 86400)
+    async def _add_shares(self, cur: dict, res: dict, lo: int, hi: int) -> int:
+        """Trabajo de cada minero en el bloque (shares, decidido el 20/11): cada share se verifica con MD5 acá y
+        pesa 16^largo de su prefijo, que es lo que cuesta encontrarla. Un minero que dice "no encontré" sin haber
+        minado no tiene shares y no cobra. Un worker en prueba todavía no cobra. Se suma por índice, así cuenta
+        aunque el bloque se rearme (la base es la misma)."""
+        worker, sp = res.get("worker"), res.get("share_prefix") or ""
+        if not worker or not sp or not cur["prefix"].startswith(sp):
+            return 0
+        good = pow.valid_shares(cur["base"], sp, lo, hi, res.get("shares"))
+        sent = len(res.get("shares") or [])
+        SHARES.labels("ok").inc(len(good))
+        SHARES.labels("invalida").inc(max(0, sent - len(good)))
+        if not good or await self.r.exists(keys.worker_trial(worker)):
+            return 0
+        return await self._shares(keys=[keys.block_share_nonces(cur["index"]), keys.block_shares(cur["index"])],
+                                  args=[worker, pow.share_weight(sp), *good])
 
     async def _seal_block(self, cur: dict, res: dict, nonce: int) -> str:
         index = cur["index"]
@@ -355,7 +382,7 @@ class Chain:
         rc = await self._seal(
             keys=[keys.CHAIN_TIP, keys.MINING_CURRENT, keys.CHAIN, keys.block(index), keys.hash_key(res["hash"]),
                   keys.tx_inflight(index), keys.TX_STATUS, keys.block_next_from(index),
-                  keys.block_shares(index - 1), keys.EVENTS_OUTBOX],
+                  keys.block_shares(index - 1), keys.EVENTS_OUTBOX, keys.block_share_nonces(index - 1)],
             args=[cur["previous_hash"], cur["block_id"], pow.canonical_json(block), res["hash"], index,
                   json.dumps(solved_event(block, cur["block_id"]))])
         if rc < 0:

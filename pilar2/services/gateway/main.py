@@ -7,6 +7,7 @@
   POST /keepalive              SET worker:<id> EX 15 (Redis no se expone a Internet)
   GET  /scaling                señal del pool para KEDA del k3s
   POST /workers/register       alta pública de un worker (página /unirse): token propio atado a una cuenta
+  WS   /ws/miners              avisos al minero: "hay tareas" y "bloque sellado" (punto 4 del contrato)
 
 Tokens: el MINER_TOKEN compartido queda para los pods del k3s. Un worker dado de alta en /unirse usa su
 token propio: su miner_id (cuenta.worker) y su cuenta de cobro salen del token, no de lo que mande, y si
@@ -23,6 +24,13 @@ Decidido el 13/11 (decisiones §8), todo dentro del gateway, sin pasar por Rabbi
     Si el minero contesta "no encontré", está roto o miente: cuarentena, su trabajo de este bloque no
     cobra y sus rangos "no encontré" se vuelven a publicar para otros mineros.
   * Cuarentena: también con QUARANTINE_AFTER_EXPIRED préstamos vencidos seguidos.
+
+Decidido el 20/11 (punto 4 del contrato):
+  * En prueba: un worker de alta pública empieza con más canarios (1 de cada TRIAL_CANARY_EVERY tareas) y sin
+    premio hasta pasar TRIAL_CANARIES canarios. Los pods del k3s (token compartido) no pasan por la prueba.
+  * Límite de MAX_WORKERS_PER_ACCOUNT altas por cuenta (los revocados siguen contando).
+  * Shares: el prefijo de las shares lo fija la tarea (no el minero) y solo se reenvían las de un préstamo.
+  * WebSocket: solo avisa; las tareas se siguen pidiendo y entregando por HTTP.
 """
 import asyncio
 import contextlib
@@ -35,9 +43,9 @@ import secrets
 import time
 import uuid
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from prometheus_client import Counter
+from prometheus_client import Counter, Gauge
 
 from tpi_common import firmas, keys, pow, quarantine, rabbit, store
 from tpi_common.config import POD_NAME, WORKER_TTL_SECONDS, env_int, env_str
@@ -57,6 +65,11 @@ CANARY_EVERY = env_int("CANARY_EVERY", 20)
 QUARANTINE_AFTER = env_int("QUARANTINE_AFTER_EXPIRED", 3)
 QUARANTINE_SECONDS = env_int("QUARANTINE_SECONDS", 300)
 RESULTS_KEPT = 20
+TRIAL_CANARY_EVERY = env_int("TRIAL_CANARY_EVERY", 5)
+TRIAL_CANARIES = env_int("TRIAL_CANARIES", 3)
+MAX_WORKERS_PER_ACCOUNT = env_int("MAX_WORKERS_PER_ACCOUNT", 10)
+NOTICE_PERIOD = float(env_str("WS_NOTICE_SECONDS", "1"))
+MAX_WS = env_int("WS_MAX_MINERS", 500)
 
 LEASED = Counter("tasks_leased_total", "Tareas prestadas a mineros", ["kind"])
 DROPPED = Counter("tasks_dropped_stale_total", "Tareas de bloques viejos descartadas al sacarlas")
@@ -70,8 +83,19 @@ CANARIES = Counter("canaries_total", "Canarios resueltos", ["result"])
 QUARANTINED = Counter("quarantined_total", "Mineros puestos en cuarentena", ["reason"])
 REPUBLISHED = Counter("tasks_republished_total", "Rangos re-publicados de mineros en cuarentena")
 RELEASED = Counter("tasks_released_total", "Tareas devueltas por el minero (se le rompió el motor)")
+TRIAL_PASSED = Counter("workers_trial_passed_total", "Workers que pasaron la prueba")
+WS_CONNECTED = Gauge("gateway_ws_miners", "Mineros conectados por WebSocket a esta réplica")
+WS_NOTICES = Counter("gateway_ws_notices_total", "Avisos mandados por WebSocket", ["type"])
 
-state: dict = {"solved": set()}
+state: dict = {"solved": set(), "sockets": set()}
+
+# KEYS: workers:of:<cuenta>   ARGV: miner_id, máximo. Agrega el worker si la cuenta no llegó al máximo.
+LIMIT_LUA = """
+if redis.call('SISMEMBER', KEYS[1], ARGV[1]) == 1 then return 1 end
+if redis.call('SCARD', KEYS[1]) >= tonumber(ARGV[2]) then return 0 end
+redis.call('SADD', KEYS[1], ARGV[1])
+return 1
+"""
 
 
 def token_hash(token: str) -> str:
@@ -165,11 +189,34 @@ async def count_expired(miner_id: str) -> None:
         await put_in_quarantine(miner_id, "vencidos", distrust=False)  # se colgó, no mintió
 
 
+async def broadcast(msg: dict) -> None:
+    """Manda un aviso a todos los mineros conectados a esta réplica. Uno que no contesta se descarta."""
+    for ws in list(state["sockets"]):
+        try:
+            await asyncio.wait_for(ws.send_json(msg), 2)
+        except Exception:  # noqa: BLE001 - conexión muerta o cliente lento
+            state["sockets"].discard(ws)
+    WS_NOTICES.labels(msg["type"]).inc()
+
+
+async def notice_loop() -> None:
+    """Cada NOTICE_PERIOD, si hay tareas en la cola y mineros conectados, avisa "tareas". Los que están minando
+    lo ignoran; los que esperan piden una por HTTP al instante (sin aviso esperan hasta 15 s)."""
+    while True:
+        await asyncio.sleep(NOTICE_PERIOD)
+        try:
+            if state["sockets"] and await rabbit.queue_length(state["channel"], rabbit.TASKS_QUEUE) > 0:
+                await broadcast({"type": "tareas"})
+        except Exception:  # noqa: BLE001
+            logger.exception("error en el loop de avisos")
+
+
 async def on_event(message) -> None:
     async with message.process():
         ev = json.loads(message.body)
         state["solved"].add(ev["block_id"])
         log(logger, "block.solved recibido", block_id=ev["block_id"])
+        await broadcast({"type": "block.solved", "block_id": ev["block_id"]})
 
 
 @contextlib.asynccontextmanager
@@ -180,13 +227,16 @@ async def lifespan(app: FastAPI):
     exchange, dlx, tasks, _ = await rabbit.declare_topology(channel)
     events = await rabbit.declare_events_queue(channel, exchange, POD_NAME)
     await events.consume(on_event)
-    state.update(r=r, conn=conn, exchange=exchange, dlx=dlx, tasks=tasks, get_lock=asyncio.Lock())
+    state.update(r=r, conn=conn, channel=channel, exchange=exchange, dlx=dlx, tasks=tasks, get_lock=asyncio.Lock(),
+                 limit=r.register_script(LIMIT_LUA))
     reaper = asyncio.create_task(reaper_loop())
+    notices = asyncio.create_task(notice_loop())
     if not MINER_TOKEN:
         log(logger, "MINER_TOKEN vacío: se rechazan todos los mineros")
     log(logger, "gateway listo", pod=POD_NAME)
     yield
     reaper.cancel()
+    notices.cancel()
     await conn.close()
     await r.aclose()
 
@@ -239,7 +289,11 @@ async def next_task(miner_id: str, kind: str = "cpu", ident: dict | None = Depen
     if not await r.exists(keys.miner_calibration(miner_id)):
         return await lend(calibration_task(kind), miner_id, kind, special="calib")
     cur = await current_block()
-    if cur and CANARY_EVERY > 0 and await r.incr(keys.CANARY_COUNTER) % CANARY_EVERY == 0:
+    if await r.exists(keys.worker_trial(miner_id)):  # en prueba: un canario cada TRIAL_CANARY_EVERY tareas
+        canary_due = await r.incr(keys.miner_tasks(miner_id)) % TRIAL_CANARY_EVERY == 0
+    else:
+        canary_due = CANARY_EVERY > 0 and await r.incr(keys.CANARY_COUNTER) % CANARY_EVERY == 0
+    if cur and canary_due:
         canary = await canary_task(cur)
         if canary:
             return await lend(canary, miner_id, kind, special="canary")
@@ -317,6 +371,10 @@ async def finish_canary(lease: dict, res: dict) -> None:
         and pow.verify(task["base"], task["prefix"], int(res["nonce"]), res.get("hash", ""))
     CANARIES.labels("ok" if ok else "falla").inc()
     if ok:
+        if await state["r"].exists(keys.worker_trial(miner)) and await state["r"].incr(keys.worker_trial(miner)) >= TRIAL_CANARIES:
+            await state["r"].delete(keys.worker_trial(miner), keys.miner_tasks(miner))
+            TRIAL_PASSED.inc()
+            log(logger, "worker pasó la prueba: ya cobra", miner_id=miner)
         return
     log(logger, "canario fallado", miner_id=miner, task_from=task["from"], task_to=task["to"])
     await put_in_quarantine(miner, "canario")  # no cobra el bloque y sus "no encontré" van a otros
@@ -337,12 +395,14 @@ async def record_result(lease: dict, res: dict) -> None:
     await r.delete(keys.miner_expired(miner))  # volvió a entregar: no es zombie
 
 
-@app.post("/results", dependencies=[Depends(auth)])
-async def post_result(request: Request):
+@app.post("/results")
+async def post_result(request: Request, ident: dict | None = Depends(auth)):
     res = await request.json()
     for f in ("task_id", "block_id", "worker", "from", "to", "found"):
         if f not in res:
             raise HTTPException(400, f"falta {f}")
+    if ident:  # token propio: el resultado es de ese worker, diga lo que diga (si no, cobra otro o se saltea la prueba)
+        res["worker"] = ident["miner_id"]
     r = state["r"]
     raw = await r.getdel(keys.lease(res["task_id"]))
     await r.zrem(keys.LEASE_DEADLINES, res["task_id"])
@@ -354,6 +414,13 @@ async def post_result(request: Request):
         await finish_canary(lease, res)
         return Response(status_code=202)
     kind = lease["kind"] if lease else "cpu"
+    # Shares: solo las de un préstamo, con el prefijo que fijó la tarea (el minero no lo puede elegir).
+    if lease and lease["task"].get("share_prefix") and isinstance(res.get("shares"), list):
+        res["share_prefix"] = lease["task"]["share_prefix"]
+        res["shares"] = res["shares"][:pow.MAX_SHARES]
+    else:
+        res.pop("shares", None)
+        res.pop("share_prefix", None)
     cur = await current_block()
     if not res["found"] and await r.exists(keys.quarantine(res["worker"])):
         # Un "no encontré" de un minero en cuarentena no vale: no cobra y el rango lo hace otro.
@@ -391,7 +458,8 @@ async def keepalive(request: Request, ident: dict | None = Depends(auth)):
     if not isinstance(account, str) or len(account) > 64 or account == "recompensa":
         raise HTTPException(400, "account inválida")
     value = {"miner_id": miner_id, "type": kind, "hashrate": float(body.get("hashrate") or 0),
-             "account": account, "ts": time.time()}
+             "account": account, "ts": time.time(),
+             "trial": bool(await state["r"].exists(keys.worker_trial(miner_id)))}
     await state["r"].set(keys.worker(miner_id), json.dumps(value), ex=WORKER_TTL_SECONDS)
     await state["r"].set(keys.miner_account(miner_id), account, ex=86400)  # el premio se paga en el bloque siguiente
     KEEPALIVES.labels(kind).inc()
@@ -416,11 +484,42 @@ async def register_worker(request: Request):
     if not firmas.verify(pubkey, firmas.worker_message(account, worker), body.get("signature")):
         raise HTTPException(400, "firma inválida")
     miner_id, token = f"{account}.{worker}", secrets.token_urlsafe(32)
+    if await r.exists(keys.worker_token_of(miner_id)):
+        raise HTTPException(409, "ese worker ya existe: elegí otro nombre")
+    if not await state["limit"](keys=[keys.account_workers(account)], args=[miner_id, MAX_WORKERS_PER_ACCOUNT]):
+        raise HTTPException(429, f"la cuenta ya dio de alta {MAX_WORKERS_PER_ACCOUNT} workers (es el máximo)")
     if not await r.set(keys.worker_token_of(miner_id), token_hash(token), nx=True):
         raise HTTPException(409, "ese worker ya existe: elegí otro nombre")
     await r.set(keys.worker_token(token_hash(token)), json.dumps({"miner_id": miner_id, "account": account}))
-    log(logger, "worker dado de alta", miner_id=miner_id)
-    return {"miner_id": miner_id, "account": account, "token": token}
+    await r.set(keys.worker_trial(miner_id), 0)  # arranca en prueba
+    log(logger, "worker dado de alta (en prueba)", miner_id=miner_id)
+    return {"miner_id": miner_id, "account": account, "token": token, "trial": True,
+            "trial_canaries": TRIAL_CANARIES}
+
+
+@app.websocket("/ws/miners")
+async def ws_miners(ws: WebSocket):
+    """Avisos al minero (punto 4): {"type": "tareas"} y {"type": "block.solved", "block_id"}. El minero no manda
+    nada por acá: pedir y entregar tareas sigue siendo HTTP, así que si esto se corta no se pierde trabajo."""
+    try:
+        await auth(ws.headers.get("authorization", ""))
+    except HTTPException:
+        await ws.close(code=1008)
+        return
+    if len(state["sockets"]) >= MAX_WS:
+        await ws.close(code=1013)
+        return
+    await ws.accept()
+    state["sockets"].add(ws)
+    WS_CONNECTED.set(len(state["sockets"]))
+    try:
+        while True:
+            await ws.receive_text()  # solo para enterarse si se cierra
+    except WebSocketDisconnect:
+        pass
+    finally:
+        state["sockets"].discard(ws)
+        WS_CONNECTED.set(len(state["sockets"]))
 
 
 @app.get("/scaling", dependencies=[Depends(auth)])

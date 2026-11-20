@@ -96,7 +96,8 @@ Así el gateway y el coordinator ni se enteran de quién minó, y el binario CUD
 ## API
 
 **Coordinator** (público): `POST /transactions` · `POST /transactions/bulk` · `GET /transactions/{id}` ·
-`GET /balances/{user}` · `GET /accounts` (todas las cuentas, usuarios y cobro de mineros) · `GET /blocks/{i}` · `GET /chain` · `GET /status` · `GET /miners` · `GET /` (explorador) · `GET /cuenta` (billetera) · `GET /unirse` (sumar un worker) ·
+`GET /balances/{user}` · `GET /accounts` (todas las cuentas, usuarios y cobro de mineros) ·
+`POST /crowdfunds` · `GET /crowdfunds` · `GET /crowdfunds/{id}` (colectas) · `GET /blocks/{i}` · `GET /chain` · `GET /status` · `GET /miners` · `GET /` (explorador) · `GET /cuenta` (billetera) · `GET /unirse` (sumar un worker) ·
 `/health` `/metrics` `/logs`
 
 **Gateway** (todo con `Authorization: Bearer <MINER_TOKEN>`):
@@ -106,9 +107,10 @@ Así el gateway y el coordinator ni se enteran de quién minó, y el binario CUD
 | `GET /tasks/next?miner_id=&kind=` | Saca una tarea de `mining.tasks`, la presta (`lease:<task_id>`) y la devuelve. `204` si no hay o si el minero está en cuarentena. La primera de cada minero es la **calibración** y 1 de cada `CANARY_EVERY` es un **canario**. |
 | `POST /tasks/{task_id}/renew` | El agente pregunta entre tramo y tramo. Renueva el préstamo, o `410` si el bloque ya se cerró o el minero está en cuarentena (en ese caso la tarea vuelve a la cola). |
 | `POST /tasks/{task_id}/release` | "No pude": el agente devuelve la tarea cuando se le rompe el motor. Vuelve a la cola al instante (sin esperar los 60 s) y cuenta como falla. `410` si el préstamo ya no existe. |
-| `POST /results` | Publica el resultado en `mining.results` (el coordinator lo verifica de nuevo). |
+| `POST /results` | Publica el resultado en `mining.results` (el coordinator lo verifica de nuevo). Con token propio, el `worker` del resultado sale del token. Las `shares` solo pasan si el resultado es de un préstamo, con el `share_prefix` de esa tarea. |
 | `POST /keepalive` | `{miner_id, type: cpu\|gpu, hashrate, account?}` → `worker:<id>` con TTL 15 s y `miner:<id>:account` (cuenta de cobro, 1 día). |
 | `GET /scaling` | Señal del pool para KEDA. `503` si el pool no la renovó. |
+| `WS /ws/miners` | Avisos al minero: `{"type": "tareas"}` (hay tareas en la cola) y `{"type": "block.solved", "block_id"}`. Solo avisa: pedir y entregar sigue siendo HTTP. |
 
 ## Mensajes (JSON, `"v": 1`)
 
@@ -171,8 +173,9 @@ Así el gateway y el coordinator ni se enteran de quién minó, y el binario CUD
   - Un minero **zombie** (keep-alive sin entregar trabajo) no cuenta como vivo: si es una GPU colgada, el pool
     pide mineros CPU apenas le vence la tarea, sin esperar a la cuarentena.
   - Si se le rompe el motor, el agente no se muere: devuelve la tarea con `release` y sigue.
-- **Premio proporcional** (13/11): `BLOCK_REWARD_CENTS` por bloque, repartido según los nonces que completó
-  cada minero antes del sellado (el tamaño de rango que fijó el coordinator, no los `hashes` que informa).
+- **Premio proporcional** (13/11): `BLOCK_REWARD_CENTS` por bloque, repartido según el trabajo de cada minero
+  antes del sellado. Desde el 20/11 el trabajo se mide con **shares** verificadas (ver "Shares" más abajo); antes
+  era el tamaño de los rangos que decía haber recorrido.
   Se paga con tx `sender="recompensa"` → la **cuenta de cobro** del minero al principio del bloque siguiente; el
   resto del redondeo va al que encontró el nonce. La cuenta de cobro es `MINER_ACCOUNT` del agente (por defecto
   `miner:<id>`): los 8 pods de KEDA de una PC y su GPU, con `MINER_ACCOUNT=mateo`, suman sus partes y cobran
@@ -246,6 +249,14 @@ propio**; (3) copiar el comando para minar con CPU o GPU.
   cambiar. El premio va a la cuenta registrada (cierra el hueco de `MINER_ACCOUNT` sin dueño).
 - Si el worker falla un canario, además de la cuarentena se le **revoca el token**.
 - El `MINER_TOKEN` compartido sigue para los pods del k3s (KEDA).
+- **En prueba** (20/11): un worker nuevo recibe 1 canario cada `TRIAL_CANARY_EVERY` (5) tareas y no cobra hasta pasar
+  `TRIAL_CANARIES` (3). Después queda como cualquier otro (1 canario cada 20). Clave `trial:<id>` (no empieza con
+  `worker:` porque `alive_workers` escanea `worker:*`). Los pods del k3s no pasan por la prueba.
+- **Límite por cuenta** (20/11): hasta `MAX_WORKERS_PER_ACCOUNT` (10) altas; la 11.ª da `429`. Los revocados siguen
+  contando, así que mentir cuesta un lugar. Se controla con un Lua (`workers:of:<cuenta>`).
+- Con token propio, el gateway pone el `worker` de cada resultado a partir del token. Antes lo mandaba el agente:
+  un worker podía firmar resultados con otro nombre, cobrar en otra cuenta o saltearse la prueba (lo encontramos
+  en la prueba local del 20/11).
 
 ### Notificaciones por websocket (punto 3 del Contrato SDMER, 20/11/2026)
 
@@ -318,6 +329,60 @@ Polkadot: un dueño propone un pago, los demás firman lo mismo y al juntar el m
   bloque; la 3.ª firma no cobró de nuevo; misma propuesta 409; propuesta sin saldo rechazada; saldo final
   20,00 − 5,00 − 0,10. La página probada en Chrome (crear y proponer).
 
+### Colectas "todo o nada" (crowdfunding, punto 2 del Contrato SDMER, 20/11/2026)
+
+Una persona con cuenta crea una colecta con meta, beneficiario y hora de cierre. Se aporta mandando una tx firmada
+común a la cuenta `colecta:<id>`, que nadie puede gastar a mano (el nombre `colecta:` está reservado). Al cierre, el
+líder la liquida: si llegó a la meta, todo va al beneficiario; si no, a cada uno se le devuelve lo que aportó.
+
+| Ruta | Qué hace |
+|---|---|
+| `POST /crowdfunds` | `{id, title, creator, beneficiary, goal, deadline, signature}`. Firma el creador sobre `crowdfund:create:<id>:<beneficiario>:<meta en centavos>:<deadline>`. El beneficiario tiene que ser una cuenta registrada o compartida. Cierre entre 60 s y 7 días |
+| `GET /crowdfunds` · `GET /crowdfunds/{id}` | Las últimas colectas; una, con quién aportó cuánto |
+
+- **Cierra por hora del servidor**, como la cuenta compartida: los bloques solo salen si hay tx, así que no sirven
+  de reloj. Un aporte después del cierre da `400`.
+- **La comisión del aporte no se devuelve**, como en Bitcoin, Ethereum o los crowdloans de Polkadot: ya la cobró el
+  minero de ese bloque. Las tx de la liquidación (pago o devoluciones) las arma el sistema y **no pagan comisión**,
+  así nadie paga dos veces.
+- Se liquida cuando todos los aportes están en un bloque y pasaron `CROWDFUND_GRACE_SECONDS` (30) del cierre, por si
+  un aporte de último segundo todavía se estaba admitiendo. Pasar de `abierta` a `liquidando` es un Lua (un solo
+  líder lo hace) y las tx tienen `tx_id` fijo (`colecta-<id>-<cuenta>`): si el líder se cae a mitad, el siguiente
+  repite y la reserva descarta las que ya entraron.
+- Página: sección "Colectas" en `/cuenta` (crear y aportar). El explorador marca la cuenta y las tx de pago y
+  devolución. Cliente: `tools/cuenta.py colecta`.
+- Probado en compose (20/11): dos colectas (meta 100 y meta 40) con 50 de `ana` en cada una. La de 100 se devolvió,
+  la de 40 le pagó 50 a `mateo`; `ana` perdió solo las 2 comisiones; las cuentas de las colectas quedaron en 0;
+  aporte tardío, colecta inexistente, gasto directo de `colecta:` y firma mala rechazados.
+
+### Shares (punto 4 del Contrato SDMER, 20/11/2026)
+
+Antes el premio se repartía según los nonces que el minero **decía** haber recorrido, y lo único que lo controlaba
+eran los canarios. Ahora cada tarea trae un `share_prefix`, más corto que el prefijo del bloque, y el minero devuelve
+los nonces de su rango cuyo hash empieza con ese prefijo (como las shares de Stratum).
+
+- El largo se elige para que salgan unas `SHARES_PER_TASK` (32) por tarea: `round(log16(rango / 32))`, entre 1 y el
+  largo del prefijo del bloque. Con tareas GPU de 1.000 M y prefijo de 8 ceros sale `000000` (~60 shares).
+- Cada share **pesa 16^largo**, lo que cuesta encontrarla en promedio (ponderada por dificultad, como P2Pool). Así
+  da igual el largo: lo que se cobra en promedio es lo que se minó. El reparto sigue siendo **PROP**.
+- El coordinator recalcula el MD5 de cada share (a lo sumo 256 por resultado: es barato), las que no cumplen o están
+  fuera del rango no cuentan y la misma share no se paga dos veces en un bloque (`block:<i>:sharenonces`).
+- Un minero que contesta "no encontré" sin minar no tiene shares y **no cobra**. Los canarios siguen: las shares
+  prueban trabajo, pero no que el minero hubiera avisado si encontraba la solución.
+- Motores: `miner_gpu --share-prefix <hex> --max-shares N` y lo mismo en `miner_cpu.py`. Sin el flag la salida es
+  la del kit (`make check` 17/17). En la GPU cuesta ~5 % (0,93 s contra 0,88 s por 1.000 M).
+- Un agente viejo, sin shares, mina pero no cobra: hay que actualizar la imagen `miner-cpu` del k3s.
+
+### WebSocket de los mineros (punto 4 del Contrato SDMER, 20/11/2026)
+
+`WS /ws/miners` en el gateway, con el mismo `Authorization: Bearer`. Solo avisa:
+- `{"type": "tareas"}` cada `WS_NOTICE_SECONDS` (1 s) mientras haya tareas en la cola. Sin tarea, el agente espera el
+  aviso en vez de preguntar cada 1 s (igual pregunta cada `IDLE_WS_SECONDS`, 15 s, por si se perdió uno).
+- `{"type": "block.solved", "block_id"}`: el agente corta el motor al instante, sin terminar el tramo.
+- Pedir, renovar y entregar tareas sigue siendo HTTP. Si el WebSocket se corta, el agente vuelve a preguntar cada
+  1 s como antes, así que no se pierde trabajo. El cliente del agente es stdlib (RFC 6455 mínimo: texto, ping y
+  close) para que siga corriendo en Colab sin instalar nada. `--no-websocket` o `MINER_WEBSOCKET=0` lo apaga.
+
 ### Premio, halving y comisión (modelo de Bitcoin, 20/11/2026)
 
 **El problema que había:** cada bloque emitía 50,00 nuevos para siempre y solo se arma un bloque si hay alguna tx.
@@ -351,7 +416,9 @@ la plata total no tenía tope (el ritmo sí: como mucho un bloque por ventana de
 ### Claves de Redis
 
 Además de las del Word: `mining:current` (candidato que se mina), `tx:status` (dónde está cada tx),
-`leases:deadline` (ZSET del reaper), `block:<i>:shares` (nonces completados por minero, para el premio),
+`leases:deadline` (ZSET del reaper), `block:<i>:shares` (peso de las shares de cada minero, para el premio),
+`block:<i>:sharenonces` (shares ya pagadas), `trial:<id>` (worker en prueba), `workers:of:<cuenta>`,
+`crowdfund:<id>` / `:contrib` / `:txs`, `crowdfunds` y `crowdfunds:open` (colectas),
 `block:<block_id>:notfound:<minero>` (rangos "no encontré", por si falla un canario),
 `miner:<id>:results` / `:calibration` / `:expired`, `quarantine:<id>`, `pool:miners`, `pool:last_work`,
 `gateway:canary:counter` y `events:outbox` (eventos sellados que falta publicar).
@@ -364,6 +431,8 @@ Además de las del Word: `mining:current` (candidato que se mina), `tx:status` (
 - ~~Firmas Ed25519~~: hechas el 17/11 (cuentas con clave). RabbitMQ con 3 réplicas y Redis con Sentinel también
   (17/11, ver `pilar3/README.md`).
 - ~~Emisión sin tope~~ → **resuelto el 20/11 con el modelo de Bitcoin** (ver "Premio, halving y comisión" arriba).
+- **Limitación conocida:** perder el `.key` es perder la cuenta. No hay recuperación ni cambio de clave (decidido
+  el 20/11: como en Bitcoin).
 - **Limitación conocida:** la calibración confía en los `hashes` y `engine_seconds` que informa el minero. Uno
   que mienta puede inflar su hashrate inicial hasta que lo atrapa un canario (en la prueba local, en su primera
   tarea real).

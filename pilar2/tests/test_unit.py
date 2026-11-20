@@ -339,3 +339,62 @@ def test_multisig_view_counts_signatures_and_expires():
     assert (v["status"], v["signatures"], v["missing"], v["signers"]) == ("pendiente", 1, 1, ["mateo"])
     assert multisig.view(raw, threshold=2, now=1000.0 + multisig.TTL + 1)["status"] == "vencida"
     assert multisig.tx_extra(raw | {"sig:ana": "bb"})["multisig"]["signatures"] == {"mateo": "aa", "ana": "bb"}
+
+
+# ---- Shares (punto 4 del contrato, 20/11) ----
+
+def test_share_prefix_gives_about_target_shares_and_is_shorter_than_block():
+    assert pow.share_prefix("00000000", 1_000_000_000, 32) == "000000"  # 1e9 / 16^6 ~ 60 shares
+    assert pow.share_prefix("00000000", 2_000_000, 32) == "0000"        # 2e6 / 16^4 ~ 30
+    assert pow.share_prefix("00", 10**12, 32) == "00"                  # nunca más largo que el del bloque
+    assert pow.share_prefix("000000", 10, 32) == "0"                   # al menos 1
+    assert pow.share_prefix("", 10**6) == ""
+    assert pow.share_weight("000") == 4096
+
+
+def test_valid_shares_recomputes_and_rejects_bad_ones():
+    base = "a" * 32 + "b" * 64
+    real = [n for n in range(20_000) if pow.md5_hex(base, n).startswith("00")]
+    fake = next(n for n in range(20_000) if not pow.md5_hex(base, n).startswith("00"))
+    got = pow.valid_shares(base, "00", 0, 9_999, real + real[:3] + [fake, True, "7", 10**30])
+    assert got == [n for n in real if n <= 9_999]  # fuera de rango, repetidas, falsas y basura afuera
+    assert pow.valid_shares(base, "", 0, 9_999, real) == []
+
+
+def test_cpu_miner_reports_all_shares_of_the_range():
+    base = "a" * 32 + "b" * 64
+    res = miner_cpu.search(base, "ffffffff", 0, 30_000, workers=1, share="00", max_shares=1024)
+    assert res["shares"] == [n for n in range(30_001) if pow.md5_hex(base, n).startswith("00")]
+    capped = miner_cpu.search(base, "ffffffff", 0, 30_000, workers=1, share="00", max_shares=5)
+    assert len(capped["shares"]) == 5
+
+
+# ---- Colectas (punto 2 del contrato, 20/11) ----
+
+def test_crowdfund_outcome_and_payments():
+    from coordinator import crowdfund
+
+    raw = {"id": "viaje", "goal": "1000", "beneficiary": "centro", "status": "abierta", "deadline": "2000"}
+    contrib = {"ana": "600", "fede": "500"}
+    assert crowdfund.outcome(raw, contrib) == "exitosa"
+    assert crowdfund.payments("exitosa", raw, contrib) == [("centro", 1100)]
+    assert crowdfund.outcome(raw, {"ana": "999"}) == "fallida"
+    assert crowdfund.payments("fallida", raw, contrib) == [("ana", 600), ("fede", 500)]
+    assert crowdfund.outcome(raw | {"goal": "0"}, {}) == "fallida"  # sin aportes no hay pago
+    tx = crowdfund.settlement_tx("viaje", "ana", 600, "fallida", 5.0)
+    assert (tx["sender"], tx["fee"], tx["tx_id"], tx["crowdfund"]["kind"]) == ("colecta:viaje", 0, "colecta-viaje-ana", "devolucion")
+
+
+def test_crowdfund_deadline_open_and_reserved_names():
+    from coordinator import accounts, crowdfund
+
+    now = 1_000_000.0
+    assert crowdfund.check_deadline(int(now) + 3600, now) == int(now) + 3600
+    for bad in (int(now) + 5, int(now) + 8 * 86400, "123", 1.5, True):
+        with pytest.raises(ValueError):
+            crowdfund.check_deadline(bad, now)
+    raw = {"id": "viaje", "status": "abierta", "deadline": str(now + 10)}
+    assert crowdfund.is_open(raw, now) and not crowdfund.is_open(raw, now + 11)
+    assert crowdfund.view(raw, now=now + 11)["status"] == "cerrando"
+    assert crowdfund.of_account("colecta:viaje") == "viaje" and crowdfund.of_account("viaje") is None
+    assert accounts.reserved("colecta:viaje")  # nadie puede registrar la cuenta de una colecta

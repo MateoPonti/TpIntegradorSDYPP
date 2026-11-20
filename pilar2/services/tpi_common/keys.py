@@ -104,3 +104,24 @@ def miner_account(miner_id: str) -> str:
 def quarantine(miner_id: str) -> str:
     """STRING con TTL: mientras exista, el gateway no le da tareas y su hashrate no cuenta."""
     return f"quarantine:{miner_id}"
+
+
+def worker_trial(miner_id: str) -> str:
+    """Worker 'en prueba' (alta pública, punto 4): canarios pasados hasta ahora. Mientras exista, recibe más
+    canarios y su trabajo no cobra. No empieza con worker: porque alive_workers escanea worker:*."""
+    return f"trial:{miner_id}"
+
+
+def account_workers(account: str) -> str:
+    """SET de workers dados de alta por una cuenta (límite MAX_WORKERS_PER_ACCOUNT; los revocados cuentan)."""
+    return f"workers:of:{account}"
+
+
+def block_share_nonces(index: int) -> str:
+    """SET de los nonces de shares ya pagadas en ese bloque: la misma share no se cobra dos veces."""
+    return f"block:{index}:sharenonces"
+
+
+def miner_tasks(miner_id: str) -> str:
+    """INCR por tarea prestada a ese minero (para darle un canario cada tantas)."""
+    return f"miner:{miner_id}:tasks"

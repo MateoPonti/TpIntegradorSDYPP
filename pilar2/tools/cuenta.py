@@ -5,12 +5,17 @@ manda tx firmadas. La clave privada queda en un archivo local y nunca se manda a
     python pilar2/tools/cuenta.py claves  --archivo mateo.key
     python pilar2/tools/cuenta.py registrar --url http://35.223.237.60 --cuenta mateo --archivo mateo.key
     python pilar2/tools/cuenta.py enviar --url http://35.223.237.60 --cuenta mateo --archivo mateo.key --a user-3 --monto 10.50
+
+Colectas (punto 2): crear una y aportar (aportar = enviar a colecta:<id>).
+    python pilar2/tools/cuenta.py colecta --cuenta mateo --archivo mateo.key --id viaje --meta 500 --horas 24 [--a centro]
+    python pilar2/tools/cuenta.py enviar  --cuenta ana   --archivo ana.key   --a colecta:viaje --monto 100
 """
 from __future__ import annotations
 
 import argparse
 import json
 import sys
+import time
 import urllib.error
 import urllib.request
 from decimal import Decimal
@@ -44,12 +49,16 @@ def http(method: str, url: str, body: dict | None = None) -> tuple[int, dict]:
 
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    p.add_argument("accion", choices=["claves", "registrar", "enviar"])
+    p.add_argument("accion", choices=["claves", "registrar", "enviar", "colecta"])
     p.add_argument("--archivo", required=True, help="archivo con la clave privada (hex); no commitearlo")
     p.add_argument("--url", default="http://127.0.0.1:18080")
     p.add_argument("--cuenta")
     p.add_argument("--a", dest="receiver")
     p.add_argument("--monto")
+    p.add_argument("--id", help="colecta: su id")
+    p.add_argument("--meta", help="colecta: monto a juntar")
+    p.add_argument("--horas", type=float, default=24, help="colecta: en cuántas horas cierra")
+    p.add_argument("--titulo", default="")
     a = p.parse_args()
 
     if a.accion == "claves":
@@ -67,6 +76,14 @@ def main() -> int:
         pub = publica(key)
         firma = key.sign(f"register:{a.cuenta}:{pub}".encode()).hex()
         code, body = http("POST", f"{a.url}/accounts/register", {"account": a.cuenta, "public_key": pub, "signature": firma})
+    elif a.accion == "colecta":
+        if not a.id or not a.meta:
+            p.error("faltan --id y --meta")
+        para, goal, deadline = a.receiver or a.cuenta, int(Decimal(a.meta) * 100), int(time.time() + a.horas * 3600)
+        firma = key.sign(f"crowdfund:create:{a.id}:{para}:{goal}:{deadline}".encode()).hex()
+        code, body = http("POST", f"{a.url}/crowdfunds", {"id": a.id, "title": a.titulo, "creator": a.cuenta,
+                                                          "beneficiary": para, "goal": a.meta, "deadline": deadline,
+                                                          "signature": firma})
     else:
         if not a.receiver or not a.monto:
             p.error("faltan --a y --monto")

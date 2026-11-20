@@ -86,6 +86,25 @@
     <div id="mLista"></div>
   </section>
 
+  <section id="colectas">
+    <h2>Colectas <span class="right muted">todo o nada</span></h2>
+    <div class="body">
+      <p class="hint">Una colecta junta plata para alguien hasta una hora de cierre. Si a esa hora llegó a la meta, todo
+         lo juntado va al beneficiario; si no, a cada uno se le devuelve lo que aportó. Aportar es una transferencia
+         más, así que paga la comisión de <b class="fee">0,10</b>, y esa comisión no se devuelve. La devolución no cobra comisión.</p>
+      <div class="row" id="cfCrearRow" style="display:none">
+        <input id="cfId" maxlength="32" placeholder="id (ej. viaje-egresados)" autocomplete="off">
+        <input id="cfTitulo" maxlength="80" placeholder="para qué es" autocomplete="off">
+        <input id="cfPara" maxlength="64" placeholder="beneficiario (vos si lo dejás vacío)" autocomplete="off">
+        <input id="cfMeta" placeholder="meta (ej. 500)" inputmode="decimal" style="flex:0 1 120px">
+        <input id="cfHoras" placeholder="cierra en (horas)" inputmode="decimal" style="flex:0 1 150px">
+        <button id="cfCrear">Crear colecta</button>
+      </div>
+      <div class="msg" id="msgCf"></div>
+    </div>
+    <div class="scroll"><table id="cfLista"></table></div>
+  </section>
+
   <section>
     <h2>Cuentas de prueba del génesis</h2>
     <div class="body">
@@ -171,7 +190,8 @@ async function abrir(nombre, nuevoPar) {
   dibujarSaldo(); dibujarMovs();
   if (ws === null) conectar(); else if (otra || !subCuenta) wsSend({ op: "subscribe", topic: "account", account: cuenta });
   $("compartidas").classList.remove("off");
-  cargarCompartidas();
+  $("cfCrearRow").style.display = "";
+  cargarCompartidas(); cargarColectas();
   $("panel").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
@@ -200,19 +220,22 @@ $("archivo").onchange = async () => {
   $("archivo").value = "";
 };
 
+// Transferencia firmada con el seq siguiente. La usan "Enviar" y "Aportar" (un aporte es una tx a colecta:<id>).
+async function enviarFirmada(para, cents, msgId) {
+  const info = await (await fetch("/balances/" + encodeURIComponent(cuenta))).json();
+  const seq = (info.seq || 0) + 1;
+  const r = await post("/transactions", { sender: cuenta, receiver: para, amount: (cents / 100).toFixed(2), seq,
+                                          signature: firmar(par, `tx:${cuenta}:${para}:${cents}:${seq}`) });
+  say(msgId, `Enviada: ${money(cents)} + ${money(fee)} de comisión (pendiente hasta que se mine): ${r.tx_id}`, true);
+  seguir(r.tx_id, msgId);
+  saldo = await (await fetch("/balances/" + encodeURIComponent(cuenta))).json();
+  dibujarSaldo();
+}
 $("enviar").onclick = async () => {
   const para = $("para").value.trim();
   try {
     if (!para) throw new Error("Poné a quién le mandás.");
-    const cents = centavos($("monto").value);
-    const info = await (await fetch("/balances/" + encodeURIComponent(cuenta))).json();
-    const seq = (info.seq || 0) + 1;
-    const r = await post("/transactions", { sender: cuenta, receiver: para, amount: (cents / 100).toFixed(2), seq,
-                                            signature: firmar(par, `tx:${cuenta}:${para}:${cents}:${seq}`) });
-    say("msg3", `Enviada: ${money(cents)} + ${money(fee)} de comisión (pendiente hasta que se mine): ${r.tx_id}`, true);
-    seguir(r.tx_id, "msg3");
-    saldo = await (await fetch("/balances/" + encodeURIComponent(cuenta))).json();
-    dibujarSaldo();
+    await enviarFirmada(para, centavos($("monto").value), "msg3");
   } catch (e) { say("msg3", e.message); }
 };
 
@@ -303,6 +326,51 @@ $("mLista").addEventListener("click", async (ev) => {
     } catch (e) { say("msgM", e.message); }
   }
   cargarCompartidas();
+});
+
+// ---- Colectas: crear (firma el que la crea) y aportar (tx firmada a colecta:<id>) ----
+const cfEstado = { abierta: "tag", cerrando: "tag", liquidando: "tag", exitosa: "tag ok", fallida: "tag bad" };
+const cfTexto = { exitosa: "llegó: pagada", fallida: "no llegó: devuelta" };
+async function cargarColectas() {
+  try {
+    const { crowdfunds } = await (await fetch("/crowdfunds")).json();
+    $("cfLista").innerHTML = "<tr><th>Colecta</th><th>Para</th><th class=\"num\">Juntado / meta</th><th>Cierra</th><th>Estado</th><th></th></tr>" +
+      (crowdfunds.map((c) => {
+        const aportar = c.status === "abierta" && cuenta
+          ? `<input id="cf-${esc(c.id)}" placeholder="monto" inputmode="decimal" style="width:90px"> <button class="sec" data-aportar="${esc(c.id)}">Aportar</button>`
+          : "";
+        return `<tr><td><b>${esc(c.id)}</b>${c.title ? `<br><span class="muted">${esc(c.title)}</span>` : ""}</td>
+          <td class="mono">${esc(c.beneficiary)}</td>
+          <td class="num">${money(c.raised_cents)} / ${money(c.goal_cents)}</td>
+          <td class="muted">${new Date(c.deadline * 1000).toLocaleString("es-AR")}</td>
+          <td><span class="${cfEstado[c.status] || "tag"}">${esc(cfTexto[c.status] || c.status)}</span></td><td>${aportar}</td></tr>`;
+      }).join("") || '<tr><td colspan="6" class="muted">Todavía no hay colectas.</td></tr>');
+  } catch { /* se reintenta en la próxima vuelta */ }
+}
+cargarColectas();
+setInterval(cargarColectas, 15000);
+
+$("cfCrear").onclick = async () => {
+  try {
+    const id = $("cfId").value.trim(), para = $("cfPara").value.trim() || cuenta;
+    const meta = centavos($("cfMeta").value), horas = Number($("cfHoras").value.replace(",", "."));
+    if (!id) throw new Error("Poné un id para la colecta.");
+    if (!(horas > 0)) throw new Error("Poné en cuántas horas cierra.");
+    const deadline = Math.floor(Date.now() / 1000 + horas * 3600);
+    await post("/crowdfunds", { id, title: $("cfTitulo").value.trim(), creator: cuenta, beneficiary: para,
+                                goal: (meta / 100).toFixed(2), deadline,
+                                signature: firmar(par, `crowdfund:create:${id}:${para}:${meta}:${deadline}`) });
+    say("msgCf", `Colecta "${id}" creada. Se aporta mandando plata a colecta:${id}.`, true);
+    cargarColectas();
+  } catch (e) { say("msgCf", e.message); }
+};
+$("cfLista").addEventListener("click", async (ev) => {
+  const b = ev.target.closest("button[data-aportar]");
+  if (!b) return;
+  try {
+    await enviarFirmada(`colecta:${b.dataset.aportar}`, centavos($(`cf-${b.dataset.aportar}`).value), "msgCf");
+    cargarColectas();
+  } catch (e) { say("msgCf", e.message); }
 });
 
 $("gEnviar").onclick = async () => {

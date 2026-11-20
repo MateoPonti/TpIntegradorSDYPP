@@ -17,8 +17,10 @@ def is_genesis(name: str) -> bool:
 
 
 def reserved(name: str) -> bool:
-    """Nombres que nadie puede registrar: los del génesis, el del premio y las cuentas por defecto de mineros."""
-    return is_genesis(name) or name in (REWARD_SENDER, "genesis") or name.startswith("miner:")
+    """Nombres que nadie puede registrar: los del génesis, el del premio, las cuentas por defecto de mineros y las
+    de las colectas."""
+    return (is_genesis(name) or name in (REWARD_SENDER, "genesis") or name.startswith("miner:")
+            or name.startswith("colecta:"))
 
 
 def register_message(account: str, public_key: str) -> bytes:

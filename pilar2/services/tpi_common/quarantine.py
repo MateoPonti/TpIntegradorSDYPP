@@ -9,12 +9,13 @@ estado ahí. Si solo se colgó (préstamos vencidos), lo que ya terminó sigue v
 import json
 import uuid
 
-from . import keys, rabbit
+from . import keys, pow, rabbit
 
 
 async def republish(exchange, cur: dict, lo: int, hi: int) -> None:
     task = {"v": 1, "task_id": uuid.uuid4().hex, "block_id": cur["block_id"], "base": cur["base"],
-            "prefix": cur["prefix"], "from": int(lo), "to": int(hi), "attempts": 0}
+            "prefix": cur["prefix"], "from": int(lo), "to": int(hi), "attempts": 0,
+            "share_prefix": pow.share_prefix(cur["prefix"], int(cur.get("range_size") or hi - lo + 1))}
     await exchange.publish(rabbit.message(task), routing_key="task.any")
 
 
