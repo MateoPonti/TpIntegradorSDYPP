@@ -289,6 +289,35 @@ un bloque y pregunta cada 15 s solo lo que no tiene aviso (mineros, tx pendiente
   cuenta en la otra réplica, reconexión con foto al día, evento repetido en el outbox avisado una sola vez y origen
   ajeno rechazado.
 
+### Cuentas compartidas (punto 2 del Contrato SDMER, 20/11/2026)
+
+Una cuenta con varios dueños y un mínimo de firmas (m de n), con el flujo de Safe (Ethereum) y del multisig de
+Polkadot: un dueño propone un pago, los demás firman lo mismo y al juntar el mínimo el pago entra como una tx más.
+
+| Ruta | Qué hace |
+|---|---|
+| `POST /multisig` | Crea la cuenta: `{account, owners, threshold, creator, signature}`. Firma un dueño sobre `multisig:create:<cuenta>:<m>:<dueños separados por coma>`. Los dueños tienen que ser cuentas registradas; no tienen que aceptar (como Safe) |
+| `POST /multisig/{cuenta}/proposals` | Un dueño propone: `{receiver, amount, nonce, signer, signature}`, firmando `multisig:<cuenta>:<para>:<centavos>:<nonce>` |
+| `POST /multisig/proposals/{id}/sign` | Otro dueño firma el mismo texto |
+| `GET /multisig/{cuenta}` · `GET /multisig/proposals/{id}` · `GET /multisig?owner=` | Ver la cuenta y sus propuestas, una propuesta, y las cuentas de un dueño |
+
+- El **id de la propuesta es el hash del texto firmado** (como Polkadot): cambiar el monto o el destino da otra
+  propuesta, así que las firmas de una no sirven para la otra.
+- Una firma por dueño (firmar dos veces no suma). Agregar la firma y ver si se llegó al mínimo es **un solo Lua**
+  (`SIGN_LUA`): si dos dueños firman a la vez, solo uno admite el pago.
+- Mientras faltan firmas **no se reserva saldo**. Al llegar al mínimo se reserva monto + comisión con el mismo Lua de
+  siempre; si no alcanza, la propuesta queda **rechazada**. Estados: pendiente, admitida, rechazada, vencida.
+- **Vence a las 24 h** (`MULTISIG_TTL_SECONDS`, hora del servidor): los bloques solo salen si hay tx, así que no
+  sirven de reloj. Dueños y mínimo **fijos**.
+- La cuenta compartida no se puede gastar con `POST /transactions` (`400`) ni registrar con clave. La tx del pago
+  lleva el texto y las firmas de los dueños (`multisig`), así quedan en el bloque.
+- Página: sección "Cuentas compartidas" en `/cuenta` (crear, proponer y firmar desde el navegador de cada dueño). El
+  explorador marca las cuentas compartidas y los pagos con sus firmas.
+- Probado en compose (20/11): crear 2 de 3; crearla de nuevo 409; gastar directo 400; propuesta pendiente sin
+  reservar; firma sobre otro destino rechazada; firmar dos veces no suma; con 2 firmas se admitió y se confirmó en el
+  bloque; la 3.ª firma no cobró de nuevo; misma propuesta 409; propuesta sin saldo rechazada; saldo final
+  20,00 − 5,00 − 0,10. La página probada en Chrome (crear y proponer).
+
 ### Premio, halving y comisión (modelo de Bitcoin, 20/11/2026)
 
 **El problema que había:** cada bloque emitía 50,00 nuevos para siempre y solo se arma un bloque si hay alguna tx.

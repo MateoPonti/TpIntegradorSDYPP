@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Mi cuenta · SDMER</title>
-<link rel="stylesheet" href="/assets/sdmer.css?v=5">
+<link rel="stylesheet" href="/assets/sdmer.css?v=7">
 <script src="/assets/nacl-fast.min.js"></script>
-<script src="/assets/claves.js?v=5"></script>
+<script src="/assets/claves.js?v=6"></script>
 </head>
 <body>
 <header class="topbar"><div class="in">
@@ -67,6 +67,23 @@
     </div>
     <h2>Movimientos <span class="right muted">desde que abriste la página</span></h2>
     <div class="scroll"><table id="movs"></table></div>
+  </section>
+
+  <section id="compartidas" class="off">
+    <h2>Cuentas compartidas <span class="right muted">varios dueños, un mínimo de firmas</span></h2>
+    <div class="body">
+      <p class="hint">Para mover plata de una cuenta compartida, un dueño propone el pago y los demás lo firman. Cuando
+         se juntan las firmas mínimas, el pago entra a la cadena. Una propuesta que no junta las firmas vence a las 24 h.
+         Los dueños y el mínimo no se pueden cambiar después.</p>
+      <div class="row">
+        <input id="mNombre" maxlength="64" placeholder="nombre de la cuenta (ej. centro)" autocomplete="off">
+        <input id="mDuenios" placeholder="otros dueños, separados por coma" autocomplete="off">
+        <input id="mMin" placeholder="firmas mínimas" inputmode="numeric" style="flex:0 1 140px">
+        <button id="mCrear">Crear</button>
+      </div>
+      <div class="msg" id="msgM"></div>
+    </div>
+    <div id="mLista"></div>
   </section>
 
   <section>
@@ -153,6 +170,8 @@ async function abrir(nombre, nuevoPar) {
   saldo = await (await fetch("/balances/" + encodeURIComponent(nombre))).json();
   dibujarSaldo(); dibujarMovs();
   if (ws === null) conectar(); else if (otra || !subCuenta) wsSend({ op: "subscribe", topic: "account", account: cuenta });
+  $("compartidas").classList.remove("off");
+  cargarCompartidas();
   $("panel").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
@@ -212,6 +231,79 @@ function mostrarTotal(input, out) {
 }
 $("monto").oninput = () => mostrarTotal("monto", "total3");
 $("gMonto").oninput = () => mostrarTotal("gMonto", "total4");
+
+// ---- Cuentas compartidas: crear, proponer y firmar (cada dueño firma desde su navegador con su .key) ----
+const estado = { pendiente: "tag", admitiendo: "tag", admitida: "tag ok", rechazada: "tag bad", vencida: "tag bad" };
+function dibujarCompartida(c) {
+  const filas = c.proposals.map((p) => {
+    const firmo = p.signers.includes(cuenta);
+    const accion = p.status === "pendiente" && !firmo
+      ? `<button class="sec" data-firmar="${esc(p.id)}" data-msg="${esc(p.message)}">Firmar</button>`
+      : firmo && p.status === "pendiente" ? '<span class="muted">ya firmaste</span>' : "";
+    const vence = p.status === "pendiente" ? new Date(p.expires * 1000).toLocaleString("es-AR") : "—";
+    return `<tr><td><span class="${estado[p.status] || "tag"}">${esc(p.status)}</span>${p.reason ? ` <span class="muted">${esc(p.reason)}</span>` : ""}</td>
+      <td class="mono">${esc(p.receiver)}</td><td class="num">${money(p.amount_cents)}</td>
+      <td>${p.signatures} de ${p.threshold} <span class="muted">(${p.signers.map(esc).join(", ")})</span></td>
+      <td class="muted">${vence}</td><td>${accion}</td></tr>`;
+  }).join("");
+  return `<h2>${esc(c.account)} <span class="right muted">${c.threshold} de ${c.owners.length} firmas · disponible ${money(c.available_cents)}</span></h2>
+    <div class="body">
+      <p class="hint">Dueños: ${c.owners.map(esc).join(", ")}</p>
+      <div class="row">
+        <input id="para-${esc(c.account)}" placeholder="para (ej. user-2)" autocomplete="off">
+        <input id="monto-${esc(c.account)}" placeholder="monto" inputmode="decimal">
+        <button data-proponer="${esc(c.account)}">Proponer pago</button>
+      </div>
+      <div class="msg" id="msg-${esc(c.account)}"></div>
+    </div>
+    <div class="scroll"><table><tr><th>Estado</th><th>Para</th><th class="num">Monto</th><th>Firmas</th><th>Vence</th><th></th></tr>
+      ${filas || '<tr><td colspan="6" class="muted">Sin propuestas todavía.</td></tr>'}</table></div>`;
+}
+async function cargarCompartidas() {
+  if (!cuenta) return;
+  try {
+    const { accounts } = await (await fetch(`/multisig?owner=${encodeURIComponent(cuenta)}`)).json();
+    const datos = await Promise.all(accounts.map((a) => fetch(`/multisig/${encodeURIComponent(a)}`).then((r) => r.json())));
+    $("mLista").innerHTML = datos.map(dibujarCompartida).join("")
+      || '<div class="body muted" style="padding-top:0">Todavía no sos dueño de ninguna cuenta compartida.</div>';
+  } catch { /* se reintenta en la próxima vuelta */ }
+}
+setInterval(cargarCompartidas, 15000);
+
+$("mCrear").onclick = async () => {
+  try {
+    const nombre = $("mNombre").value.trim(), min = Number($("mMin").value);
+    const owners = [...new Set([cuenta, ...$("mDuenios").value.split(",").map((x) => x.trim()).filter(Boolean)])];
+    if (!nombre) throw new Error("Poné un nombre para la cuenta compartida.");
+    await post("/multisig", { account: nombre, owners, threshold: min, creator: cuenta,
+                              signature: firmar(par, `multisig:create:${nombre}:${min}:${owners.join(",")}`) });
+    say("msgM", `Cuenta compartida "${nombre}" creada: ${min} de ${owners.length} firmas.`, true);
+    cargarCompartidas();
+  } catch (e) { say("msgM", e.message); }
+};
+
+// Botones de cada cuenta compartida (proponer) y de cada propuesta (firmar)
+$("mLista").addEventListener("click", async (ev) => {
+  const b = ev.target.closest("button");
+  if (!b) return;
+  if (b.dataset.proponer) {
+    const acc = b.dataset.proponer, msgId = `msg-${acc}`;
+    try {
+      const para = $(`para-${acc}`).value.trim(), cents = centavos($(`monto-${acc}`).value);
+      if (!para) throw new Error("Poné a quién le paga la cuenta.");
+      const nonce = hex(nacl.randomBytes(8));
+      const p = await post(`/multisig/${encodeURIComponent(acc)}/proposals`, { receiver: para, amount: (cents / 100).toFixed(2), nonce,
+        signer: cuenta, signature: firmar(par, `multisig:${acc}:${para}:${cents}:${nonce}`) });
+      say(msgId, p.status === "admitida" ? "Pago admitido: entra en el próximo bloque." : `Propuesta creada: faltan ${p.missing} firma(s).`, true);
+    } catch (e) { say(msgId, e.message); }
+  } else if (b.dataset.firmar) {
+    try {
+      const p = await post(`/multisig/proposals/${b.dataset.firmar}/sign`, { signer: cuenta, signature: firmar(par, b.dataset.msg) });
+      say("msgM", p.status === "admitida" ? "Firmaste: se juntaron las firmas y el pago entra en el próximo bloque." : `Firmaste: faltan ${p.missing}.`, true);
+    } catch (e) { say("msgM", e.message); }
+  }
+  cargarCompartidas();
+});
 
 $("gEnviar").onclick = async () => {
   try {

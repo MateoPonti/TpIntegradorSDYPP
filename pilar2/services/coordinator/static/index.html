@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Explorador · SDMER</title>
-<link rel="stylesheet" href="/assets/sdmer.css?v=5">
+<link rel="stylesheet" href="/assets/sdmer.css?v=7">
 </head>
 <body>
 <header class="topbar"><div class="in">
@@ -59,7 +59,7 @@
       <div class="body row" style="padding-bottom:0">
         <input id="accFilter" placeholder="filtrar (ej. user-1, mateo)">
         <select id="accType" style="flex:0 1 190px">
-          <option value="">todas</option><option value="minero">cobro de mineros</option><option value="usuario">usuarios</option>
+          <option value="">todas</option><option value="minero">cobro de mineros</option><option value="usuario">usuarios</option><option value="compartida">compartidas</option>
         </select>
       </div>
       <div class="scroll" style="max-height:420px;overflow-y:auto;margin-top:10px"><table id="accounts"></table></div>
@@ -191,7 +191,7 @@ async function showBlock(i, scroll) {
   $("txTitle").textContent = `Transacciones (${b.transactions.length - rewards.length} de usuarios, ${rewards.length} de premio)`;
   $("blockTxs").innerHTML = "<tr><th>#</th><th>tx_id</th><th>Tipo</th><th>De</th><th>Para</th><th class=\"num\">Monto</th><th class=\"num\">Comisión</th></tr>" +
     b.transactions.map((t, n) => `<tr><td>${n + 1}</td><td class="mono">${esc(t.tx_id)}</td>
-      <td>${t.sender === "recompensa" ? `<span class="tag ok">premio del ${t.reward_for}</span>` : t.signature ? '<span class="tag">firmada</span>' : '<span class="tag">transferencia</span>'}</td>
+      <td>${t.sender === "recompensa" ? `<span class="tag ok">premio del ${t.reward_for}</span>` : t.multisig ? `<span class="tag">compartida, ${Object.keys(t.multisig.signatures).length} firmas</span>` : t.signature ? '<span class="tag">firmada</span>' : '<span class="tag">transferencia</span>'}</td>
       <td>${t.sender === "recompensa" ? "—" : accLink(t.sender)}</td><td>${accLink(t.receiver)}</td><td class="num">${money(t.amount)}</td>
       <td class="num muted">${t.fee ? money(t.fee) : "—"}</td></tr>`).join("");
   if (scroll) $("detail").scrollIntoView({ behavior: "smooth", block: "start" });
@@ -214,7 +214,7 @@ function drawAccounts() {
   $("accCount").textContent = `${shown.length} de ${accs.length}`;
   $("accounts").innerHTML = "<tr><th>Cuenta</th><th>Tipo</th><th class=\"num\">Saldo</th><th class=\"num\">Disponible</th></tr>" +
     (shown.length ? shown.map((a) => `<tr><td>${accLink(a.user)}</td>
-      <td>${a.type === "minero" ? '<span class="tag ok">cobro de minero</span>' : '<span class="tag">usuario</span>'}</td>
+      <td>${a.type === "minero" ? '<span class="tag ok">cobro de minero</span>' : a.type === "compartida" ? '<span class="tag">compartida</span>' : '<span class="tag">usuario</span>'}</td>
       <td class="num">${money(a.balance_cents)}</td><td class="num">${money(a.available_cents)}</td></tr>`).join("")
       : '<tr><td colspan="4" class="muted">No hay cuentas que coincidan.</td></tr>');
 }
@@ -260,7 +260,8 @@ async function showAccount(name) {
   showResult(`Cuenta ${name}`, [
     ["Saldo", money(b.balance_cents)], ["Reservado (en tx pendientes)", money(b.pending_out_cents)],
     ["Disponible", money(b.available_cents)],
-    ["Tipo", b.registered ? `registrada con clave Ed25519 (seq ${b.seq})` : name.startsWith("user-") ? "cuenta de prueba del génesis (sin firma)" : "sin registrar"],
+    ["Tipo", b.multisig ? `cuenta compartida: ${b.multisig.threshold} de ${b.multisig.owners.length} firmas (${b.multisig.owners.map(esc).join(", ")})`
+      : b.registered ? `registrada con clave Ed25519 (seq ${b.seq})` : name.startsWith("user-") ? "cuenta de prueba del génesis (sin firma)" : "sin registrar"],
   ]);
 }
 async function search(q) {

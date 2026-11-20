@@ -5,6 +5,7 @@ import contextlib
 import json
 import time
 import urllib.request
+import uuid
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
@@ -18,6 +19,7 @@ from tpi_common.web import install_common_routes
 
 from . import accounts as cuentas
 from . import ledger
+from . import multisig
 from .blocks import BLOCK_REWARD_CENTS, HALVING_BLOCKS, Chain
 from .reward import block_subsidy
 
@@ -65,7 +67,8 @@ async def lifespan(app: FastAPI):
     await chain.ensure_genesis()
     await results.consume(chain.on_result)
     loop = asyncio.create_task(leader_loop(chain, store.Leader(r, keys.COORD_LEADER, POD_NAME)))
-    state.update(r=r, conn=conn, chain=chain, reserve=r.register_script(ledger.RESERVE_LUA))
+    state.update(r=r, conn=conn, chain=chain, reserve=r.register_script(ledger.RESERVE_LUA),
+                 sign=r.register_script(multisig.SIGN_LUA))
     log(logger, "coordinator listo", pod=POD_NAME)
     yield
     loop.cancel()
@@ -87,6 +90,9 @@ async def _submit(body) -> tuple[int, dict]:
     if not cuentas.is_genesis(tx["sender"]):
         # Cuenta propia: tiene que estar registrada y la tx firmada con su clave (opción A del 17/11).
         pubkey = await state["r"].get(keys.account_pubkey(tx["sender"]))
+        if pubkey is None and await state["r"].exists(multisig.key(tx["sender"])):
+            TX_REJECTED.labels("cuenta compartida").inc()
+            return 400, {"error": "es una cuenta compartida: se gasta con una propuesta firmada por sus dueños"}
         if pubkey is None:
             TX_REJECTED.labels("no registrada").inc()
             return 400, {"error": "cuenta no registrada (registrarse con POST /accounts/register)"}
@@ -151,8 +157,9 @@ async def get_balance(user: str):
     out = int(await r.get(keys.pending_out(user)) or 0)
     pubkey = await r.get(keys.account_pubkey(user))
     registered = pubkey is not None
+    shared = multisig.definition(await r.get(multisig.key(user)))
     return {"user": user, "balance_cents": bal, "pending_out_cents": out, "available_cents": bal - out,
-            "registered": registered, "public_key": pubkey,
+            "registered": registered, "public_key": pubkey, "multisig": shared,
             "seq": int(await r.get(keys.account_seq(user)) or 0) if registered else None}
 
 
@@ -172,6 +179,8 @@ async def register_account(request: Request):
         raise HTTPException(400, "public_key: 32 bytes en hex")
     if not cuentas.verify(pubkey, cuentas.register_message(account, pubkey), body.get("signature")):
         raise HTTPException(400, "firma inválida")
+    if await state["r"].exists(multisig.key(account)):
+        raise HTTPException(409, "ese nombre es una cuenta compartida")
     if not await state["r"].set(keys.account_pubkey(account), pubkey.lower(), nx=True):
         raise HTTPException(409, "la cuenta ya está registrada")
     log(logger, "cuenta registrada", account=account)
@@ -192,11 +201,156 @@ async def accounts(limit: int = 1000):
         pend = int(await r.get(keys.pending_out(name)) or 0)
         if bal == 0 and pend == 0:
             continue
-        kind = "minero" if name in payout or name.startswith("miner:") else "usuario"
+        kind = ("minero" if name in payout or name.startswith("miner:")
+                else "compartida" if await r.exists(multisig.key(name)) else "usuario")
         out.append({"user": name, "type": kind, "balance_cents": bal, "pending_out_cents": pend,
                     "available_cents": bal - pend})
     out.sort(key=lambda a: (a["type"] != "minero", -a["balance_cents"], a["user"]))
     return {"count": len(out), "accounts": out[:max(1, min(limit, 5000))]}
+
+
+# ---- Cuentas compartidas (punto 2 del contrato): m de n firmas ----
+
+async def _owner_key(name: str) -> str:
+    pubkey = await state["r"].get(keys.account_pubkey(name))
+    if pubkey is None:
+        raise HTTPException(400, f"{name} no es una cuenta registrada")
+    return pubkey
+
+
+async def _admit(pid: str) -> None:
+    """Se llegó al mínimo de firmas: el pago entra como una tx más (misma reserva de saldo y comisión que siempre).
+    Si no alcanza el saldo, la propuesta queda rechazada y no se reintenta."""
+    r = state["r"]
+    raw = await r.hgetall(multisig.proposal_key(pid))
+    tx = {"tx_id": uuid.uuid4().hex, "sender": raw["account"], "receiver": raw["receiver"],
+          "amount": int(raw["amount"]), "ts": round(time.time(), 3), "fee": int(raw["fee"]), **multisig.tx_extra(raw)}
+    rc = await state["reserve"](keys=ledger.reserve_keys(tx), args=[tx["tx_id"], tx["amount"] + tx["fee"], json.dumps(tx), ""])
+    if rc < 0:
+        await r.hset(multisig.proposal_key(pid), mapping={"status": "rechazada", "reason": ledger.RESERVE_ERRORS[rc]})
+        log(logger, "propuesta rechazada", proposal=pid, reason=ledger.RESERVE_ERRORS[rc])
+        return
+    await r.hset(multisig.proposal_key(pid), mapping={"status": "admitida", "tx_id": tx["tx_id"]})
+    TX_ACCEPTED.inc()
+    log(logger, "propuesta admitida", proposal=pid, account=tx["sender"], tx_id=tx["tx_id"])
+
+
+async def _sign(pid: str, signer: str, signature: str, d: dict) -> dict:
+    r = state["r"]
+    raw = await r.hgetall(multisig.proposal_key(pid))
+    if signer not in d["owners"]:
+        raise HTTPException(400, f"{signer} no es dueño de {raw['account']}")
+    if not cuentas.verify(await _owner_key(signer), raw["message"].encode(), signature):
+        raise HTTPException(400, "firma inválida")
+    if await state["sign"](keys=[multisig.proposal_key(pid)], args=[signer, signature, d["threshold"], time.time()]) == "admitir":
+        await _admit(pid)
+    return multisig.view(await r.hgetall(multisig.proposal_key(pid)), d["threshold"])
+
+
+@app.post("/multisig", status_code=201)
+async def create_multisig(request: Request):
+    """Crea una cuenta compartida. La firma uno de los dueños; los demás no tienen que aceptar (como Safe)."""
+    body = await _json(request)
+    if not isinstance(body, dict):
+        raise HTTPException(400, "se esperaba un objeto JSON")
+    account, creator = body.get("account"), body.get("creator")
+    if not isinstance(account, str) or not account or len(account) > ledger.MAX_NAME or account == "recompensa":
+        raise HTTPException(400, "account inválido")
+    if cuentas.reserved(account):
+        raise HTTPException(400, "nombre reservado (cuentas del génesis, premio o mineros)")
+    try:
+        owners, threshold = multisig.check_definition(account, body.get("owners"), body.get("threshold"))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if creator not in owners:
+        raise HTTPException(400, "el que la crea tiene que ser uno de los dueños")
+    for owner in owners:
+        await _owner_key(owner)
+    if not cuentas.verify(await _owner_key(creator), multisig.create_message(account, threshold, owners), body.get("signature")):
+        raise HTTPException(400, "firma inválida")
+    r = state["r"]
+    if await r.exists(keys.account_pubkey(account)) or await r.get(keys.balance(account)):
+        raise HTTPException(409, "ese nombre ya es una cuenta")
+    d = {"account": account, "owners": owners, "threshold": threshold, "creator": creator, "created": time.time()}
+    if not await r.set(multisig.key(account), json.dumps(d), nx=True):
+        raise HTTPException(409, "la cuenta compartida ya existe")
+    for owner in owners:
+        await r.sadd(multisig.owner_index(owner), account)
+    log(logger, "cuenta compartida creada", account=account, threshold=threshold, owners=len(owners))
+    return d
+
+
+async def _definition(account: str) -> dict:
+    d = multisig.definition(await state["r"].get(multisig.key(account)))
+    if d is None:
+        raise HTTPException(404, "no es una cuenta compartida")
+    return d
+
+
+@app.post("/multisig/{account}/proposals", status_code=201)
+async def propose(account: str, request: Request):
+    """Un dueño propone un pago y lo firma. Si el mínimo es 1, se admite enseguida."""
+    d = await _definition(account)
+    body = await _json(request)
+    if not isinstance(body, dict):
+        raise HTTPException(400, "se esperaba un objeto JSON")
+    try:
+        tx = ledger.normalize({"sender": account, "receiver": body.get("receiver"), "amount": body.get("amount")})
+    except ledger.InvalidTx as exc:
+        raise HTTPException(400, str(exc)) from exc
+    nonce = body.get("nonce")
+    if not isinstance(nonce, str) or not 1 <= len(nonce) <= 64:
+        raise HTTPException(400, "nonce inválido")
+    message = multisig.payment_message(account, tx["receiver"], tx["amount"], nonce)
+    pid, r = multisig.proposal_id(message), state["r"]
+    if await r.exists(multisig.proposal_key(pid)):
+        raise HTTPException(409, "esa propuesta ya existe")
+    signer = body.get("signer")
+    if signer not in d["owners"] or not cuentas.verify(await _owner_key(signer), message.encode(), body.get("signature")):
+        raise HTTPException(400, "firma inválida (tiene que firmar un dueño)")
+    now = time.time()
+    if not await r.hsetnx(multisig.proposal_key(pid), "id", pid):
+        raise HTTPException(409, "esa propuesta ya existe")
+    await r.hset(multisig.proposal_key(pid),
+                 mapping=multisig.new_proposal(pid, account, tx["receiver"], tx["amount"], ledger.TX_FEE_CENTS, message, now))
+    await r.zadd(multisig.proposals_index(account), {pid: now})
+    log(logger, "propuesta creada", proposal=pid, account=account, signer=signer)
+    return await _sign(pid, signer, body["signature"], d)
+
+
+@app.post("/multisig/proposals/{pid}/sign")
+async def sign_proposal(pid: str, request: Request):
+    """Otro dueño firma la propuesta. Firmar dos veces no suma (una firma por dueño)."""
+    body = await _json(request)
+    raw = await state["r"].hgetall(multisig.proposal_key(pid))
+    if not raw or not isinstance(body, dict):
+        raise HTTPException(404, "no existe esa propuesta")
+    return await _sign(pid, body.get("signer"), body.get("signature"), await _definition(raw["account"]))
+
+
+@app.get("/multisig/proposals/{pid}")
+async def get_proposal(pid: str):
+    raw = await state["r"].hgetall(multisig.proposal_key(pid))
+    if not raw:
+        raise HTTPException(404, "no existe esa propuesta")
+    return multisig.view(raw, (await _definition(raw["account"]))["threshold"])
+
+
+@app.get("/multisig/{account}")
+async def get_multisig(account: str, limit: int = 50):
+    """La cuenta compartida: dueños, mínimo, saldo y sus últimas propuestas."""
+    d, r = await _definition(account), state["r"]
+    pids = await r.zrevrange(multisig.proposals_index(account), 0, max(1, min(limit, 200)) - 1)
+    proposals = [multisig.view(raw, d["threshold"]) for pid in pids if (raw := await r.hgetall(multisig.proposal_key(pid)))]
+    bal = int(await r.get(keys.balance(account)) or 0)
+    out = int(await r.get(keys.pending_out(account)) or 0)
+    return d | {"balance_cents": bal, "pending_out_cents": out, "available_cents": bal - out, "proposals": proposals}
+
+
+@app.get("/multisig")
+async def list_multisig(owner: str):
+    """Las cuentas compartidas de las que `owner` es dueño."""
+    return {"owner": owner, "accounts": sorted(await state["r"].smembers(multisig.owner_index(owner)))}
 
 
 @app.get("/blocks/{index}")

@@ -313,3 +313,29 @@ def test_verify_chain_checks_subsidy_and_fees():
     assert verify_chain.check_economy({**ok, "reward_cents": 6000}, eco)  # premio inflado
     assert verify_chain.check_economy({**ok, "subsidy_cents": 9000, "reward_cents": 9010}, eco)  # subsidio que no toca
     assert verify_chain.check_economy({"index": 1, "transactions": [], "reward_cents": 5000}, eco) == []  # bloque viejo
+
+
+# ---- Cuentas compartidas (punto 2 del contrato, 20/11) ----
+
+def test_multisig_definition_and_messages():
+    from coordinator import multisig
+
+    assert multisig.check_definition("centro", ["mateo", "ana", "mateo", "fede"], 2) == (["mateo", "ana", "fede"], 2)
+    for owners, m in ((["mateo"], 1), (["a", "b"], 3), (["a", "b"], 0), (["centro", "a"], 1), ("a,b", 1)):
+        with pytest.raises(ValueError):
+            multisig.check_definition("centro", owners, m)
+    msg = multisig.payment_message("centro", "imprenta", 50000, "n1")
+    assert msg == "multisig:centro:imprenta:50000:n1"
+    # cambiar el monto o el destino da otra propuesta: las firmas de una no sirven para la otra
+    assert multisig.proposal_id(msg) != multisig.proposal_id(multisig.payment_message("centro", "imprenta", 50001, "n1"))
+
+
+def test_multisig_view_counts_signatures_and_expires():
+    from coordinator import multisig
+
+    raw = multisig.new_proposal("p1", "centro", "imprenta", 500, 10, "m", now=1000.0)
+    raw = {k: str(v) for k, v in raw.items()} | {"sig:mateo": "aa"}
+    v = multisig.view(raw, threshold=2, now=1001.0)
+    assert (v["status"], v["signatures"], v["missing"], v["signers"]) == ("pendiente", 1, 1, ["mateo"])
+    assert multisig.view(raw, threshold=2, now=1000.0 + multisig.TTL + 1)["status"] == "vencida"
+    assert multisig.tx_extra(raw | {"sig:ana": "bb"})["multisig"]["signatures"] == {"mateo": "aa", "ana": "bb"}
