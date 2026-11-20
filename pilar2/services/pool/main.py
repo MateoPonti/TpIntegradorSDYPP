@@ -41,6 +41,7 @@ PREFIX_LEN = Gauge("pool_prefix_length", "Largo del prefijo que publica el pool"
 RANGE = Gauge("pool_range_size", "Nonces por tarea")
 DESIRED = Gauge("desired_cpu_miners", "Mineros CPU pedidos al k3s")
 QUEUE = Gauge("mining_tasks_ready", "Tareas esperando en mining.tasks")
+QUARANTINED_NOW = Gauge("miners_quarantined", "Mineros vivos que están en cuarentena ahora")
 
 state: dict = {}
 
@@ -107,6 +108,7 @@ async def tick(r, channel) -> None:
     for kind, ms in (("gpu", gpu), ("cpu", cpu)):
         MINERS.labels(kind).set(len(ms))
         HASHRATE.labels(kind).set(sum(m["hashrate"] for m in ms))
+    QUARANTINED_NOW.set(sum(m["quarantined"] for m in miners))
     PREFIX_LEN.set(len(prefix))
     RANGE.set(size)
     DESIRED.set(desired)

@@ -2,6 +2,7 @@
 #   cd pilar2 && cp .env.example .env && docker compose up -d --build
 #   API:      http://127.0.0.1:18080 y :18081 (las dos réplicas del coordinator)
 #   Gateway:  http://127.0.0.1:18180 y :18181 (acá se conecta el minero GPU de la PC)
+#   Notifier: ws://127.0.0.1:18280/ws y :18281 (avisos por websocket que usa el explorador)
 #   RabbitMQ: http://127.0.0.1:15672
 # Cada réplica es un servicio aparte con su puerto fijo: "replicas: 2" con un rango de
 # puertos tiene una carrera en Compose y a veces deja una réplica sin publicar.
@@ -53,6 +54,9 @@ services:
     <<: *service
     build: { context: .., dockerfile: pilar2/services/Dockerfile, args: { SERVICE: coordinator } }
     ports: ["18080:8080"]
+    environment:
+      <<: *env
+      NOTIFIER_PUBLIC_URL: ws://127.0.0.1:18280/ws  # en local el explorador y el notifier están en puertos distintos
   coordinator-2:
     <<: *coordinator
     ports: ["18081:8080"]
@@ -69,6 +73,17 @@ services:
   gateway-2:
     <<: *gateway
     ports: ["18181:8080"]
+
+  notifier: &notifier
+    <<: *service
+    build: { context: .., dockerfile: pilar2/services/Dockerfile, args: { SERVICE: notifier } }
+    ports: ["18280:8080"]
+    environment:
+      <<: *env
+      NOTIFIER_ALLOWED_ORIGINS: http://127.0.0.1:18080,http://localhost:18080,http://127.0.0.1:18081,http://localhost:18081
+  notifier-2:
+    <<: *notifier
+    ports: ["18281:8080"]
 
   # En el TP real los mineros CPU van en el k3s local (pilar3/k3s-local). Acá están para probar en local.
   miner-cpu:

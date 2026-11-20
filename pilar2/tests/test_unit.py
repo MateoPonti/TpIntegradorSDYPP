@@ -237,3 +237,59 @@ def test_cuentas_con_clave():
     assert accounts.is_genesis("user-0") and accounts.is_genesis("user-96") and not accounts.is_genesis("user-97")
     assert accounts.reserved("user-5") and accounts.reserved("recompensa") and accounts.reserved("miner:x")
     assert not accounts.reserved("mateo")
+
+
+# ---- Notifier (punto 3 del contrato) ----
+
+def _solved():
+    blk = {"index": 7, "block_hash": "00ab", "timestamp": 1.0, "miner": "gpu-1",
+           "transactions": [{"tx_id": "t1", "sender": "user-1", "receiver": "mateo", "amount": 500, "ts": 0},
+                            {"tx_id": "t2", "sender": "mateo", "receiver": "mateo", "amount": 100, "ts": 0}]}
+    return blocks.solved_event(blk, "7-abcd")
+
+
+def test_solved_event_has_what_gateway_and_notifier_need():
+    ev = _solved()
+    assert ev["block_id"] == "7-abcd" and ev["event_id"] == "block-7" and ev["type"] == "block.solved"
+    assert [t["tx_id"] for t in ev["txs"]] == ["t1", "t2"] and "ts" not in ev["txs"][0]
+
+
+def test_notifier_routes_only_what_each_client_asked():
+    from notifier import main as notifier
+
+    ev = _solved()
+    subs = {"s1": ("blocks", None), "s2": ("tx", "t1"), "s3": ("tx", "otra"), "s4": ("account", "mateo"),
+            "s5": ("account", "user-9")}
+    msgs = {m["sub"]: m for m in notifier.route(ev, notifier.index_event(ev), subs)}
+    assert set(msgs) == {"s1", "s2", "s4"}
+    assert msgs["s1"]["event"] == "block.solved" and msgs["s1"]["txs"] == 2
+    assert msgs["s2"]["event"] == "tx.confirmed" and msgs["s2"]["index"] == 7
+    # mateo recibe 500 de user-1 y se manda 100 a sí mismo (una sola línea, no entrada y salida)
+    assert msgs["s4"]["movements"] == [{"tx_id": "t1", "dir": "in", "other": "user-1", "amount": 500},
+                                       {"tx_id": "t2", "dir": "out", "other": "mateo", "amount": 100}]
+
+
+def test_notifier_origin_and_subscription_checks():
+    from notifier import main as notifier
+
+    assert notifier.origin_ok(None, "x.sslip.io", set())  # no es un navegador
+    assert notifier.origin_ok("https://x.sslip.io", "x.sslip.io", set())
+    assert not notifier.origin_ok("https://malo.com", "x.sslip.io", set())
+    assert notifier.origin_ok("http://127.0.0.1:18080", "127.0.0.1:18280", {"http://127.0.0.1:18080"})
+    assert notifier.parse_subscription({"topic": "tx", "tx_id": "t1"}) == ("tx", "t1")
+    for bad in ({"topic": "saldos"}, {"topic": "account"}, {"topic": "tx", "tx_id": "x" * 200}):
+        with pytest.raises(ValueError):
+            notifier.parse_subscription(bad)
+
+
+def test_notifier_cuts_slow_clients_instead_of_buffering():
+    import asyncio
+
+    from notifier import main as notifier
+
+    client = notifier.Client(ws=None)
+    for i in range(notifier.QUEUE_SIZE):
+        assert client.push({"n": i})
+    assert not client.push({"n": "uno de más"})
+    assert client.queue.qsize() == 1 and client.queue.get_nowait() is notifier.CLOSE
+    assert isinstance(client.queue, asyncio.Queue)

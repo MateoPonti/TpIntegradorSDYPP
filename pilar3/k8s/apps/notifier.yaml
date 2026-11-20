@@ -1,0 +1,84 @@
+# Notifier (punto 3 del contrato): avisos por websocket a los navegadores (/ws, por Traefik).
+# Dos réplicas fijas, como pide el enunciado. Cada una tiene su cola block.events.<pod>, así recibe todos los
+# bloques sellados y avisa a los navegadores conectados a ella. Sin HPA: casi no usa CPU (espera eventos).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notifier
+  namespace: tpi
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: notifier
+  template:
+    metadata:
+      labels:
+        app: notifier
+    spec:
+      # Sin esto k8s inyecta REDIS_PORT=tcp://... (por el Service "redis") y pisa la config.
+      enableServiceLinks: false
+      nodeSelector:
+        pool: apps
+      containers:
+        - name: notifier
+          image: REGISTRY/notifier:latest
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: tpi-config
+          env:
+            - name: RABBITMQ_URL
+              valueFrom:
+                secretKeyRef:
+                  name: rabbitmq-auth
+                  key: url
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: redis-auth
+                  key: password
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 20m
+              memory: 64Mi
+            limits:
+              memory: 192Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: notifier
+  namespace: tpi
+spec:
+  type: ClusterIP
+  selector:
+    app: notifier
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: notifier
+  namespace: tpi
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: notifier

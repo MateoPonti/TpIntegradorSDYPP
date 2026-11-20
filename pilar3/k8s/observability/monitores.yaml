@@ -11,7 +11,7 @@ metadata:
 spec:
   selector:
     matchExpressions:
-      - { key: app, operator: In, values: [coordinator, pool, gateway] }
+      - { key: app, operator: In, values: [coordinator, pool, gateway, notifier] }
   podMetricsEndpoints:
     - port: http
       path: /metrics

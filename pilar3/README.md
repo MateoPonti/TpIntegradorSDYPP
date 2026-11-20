@@ -3,7 +3,7 @@
 ## Cómo quedó adaptado el starter a este repo
 
 - Los servicios **no** están en `services/` sino en `pilar2/services/`. Se construyen desde la raíz:
-  - coordinator / pool / gateway: `docker build -f pilar2/services/Dockerfile --build-arg SERVICE=<svc> .`
+  - coordinator / pool / gateway / notifier: `docker build -f pilar2/services/Dockerfile --build-arg SERVICE=<svc> .`
   - miner-cpu (k3s local, **nunca GCP**): `docker build -f pilar2/services/miners/cpu/Dockerfile .`
 - Los workflows están en `.github/workflows/` de la raíz, con las rutas `pilar3/...` y `pilar2/...`.
 - `k8s/apps/config.yaml` tiene además las variables del grupo (armado del bloque, reintentos, `GATEWAY_HEALTH_URL`).
@@ -26,8 +26,9 @@ en su propio namespace **`tpi`**. El 17/11/2026 se sacó el TP3 del cluster (nam
 |---|---|
 | Frontend, API y `/status` | **`https://35-223-237-60.sslip.io`** (y `http://35.223.237.60`, IP fija `tpi-coordinator`, hoy en Traefik) |
 | Portal para unirse al pool | `https://35-223-237-60.sslip.io/unirse` |
+| Avisos por websocket (notifier) | `wss://35-223-237-60.sslip.io/ws` (Traefik manda `/ws` al notifier) |
 | Gateway de los mineros | **`https://gateway.35-223-237-60.sslip.io`** (por Traefik) y `http://34.63.209.225` (IP fija `tpi-gateway`, para los pods del k3s) |
-| Imágenes | `us-central1-docker.pkg.dev/tp3distribuidos/tp3/tpi-{coordinator,pool,gateway}:<sha>` |
+| Imágenes | `us-central1-docker.pkg.dev/tp3distribuidos/tp3/tpi-{coordinator,pool,gateway,notifier}:<sha>` |
 | Prometheus, Grafana y Loki | Los que instaló el TP3 (namespace `monitoring`, siguen ahí). Leen nuestros pods con `k8s/observability/` |
 | Grafana | `http://136.80.214.178`, dashboard **TPI Blockchain** (usuario y clave en el secret `grafana-admin` de `monitoring`) |
 
@@ -85,8 +86,8 @@ todo (para eso hay que sumar nodos al pool `infra`; los manifiestos ya reparten 
   los PVC quedan) y el Service `redis` viejo: `$K -n tpi delete sts rabbitmq redis; $K -n tpi delete svc redis`.
 
 **HTTPS** (17/11/2026, opción A: gratis, dentro del cluster). Traefik (namespace `traefik`, helm chart 42.4.0)
-tiene la IP fija `tpi-coordinator` y reparte por nombre: `35-223-237-60.sslip.io` → coordinator y
-`gateway.35-223-237-60.sslip.io` → gateway. cert-manager (namespace `cert-manager`, v1.21.2) saca y renueva solo
+tiene la IP fija `tpi-coordinator` y reparte por nombre: `35-223-237-60.sslip.io` → coordinator (y `/ws` →
+notifier, el websocket pasa sin configuración extra) y `gateway.35-223-237-60.sslip.io` → gateway. cert-manager (namespace `cert-manager`, v1.21.2) saca y renueva solo
 el certificado de Let's Encrypt (desafío HTTP-01). `sslip.io` resuelve esos nombres a la IP, así no hace falta
 comprar un dominio (Let's Encrypt no firma una IP sola). HTTP sigue abierto para `bench.py` y los mineros ya
 configurados. Se eligió Traefik y no ingress-nginx porque ingress-nginx ya no se mantiene. Manifiestos e

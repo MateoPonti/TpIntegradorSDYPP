@@ -85,14 +85,16 @@ Es un **pool de minería colaborativo**: todos minan el mismo bloque, cada uno e
 | **coordinator** | Valida las tx, arma el bloque, publica las tareas, verifica el resultado y sella. Un solo líder (`coord:leader`) arma y sella. | No mina. |
 | **pool** | Cada 5 s escribe `pool:plan` (prefijo + tamaño de rango) y `pool:scaling` (cuántos mineros CPU). Un solo líder (`pool:leader`). | No toca la cadena. |
 | **gateway** | Es la **única puerta HTTP** de los mineros. Presta las tareas con lease en Redis; un reaper re-publica las vencidas. | No decide nada del bloque. |
+| **notifier** | Avisa por websocket (`/ws`) a los navegadores: bloque sellado, tx confirmada, cuenta movida (punto 3 del contrato). | No decide nada ni escribe Redis. |
 | **mineros** | Solo buscan el nonce en el rango que les dieron. | No ven saldos ni escriben la cadena. |
 
-- **Ningún minero corre en GCP**, porque la prueba gratuita prohíbe minar. Los mineros CPU corren en un **k3s local** escalados por **KEDA**; el GPU corre en la PC con la 1050 Ti. En GKE corren solo coordinator, pool, gateway, RabbitMQ, Redis y la observabilidad.
+- **Ningún minero corre en GCP**, porque la prueba gratuita prohíbe minar. Los mineros CPU corren en un **k3s local** escalados por **KEDA**; el GPU corre en la PC con la 1050 Ti. En GKE corren solo coordinator, pool, gateway, notifier, RabbitMQ, Redis y la observabilidad.
 - Los mineros hablan **solo con el gateway**, por HTTPS, con `Authorization: Bearer <MINER_TOKEN>` y en modo pull. RabbitMQ y Redis **no se exponen a Internet** (ClusterIP).
 - **PoW:** `md5(base + str(nonce))` con ceros adelante. `base = previous_hash + tx_digest`, donde `tx_digest` = SHA-256 del JSON canónico de las transacciones. MD5 se usa solo para el PoW. La dificultad se guarda en cada bloque.
 - **RabbitMQ** se usa solo para el minado; las transacciones **no** pasan por Rabbit.
   - Exchange topic `blockchain`.
-  - Colas `mining.tasks`, `mining.results` y `block.events.<pod>`.
+  - Colas `mining.tasks`, `mining.results` y `block.events.<pod>` (una por réplica de gateway y de notifier).
+  - `block.solved` sale por un **outbox** (`events:outbox`, se guarda en el Lua del sellado y se publica con reintentos).
   - `blockchain.dlx` → `mining.dlq`. La DLQ **no se reprocesa sola**.
 - **Redis** con AOF everysec y PVC: 1 principal + 2 réplicas + 3 Sentinel (los servicios buscan el principal con `REDIS_SENTINELS`; nada de Redis Cluster, porque los Lua tocan varias claves). El sellado es atómico con un script Lua (si `tip == prev`).
 - **RabbitMQ** con 3 nodos en cluster: las colas quorum se copian en los 3 (Raft).

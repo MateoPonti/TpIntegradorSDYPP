@@ -8,13 +8,13 @@ Hoy la blockchain es de **pagos con saldos** (modelo de cuentas): "A le paga X a
 
 | # | Idea | Depende de | Costo |
 |---|---|---|---|
-| 1 | Notificaciones de confirmación | — | Bajo |
+| 1 | Notificaciones de confirmación | — | Bajo · **hecho el 20/11** (servicio `notifier`, ver `pilar2/README.md`) |
 | 2 | Pagos entre varios (multifirma) | Firmas digitales | Medio |
 | 3 | Crowdfunding (donaciones a una meta) | 2, y bloqueo por tiempo | Medio a alto |
 
 Las tres usan una base común que hoy no existe: un campo **`type`** en la transacción (si no viene, es un pago,
-así `bench.py` sigue igual). La 2 y la 3 además necesitan **firmas digitales** (Ed25519), que hoy tampoco hay:
-cualquiera puede mandar una transacción en nombre de cualquier cuenta.
+así `bench.py` sigue igual). La 2 y la 3 además necesitan **firmas digitales** (Ed25519), que ya están desde el 17/11 (punto 1 del
+contrato): las cuentas registradas firman cada transacción.
 
 ---
 
@@ -102,5 +102,5 @@ devolución) las aplica el sistema y cualquiera puede auditarlas con `verify_cha
 - **Tokens** propios (como ERC-20), **registro de documentos** y **certificados** (necesita firmas).
 - **Shares** estilo Stratum (prueban el trabajo de cada minero) y **árbol de Merkle** con prueba de inclusión.
 - Faucet, billetera, indexador, comisiones y estimador de comisiones.
-- Red: HTTPS en el gateway (hoy es HTTP y el token viaja sin cifrar), un solo Ingress, NetworkPolicies.
+- Red: ~~HTTPS en el gateway~~ (hecho el 17/11 con Traefik), NetworkPolicies.
 - Observabilidad: latencia de confirmación de tx, métricas HTTP, que las alertas lleguen a algún lado, tracing.

@@ -24,7 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        service: [coordinator, pool, gateway]
+        service: [coordinator, pool, gateway, notifier]
     steps:
       - uses: actions/checkout@v7
       - uses: google-github-actions/auth@v3
@@ -60,6 +60,6 @@ jobs:
       - run: |
           kubectl apply -k pilar3/k8s/apps
           kubectl apply -k pilar3/k8s/observability   # PodMonitors y alertas (Prometheus del cluster)
-          for d in coordinator pool gateway; do
+          for d in coordinator pool gateway notifier; do
             kubectl -n tpi rollout status deployment/$d --timeout=300s
           done

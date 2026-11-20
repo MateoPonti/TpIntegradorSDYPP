@@ -47,4 +47,10 @@ data:
   BLOCK_REWARD_CENTS: "5000"       # premio por bloque (50,00), repartido según los nonces completados
   POOL_PERIOD_SECONDS: "5"        # cada 5 s, para que KEDA levante mineros enseguida
   GATEWAY_HEALTH_URL: http://gateway.tpi.svc.cluster.local/health   # para GET /status
+  NOTIFIER_HEALTH_URL: http://notifier.tpi.svc.cluster.local/health
+  # --- Notifier (avisos por websocket en /ws, por Traefik). Sin NOTIFIER_PUBLIC_URL el explorador usa /ws del
+  # mismo host, y el notifier acepta la página del mismo host (Origin) sin lista extra.
+  NOTIFIER_MAX_CONNECTIONS: "1000"
+  NOTIFIER_MAX_SUBSCRIPTIONS: "50"
+  NOTIFIER_SESSION_SECONDS: "3600"
   LOG_DIR: /tmp/logs

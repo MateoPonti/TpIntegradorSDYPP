@@ -15,6 +15,7 @@ LEASE_DEADLINES = "leases:deadline"  # ZSET task_id -> vencimiento (lo recorre e
 POOL_MINERS = "pool:miners"        # STRING JSON: hashrate de cada minero vivo (lo escribe el pool, lo lee /miners)
 POOL_LAST_WORK = "pool:last_work"  # STRING: última vez que hubo trabajo (mineros CPU: 60 s sin trabajo -> 0)
 CANARY_COUNTER = "gateway:canary:counter"  # INCR: 1 de cada CANARY_EVERY tareas es un canario
+EVENTS_OUTBOX = "events:outbox"    # LIST de eventos (JSON) que se guardan al sellar y todavía no se publicaron
 
 
 def block(index: int) -> str:

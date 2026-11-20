@@ -42,6 +42,7 @@ BLOCK_SECONDS = Histogram("block_seconds", "Tiempo desde que se arma el bloque h
                           buckets=(1, 2, 5, 10, 20, 30, 60, 120, 300, 600, 1800))
 RESULTS = Counter("results_total", "Resultados recibidos", ["status"])
 TASKS_PUBLISHED = Counter("tasks_published_total", "Tareas publicadas en mining.tasks")
+EVENTS_PUBLISHED = Counter("outbox_events_published_total", "Eventos del outbox publicados en RabbitMQ")
 REARMED = Counter("blocks_rearmed_total", "Bloques rearmados con un prefijo más corto (cayó el hashrate)")
 QUARANTINED = Counter("quarantined_total", "Mineros puestos en cuarentena", ["reason"])
 BLOCK_TXS = Histogram("block_transactions", "Transacciones por bloque (sin las de premio)",
@@ -75,8 +76,10 @@ return 1
 """
 
 # KEYS: chain:tip, mining:current, chain, block:<i>, hash:<h>, tx:inflight:<i>, tx:status, block:<i>:next_from,
-#       block:<i-1>:shares (ya pagado en este bloque)
-# ARGV: prev_hash, block_id, block_json, block_hash, index
+#       block:<i-1>:shares (ya pagado en este bloque), events:outbox
+# ARGV: prev_hash, block_id, block_json, block_hash, index, evento block.solved (JSON)
+# El evento se guarda en el outbox en el mismo script que sella (transactional outbox): si el pod muere antes
+# de publicarlo en RabbitMQ, el bloque y su evento quedan los dos, y otro lo publica después.
 SEAL_LUA = """
 if redis.call('GET', KEYS[1]) ~= ARGV[1] then return -1 end
 local cur = redis.call('GET', KEYS[2])
@@ -100,6 +103,7 @@ for _, raw in ipairs(txs) do
   redis.call('HSET', KEYS[7], tx['tx_id'], ARGV[5])
 end
 redis.call('DEL', KEYS[6], KEYS[2], KEYS[8], KEYS[9])
+redis.call('RPUSH', KEYS[10], ARGV[6])
 return #txs
 """
 SEAL_ERRORS = {-1: "tip cambió", -2: "bloque viejo", -3: "hash repetido"}
@@ -128,6 +132,16 @@ def should_rearm(prefix_len: int, planned_len: int, hashrate: float, target_seco
     if planned_len >= prefix_len or age < min_age:
         return False
     return pow.expected_seconds(prefix_len, hashrate) > target_seconds * factor
+
+
+def solved_event(block: dict, block_id: str) -> dict:
+    """Evento block.solved: lo usan el gateway (descarta tareas de ese block_id) y el notifier (avisa a los
+    navegadores). Lleva cada tx con origen y destino para que el notifier sepa a quién avisar sin leer el bloque."""
+    return {"v": 1, "event_id": f"block-{block['index']}", "type": "block.solved", "block_id": block_id,
+            "index": block["index"], "block_hash": block["block_hash"], "timestamp": block["timestamp"],
+            "miner": block["miner"],
+            "txs": [{"tx_id": t["tx_id"], "sender": t["sender"], "receiver": t["receiver"], "amount": t["amount"]}
+                    for t in block["transactions"]]}
 
 
 def genesis_block() -> dict:
@@ -332,14 +346,13 @@ class Chain:
         rc = await self._seal(
             keys=[keys.CHAIN_TIP, keys.MINING_CURRENT, keys.CHAIN, keys.block(index), keys.hash_key(res["hash"]),
                   keys.tx_inflight(index), keys.TX_STATUS, keys.block_next_from(index),
-                  keys.block_shares(index - 1)],
-            args=[cur["previous_hash"], cur["block_id"], pow.canonical_json(block), res["hash"], index])
+                  keys.block_shares(index - 1), keys.EVENTS_OUTBOX],
+            args=[cur["previous_hash"], cur["block_id"], pow.canonical_json(block), res["hash"], index,
+                  json.dumps(solved_event(block, cur["block_id"]))])
         if rc < 0:
             log(self.logger, "sellado rechazado", block_id=cur["block_id"], reason=SEAL_ERRORS.get(rc, rc))
             return "rejected"
-        await self.exchange.publish(
-            rabbit.message({"v": 1, "block_id": cur["block_id"], "index": index, "block_hash": res["hash"]}),
-            routing_key="block.solved")
+        await self.flush_outbox()
         BLOCKS_SEALED.inc()
         seconds = time.time() - cur.get("assembled", cur["created"])
         BLOCK_SECONDS.observe(seconds)
@@ -347,3 +360,15 @@ class Chain:
             block_hash=res["hash"], miner=res.get("worker"), seconds=round(seconds, 2), prefix=cur["prefix"])
         self.wake.set()
         return "sealed"
+
+    async def flush_outbox(self) -> int:
+        """Publica los eventos guardados al sellar y los saca del outbox recién después de publicarlos. Si dos
+        réplicas lo hacen a la vez, un evento puede salir dos veces: los que escuchan descartan repetidos por
+        event_id (el gateway por block_id)."""
+        sent = 0
+        for raw in await self.r.lrange(keys.EVENTS_OUTBOX, 0, 49):
+            await self.exchange.publish(rabbit.message(json.loads(raw)), routing_key="block.solved")
+            await self.r.lrem(keys.EVENTS_OUTBOX, 1, raw)
+            EVENTS_PUBLISHED.inc()
+            sent += 1
+        return sent

@@ -23,7 +23,9 @@ from .blocks import Chain
 logger = setup_logging("coordinator")
 POLL = env_float("BLOCK_POLL_SECONDS", 1.0)  # duda 5 (propuesta): loop cada 1 s
 GATEWAY_HEALTH_URL = env_str("GATEWAY_HEALTH_URL", "http://gateway:8080/health")
+NOTIFIER_HEALTH_URL = env_str("NOTIFIER_HEALTH_URL", "http://notifier:8080/health")
 GATEWAY_PUBLIC_URL = env_str("GATEWAY_PUBLIC_URL", "http://127.0.0.1:18180")  # lo usa la página /unirse
+NOTIFIER_PUBLIC_URL = env_str("NOTIFIER_PUBLIC_URL", "")  # websocket del notifier; vacío = /ws del mismo host
 REPO_URL = env_str("REPO_URL", "https://github.com/MateoPonti/TpIntegradorSDYPP")
 MAX_BULK = 10_000
 
@@ -41,6 +43,7 @@ async def leader_loop(chain: Chain, leader: store.Leader) -> None:
             is_leader = await leader.check()
             IS_LEADER.set(1 if is_leader else 0)
             if is_leader:
+                await chain.flush_outbox()  # lo que quedó sin publicar (se cayó RabbitMQ o un pod a mitad)
                 await chain.leader_tick()
             PENDING.set(await chain.pending_count())
         except Exception:  # noqa: BLE001 - el loop no se puede morir
@@ -143,9 +146,11 @@ async def get_balance(user: str):
     r = state["r"]
     bal = int(await r.get(keys.balance(user)) or 0)
     out = int(await r.get(keys.pending_out(user)) or 0)
-    registered = await r.exists(keys.account_pubkey(user)) == 1
+    pubkey = await r.get(keys.account_pubkey(user))
+    registered = pubkey is not None
     return {"user": user, "balance_cents": bal, "pending_out_cents": out, "available_cents": bal - out,
-            "registered": registered, "seq": int(await r.get(keys.account_seq(user)) or 0) if registered else None}
+            "registered": registered, "public_key": pubkey,
+            "seq": int(await r.get(keys.account_seq(user)) or 0) if registered else None}
 
 
 @app.post("/accounts/register", status_code=201)
@@ -227,7 +232,10 @@ async def status():
     services["rabbitmq"] = "ok" if not state["conn"].is_closed else "down"
     signal = await r.get(keys.POOL_SCALING)
     services["pool"] = "ok" if signal else "sin señal"
-    services["gateway"] = "ok" if await asyncio.to_thread(_http_ok, GATEWAY_HEALTH_URL) else "down"
+    gateway_ok, notifier_ok = await asyncio.gather(asyncio.to_thread(_http_ok, GATEWAY_HEALTH_URL),
+                                                   asyncio.to_thread(_http_ok, NOTIFIER_HEALTH_URL))
+    services["gateway"] = "ok" if gateway_ok else "down"
+    services["notifier"] = "ok" if notifier_ok else "down"
     workers = await store.alive_workers(r)
     cur = await chain.current()
     return {
@@ -258,6 +266,12 @@ async def frontend():
     return FileResponse(Path(__file__).with_name("static") / "index.html")
 
 
+@app.get("/cuenta", include_in_schema=False)
+async def cuenta():
+    """Billetera: crear una cuenta (mine o no), ver el saldo en vivo y mandar transferencias firmadas."""
+    return FileResponse(Path(__file__).with_name("static") / "cuenta.html")
+
+
 @app.get("/unirse", include_in_schema=False)
 async def unirse():
     """Portal "¿Querés minar con nosotros?": crear cuenta, dar de alta un worker y copiar el comando."""
@@ -266,15 +280,16 @@ async def unirse():
 
 @app.get("/unirse/config")
 async def unirse_config():
-    return {"gateway": GATEWAY_PUBLIC_URL, "repo": REPO_URL}
+    """Direcciones públicas que usan las dos páginas (el gateway para /unirse, el notifier para el explorador)."""
+    return {"gateway": GATEWAY_PUBLIC_URL, "repo": REPO_URL, "notifier": NOTIFIER_PUBLIC_URL}
 
 
-ASSETS = {"sdmer.css": "text/css", "nacl-fast.min.js": "text/javascript"}
+ASSETS = {"sdmer.css": "text/css", "nacl-fast.min.js": "text/javascript", "claves.js": "text/javascript"}
 
 
 @app.get("/assets/{name}", include_in_schema=False)
 async def assets(name: str):
-    """Estilo común de las dos páginas y TweetNaCl (Ed25519 en el navegador: crypto.subtle no existe sin HTTPS)."""
+    """Estilo común de las páginas, claves.js (firmas de /cuenta y /unirse) y TweetNaCl (Ed25519 en el navegador: crypto.subtle no existe sin HTTPS)."""
     if name not in ASSETS:
         raise HTTPException(404, "no existe")
     return FileResponse(Path(__file__).with_name("static") / "assets" / name, media_type=ASSETS[name],

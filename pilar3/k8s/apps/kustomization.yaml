@@ -5,6 +5,7 @@ resources:
   - coordinator.yaml
   - pool.yaml
   - gateway.yaml
+  - notifier.yaml
 # Pipeline 3 rewrites these tags with the commit SHA it just pushed.
 images:
   - name: REGISTRY/coordinator
@@ -15,4 +16,7 @@ images:
     newTag: latest
   - name: REGISTRY/gateway
     newName: REGISTRY/gateway
+    newTag: latest
+  - name: REGISTRY/notifier
+    newName: REGISTRY/notifier
     newTag: latest

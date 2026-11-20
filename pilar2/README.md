@@ -1,4 +1,4 @@
-# Pilar 2 · Sistema distribuido (RabbitMQ + Redis + coordinator + pool + gateway + mineros)
+# Pilar 2 · Sistema distribuido (RabbitMQ + Redis + coordinator + pool + gateway + notifier + mineros)
 
 Pool de minería **colaborativo**: todos los mineros trabajan sobre el mismo bloque, cada uno en un
 rango de nonces distinto. El detalle de cada decisión está en `docs/decisiones.docx`.
@@ -8,10 +8,11 @@ rango de nonces distinto. El detalle de cada decisión está en `docs/decisiones
 ```bash
 cd pilar2
 cp .env.example .env              # credenciales SOLO para local (.env está en .gitignore)
-docker compose up -d --build      # RabbitMQ, Redis, coordinator x2, pool x2, gateway x2, miner-cpu x2
+docker compose up -d --build      # RabbitMQ, Redis, coordinator x2, pool x2, gateway x2, notifier x2, miner-cpu x2
 
 curl http://127.0.0.1:18080/status                       # estado de todo (endpoint público)
 # http://127.0.0.1:18080/  -> frontend: estado, enviar tx, saldos, mineros y últimos bloques
+# ws://127.0.0.1:18280/ws   -> notifier (avisos por websocket; el frontend se conecta solo)
 curl -X POST http://127.0.0.1:18080/transactions -H 'Content-Type: application/json' \
      -d '{"sender":"user-1","receiver":"user-2","amount":10.5}'
 python tools/verify_chain.py --url http://127.0.0.1:18080   # verifica la cadena entera
@@ -53,7 +54,9 @@ flowchart LR
   G -->|HTTP pull + Bearer| M2[wrapper + miner_gpu<br/>PC 1050 Ti]
   M1 & M2 -->|POST /results| G
   G -->|result.*| X --> R[(mining.results)] --> C
-  C -->|block.solved| X --> E[(block.events.pod)] --> G
+  C -->|block.solved<br/>outbox| X --> E[(block.events.pod)] --> G
+  E --> NT[notifier 2 fijas]
+  NT -->|WSS /ws: avisos| N
   T -.3 intentos.-> D[(mining.dlq)]
   C & G & P[pool 2 fijas<br/>líder: pool:leader] --- RD[(Redis AOF<br/>principal + 2 réplicas<br/>3 Sentinel)]
   P -->|pool:plan / pool:scaling| RD
@@ -65,13 +68,14 @@ flowchart LR
 | `services/coordinator/` | NCT: valida tx, arma el bloque por ventanas, publica tareas por tandas, verifica, sella (Lua), reparte el premio y rearma si cae el hashrate. Sirve el frontend en `/` | GKE |
 | `services/pool/` | P5: cada 5 s mide el hashrate real y publica `pool:plan` (prefijo automático + rango), `pool:scaling` y `pool:miners` | GKE |
 | `services/gateway/` | Única puerta de los mineros: préstamos (lease), reaper, keep-alive, `/scaling`, calibración, canarios y cuarentena | GKE |
+| `services/notifier/` | Punto 3 del contrato: avisos por websocket (bloque sellado, tx confirmada, cuenta que se movió) a los navegadores | GKE |
 | `services/miners/agent.py` | Agente compartido por los dos mineros (habla con el gateway) | — |
 | `services/miners/cpu/` | Imagen `miner-cpu` = agente + `pilar1/cpu/miner_cpu.py` | **k3s local** |
 | `services/miners/gpu/` | Scripts para correr agente + `pilar1/build/miner_gpu` | **PC / Colab** |
 | `tools/verify_chain.py` | Recorre y verifica la cadena por la API | — |
 
 **Ningún minero corre en GCP** (la prueba gratuita prohíbe minar). En GKE solo van coordinator,
-pool, gateway, RabbitMQ, Redis y la observabilidad.
+pool, gateway, notifier, RabbitMQ, Redis y la observabilidad.
 
 ### ¿Por qué los dos mineros están separados pero comparten el agente?
 
@@ -92,7 +96,7 @@ Así el gateway y el coordinator ni se enteran de quién minó, y el binario CUD
 ## API
 
 **Coordinator** (público): `POST /transactions` · `POST /transactions/bulk` · `GET /transactions/{id}` ·
-`GET /balances/{user}` · `GET /accounts` (todas las cuentas, usuarios y cobro de mineros) · `GET /blocks/{i}` · `GET /chain` · `GET /status` · `GET /miners` · `GET /` (frontend) ·
+`GET /balances/{user}` · `GET /accounts` (todas las cuentas, usuarios y cobro de mineros) · `GET /blocks/{i}` · `GET /chain` · `GET /status` · `GET /miners` · `GET /` (explorador) · `GET /cuenta` (billetera) · `GET /unirse` (sumar un worker) ·
 `/health` `/metrics` `/logs`
 
 **Gateway** (todo con `Authorization: Bearer <MINER_TOKEN>`):
@@ -115,8 +119,9 @@ Así el gateway y el coordinator ni se enteran de quién minó, y el binario CUD
 {"v":1,"task_id":"…","block_id":"3-1a2b3c4d","worker":"gpu-PC","from":0,"to":104857,"found":true,"nonce":48213,"hash":"00000…","hashes":48214,"seconds":0.21,"engine_seconds":0.01}
 // tx de premio (primera del bloque siguiente; sender reservado)
 {"tx_id":"reward-3-mateo","sender":"recompensa","receiver":"mateo","amount":4500,"ts":…,"reward_for":3}
-// block.solved (coordinator → block.events.<pod>)
-{"v":1,"block_id":"3-1a2b3c4d","index":3,"block_hash":"00000…"}
+// block.solved (coordinator → outbox → block.events.<pod>: lo escuchan el gateway y el notifier)
+{"v":1,"event_id":"block-3","type":"block.solved","block_id":"3-1a2b3c4d","index":3,"block_hash":"00000…","timestamp":…,"miner":"gpu-PC",
+ "txs":[{"tx_id":"…","sender":"user-1","receiver":"user-2","amount":1050}]}
 ```
 
 ## Decisiones de diseño (resumen; el detalle está en `docs/decisiones.docx`)
@@ -208,6 +213,22 @@ Así el gateway y el coordinator ni se enteran de quién minó, y el binario CUD
   registradas. Los workers dados de alta en `/unirse` ya cobran en su cuenta registrada. Para gastar esa plata el dueño tiene que registrar ese nombre con su clave; hasta que se ate
   el `MINER_ACCOUNT` a una clave (con el alta de workers), el primero que registre el nombre se queda con la cuenta.
 
+### Páginas: explorador, billetera y alta de workers (20/11/2026)
+
+Separadas como en Bitcoin y Ethereum, donde la billetera (Electrum, MetaMask) no tiene nada que ver con minar, y
+como en los exploradores (mempool.space, Etherscan), que son solo de lectura:
+
+| Página | Para quién | Qué tiene |
+|---|---|---|
+| `/` explorador | cualquiera, solo lectura | altura, pendientes, prefijo, hashrate del pool, mineros conectados, bloques, cuentas, estado de una tx y **"Mis workers"** (como en los pools: buscás tu cuenta y ves tus workers con el hashrate real, el efectivo, el que informa el worker y si están en cuarentena) |
+| `/cuenta` billetera | cualquiera, mine o no | crear la cuenta (claves Ed25519 en el navegador, se descarga `<cuenta>.key`), abrirla con el `.key` (se comprueba contra la clave pública de `GET /balances`), saldo y movimientos en vivo por el notifier, enviar transferencias firmadas con el `seq` siguiente, y las cuentas de prueba del génesis (sin firma) |
+| `/unirse` | quien quiere minar | cargar la cuenta con su `.key` (si no tiene, link a `/cuenta`), dar de alta el worker firmando con la cuenta y copiar el comando |
+| Grafana (dashboard "TPI Blockchain") | el grupo | lo de administración que salió del explorador: mineros CPU pedidos a KEDA, hashrate calibrado y declarado de cada minero, cuarentena, líder del coordinator, pods arriba por servicio y navegadores conectados al notifier |
+
+El alta del worker sigue **firmada** por la cuenta (en los pools alcanza con poner la dirección): así nadie le
+asocia workers ajenos a tu cuenta. La clave privada no sale del navegador; el worker recibe solo su token.
+`GET /status` y `GET /miners` siguen públicos (lo pide el enunciado y los datos son los mismos).
+
 ### Página "¿Querés minar con nosotros?" y alta de workers (17/11/2026, opción A)
 
 Como en los pools de minería, el alta está separada del explorador: `http://<coordinator>/unirse` (el explorador
@@ -221,13 +242,55 @@ propio**; (3) copiar el comando para minar con CPU o GPU.
 - Si el worker falla un canario, además de la cuarentena se le **revoca el token**.
 - El `MINER_TOKEN` compartido sigue para los pods del k3s (KEDA).
 
+### Notificaciones por websocket (punto 3 del Contrato SDMER, 20/11/2026)
+
+Como dice el Word ampliado del contrato: un servicio **notifier** (2 réplicas) atiende los websockets de los
+navegadores en `/ws` (Traefik lo pasa por HTTPS: `wss://35-223-237-60.sslip.io/ws`). No decide nada: escucha
+`block.solved` y avisa. El explorador deja de preguntar cada 3 s: con el websocket abierto se actualiza al llegar
+un bloque y pregunta cada 15 s solo lo que no tiene aviso (mineros, tx pendientes); si se corta, vuelve a 3 s.
+
+```jsonc
+// cliente → notifier
+{"op":"subscribe","id":1,"topic":"blocks"}
+{"op":"subscribe","id":2,"topic":"tx","tx_id":"…"}
+{"op":"subscribe","id":3,"topic":"account","account":"user-2"}
+{"op":"unsubscribe","sub":"s2"}
+// notifier → cliente
+{"type":"subscribed","id":2,"sub":"s2","topic":"tx"}
+{"type":"snapshot","sub":"s2","height":25,"tx_id":"…","status":"pending","block":null}
+{"type":"event","sub":"s2","event":"tx.confirmed","tx_id":"…","index":25,"block_hash":"000000…"}
+{"type":"event","sub":"s3","event":"account.changed","account":"user-2","index":25,"movements":[{"tx_id":"…","dir":"in","other":"user-1","amount":350}],"balance_cents":…,"available_cents":…}
+```
+
+- **Outbox (transactional outbox):** el `SEAL_LUA` guarda el evento en `events:outbox` en el mismo script que sella.
+  Después se publica en RabbitMQ y recién ahí se saca del outbox; si el pod o RabbitMQ se caen en el medio, el
+  líder lo vuelve a publicar en su loop (cada 1 s). Puede salir dos veces: el notifier descarta repetidos por
+  `event_id` y al gateway no le cambia nada recibir dos veces el mismo `block_id`.
+- **Una cola por réplica** (`block.events.<pod>`, como el gateway): un navegador está conectado a una sola réplica,
+  así que cada una tiene que recibir todos los bloques. Una cola compartida los repartiría y alguno se perdería.
+- **Reconexión:** el cliente primero se suscribe y después recibe la **foto** del estado (`snapshot`, con `height`
+  como versión; un evento con `index < height` ya está en la foto). WebSocket no guarda los avisos perdidos
+  mientras estuvo desconectado: se garantiza recuperar el estado vigente, no cada aviso (historial con cursor =
+  extensión, como dice el Word).
+- **Límites:** `Origin` del mismo host o de `NOTIFIER_ALLOWED_ORIGINS`, 50 suscripciones por conexión, mensajes de
+  hasta 4 KB, 1000 conexiones por réplica, sesión de 1 h (después se corta y el cliente se reconecta), ping cada
+  20 s (uvicorn) y **cliente lento**: si se le juntan 200 avisos sin enviar se lo corta en vez de llenar la memoria.
+- **Sin autenticación por ahora:** hoy los saldos y las tx ya son públicos por la API (`/balances`, `/chain`), así
+  que suscribirse a una cuenta no muestra nada nuevo. Si el grupo decide que el saldo sea privado (pendiente), el
+  notifier tiene que pedir una firma de la cuenta para suscribirse a ella.
+- Métricas: `notifier_connections`, `notifier_subscriptions`, `notifier_messages_total`, `notifier_rejected_total`
+  y en el coordinator `outbox_events_published_total`.
+- Prueba (compose local, 20/11): dos clientes en réplicas distintas, tx confirmada avisada a los 6,9 s, movimiento de
+  cuenta en la otra réplica, reconexión con foto al día, evento repetido en el outbox avisado una sola vez y origen
+  ajeno rechazado.
+
 ### Claves de Redis
 
 Además de las del Word: `mining:current` (candidato que se mina), `tx:status` (dónde está cada tx),
 `leases:deadline` (ZSET del reaper), `block:<i>:shares` (nonces completados por minero, para el premio),
 `block:<block_id>:notfound:<minero>` (rangos "no encontré", por si falla un canario),
-`miner:<id>:results` / `:calibration` / `:expired`, `quarantine:<id>`, `pool:miners`, `pool:last_work` y
-`gateway:canary:counter`.
+`miner:<id>:results` / `:calibration` / `:expired`, `quarantine:<id>`, `pool:miners`, `pool:last_work`,
+`gateway:canary:counter` y `events:outbox` (eventos sellados que falta publicar).
 
 ## Pendiente
 

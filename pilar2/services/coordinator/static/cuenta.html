@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mi cuenta · SDMER</title>
+<link rel="stylesheet" href="/assets/sdmer.css">
+<script src="/assets/nacl-fast.min.js"></script>
+<script src="/assets/claves.js"></script>
+</head>
+<body>
+<div class="topbar"><div class="in">
+  <a class="brand" href="/"><i></i>SDMER</a>
+  <nav><a href="/">Blockchain</a><a href="/cuenta" class="on">Mi cuenta</a><a href="/unirse">Minar con nosotros</a></nav>
+</div></div>
+<div class="hero">
+  <h1>Tu <span class="grad">cuenta</span></h1>
+  <p>Creá una cuenta para recibir y mandar plata, mines o no. Es como una billetera: las claves se generan en tu
+     navegador y la privada nunca se manda al servidor.</p>
+</div>
+<main class="narrow">
+
+  <section id="crearSec">
+    <h2><span class="num">1</span>Creá tu cuenta</h2>
+    <p class="hint">Se genera un par de claves Ed25519: la pública se registra y la privada se descarga en
+       <code>&lt;cuenta&gt;.key</code>. <b>Guardalo: sin él no podés mover tu plata.</b> Si lo perdés no hay forma de
+       recuperarlo (como en Bitcoin).</p>
+    <label for="nuevo">Nombre de la cuenta</label>
+    <div class="row">
+      <input id="nuevo" maxlength="64" placeholder="ej. mateo" autocomplete="off">
+      <button id="crear">Crear cuenta y descargar mi clave</button>
+    </div>
+    <div class="msg" id="msg1"></div>
+  </section>
+
+  <section id="abrirSec">
+    <h2><span class="num">2</span>Abrí tu cuenta</h2>
+    <p class="hint">Poné el nombre y cargá tu archivo <code>.key</code> para ver tu saldo y mandar transferencias.</p>
+    <label for="nombre">Nombre de la cuenta</label>
+    <div class="row">
+      <input id="nombre" maxlength="64" placeholder="ej. mateo" autocomplete="off">
+      <button class="sec" id="cargar">Cargar mi clave</button>
+    </div>
+    <input type="file" id="archivo" accept=".key,.txt" hidden>
+    <div class="msg" id="msg2"></div>
+  </section>
+
+  <section id="panel" class="off">
+    <h2 id="titulo">Cuenta</h2>
+    <div class="stats" id="saldo"></div>
+    <h2 style="margin-top:16px">Enviar plata</h2>
+    <p class="hint">La transferencia sale firmada con tu clave y con el número de secuencia siguiente, así nadie
+       puede repetirla.</p>
+    <div class="row">
+      <input id="para" maxlength="64" placeholder="para (ej. user-2)" autocomplete="off">
+      <input id="monto" placeholder="monto (ej. 12,50)" inputmode="decimal">
+      <button id="enviar">Enviar</button>
+    </div>
+    <div class="msg" id="msg3"></div>
+    <h2 style="margin-top:16px">Movimientos <span class="pill">en vivo, desde que abriste la página</span></h2>
+    <div class="scroll"><table id="movs"></table></div>
+  </section>
+
+  <section>
+    <h2>Cuentas de prueba del génesis</h2>
+    <p class="hint"><code>user-0</code> a <code>user-96</code> arrancan con saldo y no firman, porque las usa el
+       <code>bench.py</code> de la cátedra. Sirven para probar sin crear una cuenta.</p>
+    <div class="row">
+      <input id="gDe" placeholder="de (ej. user-1)">
+      <input id="gPara" placeholder="para (ej. mateo)">
+      <input id="gMonto" placeholder="monto" inputmode="decimal">
+      <button id="gEnviar">Enviar</button>
+    </div>
+    <div class="msg" id="msg4"></div>
+  </section>
+</main>
+
+<script>
+let par = null, cuenta = "", ws = null, wsOpen = false, retry = 1000, reqId = 0, saldo = null;
+const movs = [], esperando = new Map();  // tx_id -> id del mensaje donde se avisa la confirmación
+
+function dibujarSaldo() {
+  const live = wsOpen ? '<span class="ok">en vivo</span>' : '<span class="warn">reconectando…</span>';
+  $("saldo").innerHTML = saldo ? [
+    ["Disponible", money(saldo.available_cents)], ["Saldo", money(saldo.balance_cents)],
+    ["Reservado (pendiente)", money(saldo.pending_out_cents)], ["Avisos", live],
+  ].map(([k, v]) => `<div class="stat"><b>${v}</b><span>${k}</span></div>`).join("") : "";
+}
+function dibujarMovs() {
+  $("movs").innerHTML = "<tr><th>Bloque</th><th>Tipo</th><th>Con</th><th>Monto</th><th>tx_id</th></tr>" +
+    (movs.length ? movs.map((m) => `<tr><td>${m.index}</td><td>${m.dir === "in" ? '<span class="ok">recibiste</span>' : "enviaste"}</td>
+      <td class="mono">${esc(m.other)}</td><td>${money(m.amount)}</td><td class="mono">${esc(m.tx_id)}</td></tr>`).join("")
+      : '<tr><td colspan="5">Todavía nada. Cuando se confirme un movimiento de tu cuenta aparece acá.</td></tr>');
+}
+
+const wsSend = (m) => { if (wsOpen) ws.send(JSON.stringify({ id: ++reqId, ...m })); };
+function onAviso(n) {
+  if ((n.type === "snapshot" && n.account === cuenta) || (n.event === "account.changed" && n.account === cuenta)) {
+    saldo = n;
+    if (n.movements) { movs.unshift(...n.movements.map((m) => ({ ...m, index: n.index }))); dibujarMovs(); }
+    dibujarSaldo();
+  }
+  const confirmada = n.event === "tx.confirmed" || (n.type === "snapshot" && n.status === "confirmed");
+  if (confirmada && esperando.has(n.tx_id)) {
+    say(esperando.get(n.tx_id), `Confirmada en el bloque ${n.index ?? n.block}.`, true);
+    esperando.delete(n.tx_id);
+    wsSend({ op: "unsubscribe", sub: n.sub });
+  }
+}
+async function conectar() {
+  ws = new WebSocket(await notifierUrl());
+  ws.onopen = () => {
+    wsOpen = true; retry = 1000;
+    if (cuenta) wsSend({ op: "subscribe", topic: "account", account: cuenta });  // la foto trae el saldo
+    for (const tx of esperando.keys()) wsSend({ op: "subscribe", topic: "tx", tx_id: tx });
+    dibujarSaldo();
+  };
+  ws.onmessage = (m) => onAviso(JSON.parse(m.data));
+  ws.onclose = () => { wsOpen = false; dibujarSaldo(); setTimeout(conectar, retry); retry = Math.min(retry * 2, 30000); };
+}
+function seguir(txId, msgId) {
+  esperando.set(txId, msgId);
+  wsSend({ op: "subscribe", topic: "tx", tx_id: txId });
+}
+
+async function abrir(nombre, nuevoPar) {
+  par = nuevoPar; cuenta = nombre; movs.length = 0;
+  $("titulo").textContent = `Cuenta ${nombre}`;
+  $("panel").classList.remove("off");
+  saldo = await (await fetch("/balances/" + encodeURIComponent(nombre))).json();
+  dibujarSaldo(); dibujarMovs();
+  if (ws === null) conectar(); else wsSend({ op: "subscribe", topic: "account", account: cuenta });
+  $("panel").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+$("crear").onclick = async () => {
+  const nombre = $("nuevo").value.trim();
+  if (!nombre) return say("msg1", "Poné un nombre para la cuenta.");
+  try {
+    const p = await crearCuenta(nombre);
+    say("msg1", `Cuenta "${nombre}" creada. Se descargó ${nombre}.key: guardalo bien.`, true);
+    $("nombre").value = nombre;
+    await abrir(nombre, p);
+  } catch (e) { say("msg1", e.message); }
+};
+
+$("cargar").onclick = () => {
+  if (!$("nombre").value.trim()) return say("msg2", "Poné el nombre de tu cuenta y después cargá la clave.");
+  $("archivo").click();
+};
+$("archivo").onchange = async () => {
+  const nombre = $("nombre").value.trim();
+  try {
+    const p = await abrirCuenta(nombre, $("archivo").files[0]);
+    say("msg2", `Clave cargada para "${nombre}".`, true);
+    await abrir(nombre, p);
+  } catch (e) { say("msg2", e.message); }
+  $("archivo").value = "";
+};
+
+$("enviar").onclick = async () => {
+  const para = $("para").value.trim();
+  try {
+    if (!para) throw new Error("Poné a quién le mandás.");
+    const cents = centavos($("monto").value);
+    const info = await (await fetch("/balances/" + encodeURIComponent(cuenta))).json();
+    const seq = (info.seq || 0) + 1;
+    const r = await post("/transactions", { sender: cuenta, receiver: para, amount: (cents / 100).toFixed(2), seq,
+                                            signature: firmar(par, `tx:${cuenta}:${para}:${cents}:${seq}`) });
+    say("msg3", `Enviada (pendiente hasta que se mine): ${r.tx_id}`, true);
+    seguir(r.tx_id, "msg3");
+    saldo = await (await fetch("/balances/" + encodeURIComponent(cuenta))).json();
+    dibujarSaldo();
+  } catch (e) { say("msg3", e.message); }
+};
+
+$("gEnviar").onclick = async () => {
+  try {
+    const cents = centavos($("gMonto").value);
+    const r = await post("/transactions", { sender: $("gDe").value.trim(), receiver: $("gPara").value.trim(),
+                                            amount: (cents / 100).toFixed(2) });
+    say("msg4", `Enviada (pendiente hasta que se mine): ${r.tx_id}`, true);
+    if (ws === null) conectar();
+    seguir(r.tx_id, "msg4");
+  } catch (e) { say("msg4", e.message); }
+};
+</script>
+</body>
+</html>

@@ -9,12 +9,13 @@
 <body>
 <div class="topbar"><div class="in">
   <a class="brand" href="/"><i></i>SDMER</a>
-  <nav><a href="/" class="on">Blockchain</a><a href="/unirse">Minar con nosotros</a></nav>
+  <nav><a href="/" class="on">Blockchain</a><a href="/cuenta">Mi cuenta</a><a href="/unirse">Minar con nosotros</a></nav>
   <a class="btn sm" href="/unirse">Unite</a>
 </div></div>
 <div class="hero">
   <h1>Blockchain <span class="grad">distribuida</span></h1>
-  <p>Explorador en vivo de la cadena del pool SDMER: bloques, transacciones, cuentas y mineros. Se actualiza cada 3 s.</p>
+  <p>Explorador en vivo de la cadena del pool SDMER: bloques, transacciones, cuentas y mineros. Se actualiza solo cuando se sella un bloque.
+     Para mandar plata, entrá a <a href="/cuenta">Mi cuenta</a>.</p>
 </div>
 <div class="cta"><div class="in">
   <div><b>¿Querés minar con nosotros?</b><span>Sumá tu PC al pool con CPU o con una placa NVIDIA y cobrá por cada
@@ -25,21 +26,6 @@
   <section class="wide">
     <h2>Estado</h2>
     <div class="stats" id="stats"></div>
-  </section>
-
-  <section>
-    <h2>Enviar transacción</h2>
-    <form id="tx">
-      <div class="row">
-        <input name="sender" placeholder="sender (ej. user-1)" required>
-        <input name="receiver" placeholder="receiver (ej. user-2)" required>
-      </div>
-      <div class="row">
-        <input name="amount" placeholder="monto (ej. 12.50)" required inputmode="decimal">
-        <button>Enviar</button>
-      </div>
-    </form>
-    <div class="out" id="txOut"></div>
   </section>
 
   <section>
@@ -55,7 +41,10 @@
   </section>
 
   <section class="wide">
-    <h2>Mineros</h2>
+    <h2>Mis workers <span class="pill" id="poolSum"></span></h2>
+    <div class="row" style="margin-bottom:8px">
+      <input id="mine" placeholder="tu cuenta (ej. mateo) para ver tus workers" autocomplete="off">
+    </div>
     <div class="scroll"><table id="miners"></table></div>
   </section>
 
@@ -100,29 +89,39 @@ const cache = new Map();
 
 async function refreshStatus() {
   const s = await get("/status");
-  const svc = Object.entries(s.services).map(([k, v]) => `<span class="${v === "ok" ? "ok" : "bad"}">${esc(k)}</span>`).join(" · ");
   const m = s.mining, plan = s.pool_plan || {};
   const cards = [
-    ["Servicios", svc],
     ["Altura de la cadena", s.chain_height],
     ["Tx pendientes", s.pending_transactions],
     ["Minando", m ? `#${m.index} · ${esc(m.prefix)} · ${m.seconds} s${m.rearmed ? " · rearmado" : ""}` : "nada"],
     ["Prefijo del pool", `${esc(plan.prefix ?? "—")} <span class="pill">${esc(plan.mode ?? "")}</span>`],
-    ["Hashrate real", rate(plan.hashrate)],
+    ["Hashrate del pool", rate(plan.hashrate)],
     ["Mineros vivos", `GPU ${s.miners.gpu} · CPU ${s.miners.cpu}`],
-    ["CPU pedidos a KEDA", s.pool_signal ? s.pool_signal.desired_cpu_miners : "—"],
+    ["Avisos", wsOpen ? '<span class="ok">en vivo</span> <span class="pill">websocket</span>' : '<span class="bad">preguntando cada 3 s</span>'],
   ];
   $("stats").innerHTML = cards.map(([k, v]) => `<div class="stat"><b>${v}</b><span>${k}</span></div>`).join("");
   return s.chain_height;
 }
 
-async function refreshMiners() {
-  const ms = await get("/miners");
-  $("miners").innerHTML = "<tr><th>Minero</th><th>Tipo</th><th>Cobra en</th><th>Fuente</th><th>Clase</th><th>Cuenta para el prefijo</th><th>Motor</th><th>Efectivo</th><th>Calibrado</th><th>Declarado</th></tr>" +
-    (ms.length ? ms.map((x) => `<tr><td class="mono">${esc(x.miner_id)}</td><td>${esc(x.kind)}</td><td class="mono">${esc(x.account)}</td><td>${x.quarantined ? '<span class="bad">cuarentena</span>' : esc(x.source)}</td>
-      <td>${esc(x.class ?? "—")}</td><td>${rate(x.hashrate)}</td><td>${rate(x.motor)}</td><td>${rate(x.efectivo)}</td><td>${rate(x.calibrated)}</td><td>${rate(x.declared)}</td></tr>`).join("")
-      : '<tr><td colspan="10">No hay mineros conectados al gateway.</td></tr>');
+// Como en los pools: el público ve el total; cada dueño busca su cuenta y ve sus workers (con el hashrate que
+// informa el worker y el que mide el pool con lo que entregó). El detalle de todos está en Grafana.
+let miners = [];
+function drawMiners() {
+  const kinds = ["gpu", "cpu"].map((k) => `${k.toUpperCase()} ${miners.filter((m) => m.kind === k).length}`).join(" · ");
+  $("poolSum").textContent = `${miners.length} conectados · ${kinds}`;
+  const q = $("mine").value.trim();
+  const mine = miners.filter((m) => q && m.account === q);
+  $("miners").innerHTML = "<tr><th>Worker</th><th>Tipo</th><th>Estado</th><th>Clase</th><th>Hashrate real</th><th>Efectivo</th><th>Informado por el worker</th></tr>" +
+    (mine.length ? mine.map((x) => `<tr><td class="mono">${esc(x.miner_id)}</td><td>${esc(x.kind)}</td>
+      <td>${x.quarantined ? '<span class="bad">en cuarentena</span>' : '<span class="ok">minando</span>'}</td><td>${esc(x.class ?? "—")}</td>
+      <td>${rate(x.motor)}</td><td>${rate(x.efectivo)}</td><td>${rate(x.declared)}</td></tr>`).join("")
+      : `<tr><td colspan="7">${q ? `La cuenta "${esc(q)}" no tiene workers conectados.` : "Escribí tu cuenta para ver tus workers."}</td></tr>`);
 }
+async function refreshMiners() {
+  miners = await get("/miners");
+  drawMiners();
+}
+$("mine").oninput = drawMiners;
 
 async function block(i) {
   if (!cache.has(i)) cache.set(i, await get(`/blocks/${i}`));
@@ -215,24 +214,63 @@ async function refreshAccounts() {
 $("accFilter").oninput = drawAccounts;
 $("accType").onchange = drawAccounts;
 
+let busy = false, again = false, lastRefresh = 0;
 async function refresh() {
+  if (busy) { again = true; return; }  // llegó un aviso a mitad de una actualización: otra vuelta al terminar
+  busy = true;
+  again = false;
+  lastRefresh = Date.now();
   try {
     height = await refreshStatus();
     await Promise.all([refreshMiners(), refreshBlocks(), refreshAccounts()]);
   } catch (e) {
     $("stats").innerHTML = `<div class="stat"><b class="bad">sin conexión</b><span>${esc(e.message)}</span></div>`;
+  } finally {
+    busy = false;
+    if (again) refresh();
   }
 }
 
-$("tx").onsubmit = async (ev) => {
-  ev.preventDefault();
-  const f = new FormData(ev.target);
-  const body = { sender: f.get("sender"), receiver: f.get("receiver"), amount: f.get("amount") };
-  const r = await fetch("/transactions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-  const j = await r.json();
-  $("txOut").textContent = `${r.status} ${JSON.stringify(j)}`;
-  if (j.tx_id) $("txq").elements.id.value = j.tx_id;
-};
+// Avisos en vivo (notifier, punto 3 del contrato): con el websocket abierto la página se actualiza cuando se
+// sella un bloque y solo pregunta cada 15 s por lo que no tiene aviso (mineros, tx pendientes). Si se corta,
+// vuelve a preguntar cada 3 s y reintenta conectarse; al volver, la foto del estado la pone al día.
+let ws = null, wsOpen = false, wsUrl = null, retry = 1000, reqId = 0, watchTx = null;
+const wsSend = (m) => { if (wsOpen) ws.send(JSON.stringify({ id: ++reqId, ...m })); };
+const txText = (n) => n.status === "confirmed" || n.event === "tx.confirmed"
+  ? `confirmada en el bloque ${n.block ?? n.index} (aviso del notifier)` : "pendiente: te aviso acá cuando se confirme";
+function watch(txId) {
+  watchTx = txId;
+  wsSend({ op: "subscribe", topic: "tx", tx_id: txId });
+}
+function onNotice(n) {
+  if (n.type === "snapshot" && n.height !== undefined && n.tip !== undefined && n.height !== height) refresh();
+  if (n.type === "event" && n.event === "block.solved") refresh();
+  if ((n.type === "snapshot" || n.type === "event") && n.tx_id && n.tx_id === watchTx) {
+    $("txqOut").textContent = txText(n);
+    if (n.status === "confirmed" || n.event === "tx.confirmed") { watchTx = null; wsSend({ op: "unsubscribe", sub: n.sub }); }
+  }
+}
+async function connect() {
+  if (wsUrl === null) {
+    try { wsUrl = (await get("/unirse/config")).notifier || ""; } catch { wsUrl = ""; }
+    wsUrl ||= `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`;
+  }
+  ws = new WebSocket(wsUrl);
+  ws.onopen = () => {
+    wsOpen = true; retry = 1000;
+    wsSend({ op: "subscribe", topic: "blocks" });  // primero suscribirse; la foto llega después
+    if (watchTx) watch(watchTx);
+    refresh();
+  };
+  ws.onmessage = (m) => onNotice(JSON.parse(m.data));
+  ws.onclose = () => {
+    if (wsOpen) refresh();
+    wsOpen = false;
+    setTimeout(connect, retry);
+    retry = Math.min(retry * 2, 30000);
+  };
+}
+
 $("bal").onsubmit = async (ev) => {
   ev.preventDefault();
   const u = new FormData(ev.target).get("user");
@@ -245,12 +283,14 @@ $("txq").onsubmit = async (ev) => {
   ev.preventDefault();
   try {
     const t = await get(`/transactions/${encodeURIComponent(new FormData(ev.target).get("id"))}`);
-    $("txqOut").textContent = t.status === "confirmed" ? `confirmada en el bloque ${t.block} (abajo, en el detalle)` : "pendiente (esperando que se mine)";
+    $("txqOut").textContent = t.status === "confirmed" ? `confirmada en el bloque ${t.block} (abajo, en el detalle)` : txText({});
     if (t.status === "confirmed") await goTo(t.block);
+    else watch(t.tx_id);  // pendiente: el notifier avisa cuando se confirma
   } catch (e) { $("txqOut").textContent = e.message === "404" ? "no existe" : "error " + e.message; }
 };
 refresh();
-setInterval(refresh, 3000);
+connect();
+setInterval(() => { if (!wsOpen || Date.now() - lastRefresh > 15000) refresh(); }, 3000);
 </script>
 </body>
 </html>
