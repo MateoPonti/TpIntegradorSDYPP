@@ -430,7 +430,7 @@ dificultad total de cada uno en la ventana. [M1]
 2. ~~Alta de workers~~ → **decidido**: página pública `/unirse`, alta firmada por la cuenta. Queda el límite de altas (ver 9).
 3. ~~Recuperación y cambio de claves~~ → **decidido (20/11): no se hace.** Perder el `.key` es perder la cuenta,
    como en Bitcoin. La revocación de workers ya está (canario fallado).
-4. ~~Multifirma~~ → **decidido y hecho (20/11):** m de n elegido al crear, vence a las 24 h por hora del servidor,
+4. ~~Multifirma~~ → **decidido y hecho (20/11):** m de n elegido al crear (**mínimo 2 firmas**: con 1 no habría aprobación extra), vence a las 24 h por hora del servidor,
    la crea un dueño sin que los demás acepten (como Safe), dueños y mínimo fijos, id = hash del texto firmado (como
    Polkadot). Ver `pilar2/README.md` en main.
 5. ~~Fee~~ → **decidido y hecho (20/11), modelo de Bitcoin:** comisión fija de 0,10 por tx que cobran los mineros
@@ -442,7 +442,16 @@ dificultad total de cada uno en la ventana. [M1]
 8. ~~Agregar el punto 5 al Word ampliado~~ → **hecho**: el Word v2 tiene la sección 5.
 9. ~~Alta pública~~ → **decidido y hecho (20/11):** ni costo ni colateral; límite de 10 workers por cuenta y estado
    en prueba.
-10. ~~Cuarentena o reputación~~ → **decidido (20/11):** la cuarentena como estaba, más el estado en prueba.
+10. ~~Cuarentena o reputación~~ → **decidido (20/11):** la cuarentena sigue siendo de sí o no, más el estado en prueba.
+    Endurecida esa misma noche: **crece** con cada una en la última hora (5, 10, 20, 40 min, tope 1 h), con token propio
+    la 3.ª en una hora **revoca el token**, y cada minero tiene **hasta 2 tareas prestadas a la vez** (antes, uno que
+    pidiera sin parar se llevaba la tanda entera). Queda abierto: con el `MINER_TOKEN` compartido el minero elige su
+    nombre (hoy ese token solo lo tiene el grupo).
+12. **Destino de una tx** (punto 1, decidido el 20/11): tiene que existir (génesis, registrada, compartida o colecta
+    abierta) y no se registra un nombre que ya tiene saldo. En Bitcoin la dirección es el hash de la clave pública y
+    nadie se apropia de una que ya recibió plata; acá el nombre se elige y la clave se asocia después, así que plata
+    mandada por error a un nombre libre se la quedaba el primero que lo registrara. `MINER_ACCOUNT` también tiene que
+    estar registrada.
 11. ~~Privacidad del saldo~~ → **decidido** (20/11): todo público, como Bitcoin y Ethereum (ver punto 3).
 
 > Las tablas de las secciones 1 a 4 se armaron con conocimiento previo. La sección "Blockchains más parecidas"
