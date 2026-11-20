@@ -404,7 +404,9 @@ dificultad total de cada uno en la ventana. [M1]
 3. Recuperación y cambio de claves de las cuentas (hoy: si perdés el `.key`, perdés la cuenta). La revocación de
    workers ya está (canario fallado).
 4. Multifirma: umbral y vencimiento de propuestas.
-5. Fee: monto, a quién va, si prioriza tx.
+5. Fee: **se quema** (decidido el 20/11, como la base fee de Ethereum); monto propuesto 0,10 por tx, sin priorizar
+   tx por fee. No alcanza contra la emisión sin tope (mandarse plata a uno mismo y cobrar el premio): para eso se
+   propone halving del premio cada 1.000 bloques (ver `pilar2/README.md` en main).
 6. Crowdfunding: cierre por hora o por bloque; si se devuelve la fee del aporte.
 7. Shares: si se adoptan, y con qué reparto (PROP, PPS o PPLNS).
 8. Agregar el punto 5 al Word ampliado.
