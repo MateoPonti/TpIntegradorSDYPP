@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Mi cuenta · SDMER</title>
-<link rel="stylesheet" href="/assets/sdmer.css?v=2">
+<link rel="stylesheet" href="/assets/sdmer.css?v=3">
 <script src="/assets/nacl-fast.min.js"></script>
-<script src="/assets/claves.js?v=2"></script>
+<script src="/assets/claves.js?v=3"></script>
 </head>
 <body>
 <header class="topbar"><div class="in">
@@ -84,8 +84,9 @@
 </main>
 
 <script>
-let par = null, cuenta = "", ws = null, wsOpen = false, retry = 1000, reqId = 0, saldo = null;
-const movs = [], esperando = new Map();  // tx_id -> id del mensaje donde se avisa la confirmación
+let par = null, cuenta = "", ws = null, wsOpen = false, conectando = false, retry = 1000, reqId = 0, saldo = null;
+let subCuenta = null;  // suscripción a la cuenta abierta (una sola: si no, cada aviso llega repetido)
+const movs = [], vistos = new Set(), esperando = new Map();  // esperando: tx_id -> mensaje donde se avisa
 
 function dibujarSaldo() {
   const live = wsOpen ? '<span class="dot ok"></span>en vivo' : '<span class="dot bad"></span>reconectando';
@@ -103,9 +104,12 @@ function dibujarMovs() {
 
 const wsSend = (m) => { if (wsOpen) ws.send(JSON.stringify({ id: ++reqId, ...m })); };
 function onAviso(n) {
+  if (n.type === "subscribed" && n.topic === "account") subCuenta = n.sub;
   if ((n.type === "snapshot" && n.account === cuenta) || (n.event === "account.changed" && n.account === cuenta)) {
     saldo = n;
-    if (n.movements) { movs.unshift(...n.movements.map((m) => ({ ...m, index: n.index }))); dibujarMovs(); }
+    const nuevos = (n.movements || []).filter((m) => !vistos.has(`${m.tx_id}:${m.dir}`));
+    nuevos.forEach((m) => vistos.add(`${m.tx_id}:${m.dir}`));
+    if (nuevos.length) { movs.unshift(...nuevos.map((m) => ({ ...m, index: n.index }))); dibujarMovs(); }
     dibujarSaldo();
   }
   const confirmada = n.event === "tx.confirmed" || (n.type === "snapshot" && n.status === "confirmed");
@@ -116,8 +120,12 @@ function onAviso(n) {
   }
 }
 async function conectar() {
+  if (conectando) return;  // una sola conexión: dos sockets suscritos a la misma cuenta duplican los avisos
+  conectando = true;
   ws = new WebSocket(await notifierUrl());
+  conectando = false;
   ws.onopen = () => {
+    subCuenta = null;
     wsOpen = true; retry = 1000;
     if (cuenta) wsSend({ op: "subscribe", topic: "account", account: cuenta });  // la foto trae el saldo
     for (const tx of esperando.keys()) wsSend({ op: "subscribe", topic: "tx", tx_id: tx });
@@ -132,12 +140,15 @@ function seguir(txId, msgId) {
 }
 
 async function abrir(nombre, nuevoPar) {
-  par = nuevoPar; cuenta = nombre; movs.length = 0;
+  if (subCuenta && nombre !== cuenta) wsSend({ op: "unsubscribe", sub: subCuenta });
+  const otra = nombre !== cuenta;
+  par = nuevoPar; cuenta = nombre;
+  if (otra) { movs.length = 0; vistos.clear(); }
   $("titulo").textContent = `Cuenta ${nombre}`;
   $("panel").classList.remove("off");
   saldo = await (await fetch("/balances/" + encodeURIComponent(nombre))).json();
   dibujarSaldo(); dibujarMovs();
-  if (ws === null) conectar(); else wsSend({ op: "subscribe", topic: "account", account: cuenta });
+  if (ws === null) conectar(); else if (otra || !subCuenta) wsSend({ op: "subscribe", topic: "account", account: cuenta });
   $("panel").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
