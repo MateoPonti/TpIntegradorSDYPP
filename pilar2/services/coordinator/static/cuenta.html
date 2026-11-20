@@ -25,7 +25,7 @@
     <div class="body">
     <p class="hint">Se genera un par de claves Ed25519: la pública se registra y la privada se descarga en
        <code>&lt;cuenta&gt;.key</code>. <b>Guardalo: sin él no podés mover tu plata.</b> Si lo perdés no hay forma de
-       recuperarlo (como en Bitcoin).</p>
+       recuperarlo.</p>
     <label for="nuevo">Nombre de la cuenta</label>
     <div class="row">
       <input id="nuevo" maxlength="64" placeholder="ej. mateo" autocomplete="off">
@@ -56,7 +56,7 @@
     <div class="body">
     <p class="hint">La transferencia sale firmada con tu clave y con el número de secuencia siguiente, así nadie
        puede repetirla. Cada transferencia paga una comisión de <b class="fee">0,10</b> aparte del monto, que cobran
-       los mineros del bloque (como en Bitcoin).</p>
+       los mineros del bloque.</p>
     <div class="row">
       <input id="para" maxlength="64" placeholder="para (ej. user-2)" autocomplete="off">
       <input id="monto" placeholder="monto (ej. 12,50)" inputmode="decimal">
@@ -198,7 +198,7 @@ $("enviar").onclick = async () => {
 };
 
 // La comisión la fija el servidor: se muestra la que dice /status. Antes de enviar se ve el total que se va a
-// descontar, como hacen las billeteras (MetaMask muestra el gas estimado y el total).
+// descontar.
 let fee = 10;
 fetch("/status").then((r) => r.json()).then((s) => {
   if (s.economy) fee = s.economy.tx_fee_cents;
