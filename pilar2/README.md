@@ -29,6 +29,22 @@ $env:GATEWAY_URL = "http://127.0.0.1:18180"; $env:MINER_TOKEN = "<el de .env>"
 .\pilar2\services\miners\gpu\run.ps1
 ```
 
+**Minero GPU en InferHive** (21/11/2026, lo pidió el profe: "alquilás y usás desde el namespace"). Cada alumno
+tiene un namespace de Kubernetes en InferHive (`alumno-<nombre>`); la GPU sale de la cuota `alumno-endpoint` (1 pod,
+1 GPU) y solo está dentro de la franja reservada en el panel (*Reserve GPU*). La imagen se compila para la 1050 Ti
+(`sm_61`) y las que alquila InferHive: GTX 1650 SUPER (`sm_75`), RTX 3090 (`sm_86`) y RTX 4060 (`sm_89`).
+
+```bash
+docker build -f pilar2/services/miners/gpu/Dockerfile -t ghcr.io/<owner>/tpi-miner-gpu:latest . && docker push ghcr.io/<owner>/tpi-miner-gpu:latest
+. ~/Downloads/connect.sh ~/Downloads/<alumno>.kubeconfig     # túnel de Cloudflare (cloudflared) + KUBECONFIG
+kubectl create secret generic minero-gpu --from-file=miner-token=<archivo con el token de /unirse>
+kubectl apply -f pilar2/services/miners/gpu/inferhive.yaml && kubectl logs -f deploy/miner-gpu
+```
+
+El token es el de un worker dado de alta en `/unirse` (por ejemplo `mateo.inferhive`): pasa por "en prueba" y los
+canarios como cualquier worker de afuera y cobra en la cuenta del dueño. La imagen tiene que ser pública en ghcr.io
+(InferHive la baja sin credenciales). Sale por HTTPS al gateway; no necesita IP pública ni puertos (InferHive no da).
+
 **Tests:**
 
 ```bash
@@ -71,7 +87,7 @@ flowchart LR
 | `services/notifier/` | Punto 3 del contrato: avisos por websocket (bloque sellado, tx confirmada, cuenta que se movió) a los navegadores | GKE |
 | `services/miners/agent.py` | Agente compartido por los dos mineros (habla con el gateway) | — |
 | `services/miners/cpu/` | Imagen `miner-cpu` = agente + `pilar1/cpu/miner_cpu.py` | **k3s local** |
-| `services/miners/gpu/` | Scripts para correr agente + `pilar1/build/miner_gpu` | **PC / Colab** |
+| `services/miners/gpu/` | Scripts para correr agente + `pilar1/build/miner_gpu`, y la imagen `miner-gpu` (`Dockerfile`, `inferhive.yaml`) | **PC / Colab / InferHive** |
 | `tools/verify_chain.py` | Recorre y verifica la cadena por la API | — |
 
 **Ningún minero corre en GCP** (la prueba gratuita prohíbe minar). En GKE solo van coordinator,

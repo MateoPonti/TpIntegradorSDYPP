@@ -1,0 +1,42 @@
+# Minero GPU en el namespace propio de InferHive (GPUs de la cátedra), nunca en GCP.
+# La GPU sale de la cuota "alumno-endpoint" (1 pod, 1 GPU) y solo está dentro de la franja reservada en el panel.
+#   . ~/Downloads/connect.sh ~/Downloads/<alumno>.kubeconfig      # túnel + KUBECONFIG
+#   kubectl create secret generic minero-gpu --from-file=miner-token=<archivo con el token de /unirse>
+#   kubectl apply -f pilar2/services/miners/gpu/inferhive.yaml
+#   kubectl logs -f deploy/miner-gpu
+#   kubectl scale deploy/miner-gpu --replicas=0                    # al terminar la franja
+# El token es el de un worker dado de alta en /unirse: el gateway saca de ahí el nombre y la cuenta de cobro.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: miner-gpu
+  labels: { app: miner-gpu }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: miner-gpu }
+  template:
+    metadata:
+      labels: { app: miner-gpu }
+    spec:
+      priorityClassName: alumno-endpoint
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: miner
+          image: ghcr.io/mateoponti/tpi-miner-gpu:latest
+          env:
+            - name: GATEWAY_URL
+              value: https://gateway.35-223-237-60.sslip.io
+            - name: MINER_TOKEN
+              valueFrom:
+                secretKeyRef: { name: minero-gpu, key: miner-token }
+          resources:
+            requests: { cpu: 500m, memory: 256Mi, nvidia.com/gpu: 1 }
+            limits: { cpu: "1", memory: 512Mi, nvidia.com/gpu: 1 }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
