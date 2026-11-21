@@ -2,7 +2,7 @@
 
 Sistemas Distribuidos y Programación Paralela · UNLu · Mercedes 2C 2026.
 Grupo: Mateo Ponti, María Agustina Ortiz, Federico Kasparian, Justino Bernal.
-Entrega y defensa: **viernes 04/12/2026**.
+Entrega: **viernes 27/11/2026**.
 
 Una blockchain con Proof of Work (MD5) en la que varios mineros trabajan juntos sobre el mismo
 bloque, cada uno en un rango de nonces distinto. Los usuarios mandan transferencias, el

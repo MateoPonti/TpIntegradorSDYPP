@@ -1,7 +1,7 @@
 # Reglas del TP Integrador (para asistentes de IA)
 
 TP Integrador de Sistemas Distribuidos y Programación Paralela (UNLu, 2C 2026):
-blockchain distribuida con Proof of Work MD5 y minero CUDA. Entrega y defensa: **04/12/2026**.
+blockchain distribuida con Proof of Work MD5 y minero CUDA. Entrega: **viernes 27/11/2026**.
 
 Este archivo es para cualquier IA que use el grupo (Claude Code, Cursor, Copilot, Codex, ChatGPT).
 Si una sugerencia genérica contradice algo de acá, **gana este archivo**.
