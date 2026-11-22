@@ -18,8 +18,10 @@
   <h1>Minar con SDMER</h1>
   <p class="lead">Todos los workers del pool minan el mismo bloque, cada uno en su rango de nonces. El premio de cada
      bloque (50,00 de subsidio, que baja a la mitad cada 1.000 bloques, más las comisiones de 0,10 de
-     cada transferencia del bloque) se reparte según los nonces que recorrió cada uno. Sirve cualquier PC; con una placa NVIDIA (CUDA) se
-     rinde cientos de veces más.</p>
+     cada transferencia del bloque) se reparte según el trabajo verificado de cada uno: las <b>shares</b>, nonces que
+     cumplen un prefijo más corto que el del bloque y que el servidor vuelve a comprobar (cada una vale según su
+     dificultad). Un worker nuevo queda <b>en prueba</b> y no cobra hasta pasar 3 controles. Sirve cualquier PC; con
+     una placa NVIDIA (CUDA) se rinde cientos de veces más.</p>
 
   <section id="paso1">
     <h2>1. Cargá tu cuenta</h2>

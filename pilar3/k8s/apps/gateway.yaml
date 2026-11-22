@@ -53,6 +53,13 @@ spec:
                 secretKeyRef:
                   name: gateway-auth
                   key: miner-token
+            # Token de solo lectura para KEDA (GET /scaling), separado del de los mineros (21/11). Opcional.
+            - name: SCALING_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: gateway-auth
+                  key: scaling-token
+                  optional: true
           # Al apagarse (el HPA saca réplicas o hay rollout), sigue atendiendo 10 s mientras Kubernetes lo saca del
           # Service. Sin esto, los pedidos que llegan en esos segundos fallan (medido el 20/11: 142 errores en 10.000).
           lifecycle:

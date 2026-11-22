@@ -347,6 +347,20 @@ def test_multisig_view_counts_signatures_and_expires():
     assert multisig.tx_id("p1") == "multisig-p1"  # fijo: un reintento no paga dos veces
 
 
+def test_account_names_and_crowdfund_reserve_keys():
+    from coordinator import ledger
+
+    for ok in ("mateo", "ana.perez", "user_2", "centro-76493", "a" * 64):
+        assert ledger.ACCOUNT_NAME.fullmatch(ok)
+    for bad in ("", "a/b", 'x"y', "$(rm)", "con espacio", "a" * 65, "colecta:x"):
+        assert not ledger.ACCOUNT_NAME.fullmatch(bad), bad
+    # 21/11: un aporte reserva y se anota en el mismo Lua (las 3 claves de la colecta van en la reserva)
+    base = {"sender": "ana", "amount": 500}
+    assert len(ledger.reserve_keys(base | {"receiver": "beto"})) == 6
+    assert ledger.reserve_keys(base | {"receiver": "colecta:viaje"})[6:] == [
+        "crowdfund:viaje:contrib", "crowdfund:viaje", "crowdfund:viaje:txs"]
+
+
 # ---- Shares (punto 4 del contrato, 20/11) ----
 
 def test_share_prefix_gives_about_target_shares_and_is_shorter_than_block():

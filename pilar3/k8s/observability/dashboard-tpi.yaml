@@ -44,7 +44,7 @@ data:
                 "type": "prometheus",
                 "uid": "prometheus"
               },
-              "expr": "sum(blocks_sealed_total{namespace=\"tpi\"})",
+              "expr": "max(chain_height{namespace=\"tpi\"})",
               "legendFormat": "bloques",
               "refId": "A"
             }

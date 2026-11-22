@@ -127,7 +127,7 @@ helm --kube-context k3d-tpi-mineros install keda kedacore/keda -n keda --create-
 docker build -f pilar2/services/miners/cpu/Dockerfile -t tpi/miner-cpu:<sha> . && k3d image import tpi/miner-cpu:<sha> -c tpi-mineros
 K="kubectl --context k3d-tpi-mineros"
 $K apply -f pilar3/k3s-local/namespace.yaml
-$K -n tpi-miners create secret generic gateway-auth --from-literal=miner-token="$MINER_TOKEN"
+$K -n tpi-miners create secret generic gateway-auth --from-literal=miner-token="$MINER_TOKEN" --from-literal=scaling-token="$SCALING_TOKEN"
 $K kustomize pilar3/k3s-local | sed "s#ghcr.io/OWNER/REPO/miner-cpu:latest#tpi/miner-cpu:<sha>#" | $K apply -f -
 ```
 
@@ -210,7 +210,7 @@ export KUBECONFIG=~/.kube/k3s.yaml          # el del k3s local
 helm repo add kedacore https://kedacore.github.io/charts
 helm install keda kedacore/keda --namespace keda --create-namespace
 kubectl apply -f k3s-local/namespace.yaml
-kubectl -n tpi-miners create secret generic gateway-auth --from-literal=miner-token="$MINER_TOKEN"
+kubectl -n tpi-miners create secret generic gateway-auth --from-literal=miner-token="$MINER_TOKEN" --from-literal=scaling-token="$SCALING_TOKEN"
 ```
 
 Sin runner self-hosted, el despliegue a mano es:

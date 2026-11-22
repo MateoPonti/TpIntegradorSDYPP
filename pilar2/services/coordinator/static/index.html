@@ -90,19 +90,36 @@ const ago = (ts) => {
   return s < 60 ? `hace ${s} s` : s < 3600 ? `hace ${Math.round(s / 60)} min` : s < 86400 ? `hace ${Math.round(s / 3600)} h`
     : new Date(ts * 1000).toLocaleString("es-AR");
 };
+// Se guarda la promesa, no el resultado (21/11): si dos listas piden el mismo bloque a la vez, se pide una sola vez.
 const cache = new Map();
-async function block(i) {
-  if (!cache.has(i)) cache.set(i, await get(`/blocks/${i}`));
+function block(i) {
+  if (!cache.has(i)) cache.set(i, get(`/blocks/${i}`).catch((e) => { cache.delete(i); throw e; }));
   return cache.get(i);
+}
+// Encabezados (sin las tx) para las tablas: GET /blocks?start=&limit= devuelve hash, minero y cantidad de tx.
+const summaries = new Map();
+async function summariesOf(lo, hi) {
+  const faltan = [];
+  for (let i = lo; i <= hi; i++) if (!summaries.has(i)) faltan.push(i);
+  if (faltan.length) {
+    const r = await get(`/blocks?start=${faltan[0]}&limit=${faltan[faltan.length - 1] - faltan[0] + 1}`);
+    r.blocks.forEach((b) => summaries.set(b.index, b));
+  }
+  const out = [];
+  for (let i = hi; i >= lo; i--) if (summaries.has(i)) out.push(summaries.get(i));
+  return out;
 }
 const blockLink = (i) => `<a href="#" data-b="${i}">${i}</a>`;
 const accLink = (a) => `<a href="#" data-a="${esc(a)}" class="mono">${esc(a)}</a>`;
-// Un solo manejador para los links de bloque y de cuenta de todas las tablas.
+// tx_id abreviado pero con link a su estado; el título trae el id completo para copiarlo (21/11)
+const txLink = (id, n) => `<a href="#" data-t="${esc(id)}" class="mono" title="${esc(id)}">${short(id, n)}</a>`;
+// Un solo manejador para los links de bloque, de cuenta y de tx de todas las tablas.
 document.addEventListener("click", (ev) => {
-  const a = ev.target.closest("a[data-b], a[data-a]");
+  const a = ev.target.closest("a[data-b], a[data-a], a[data-t]");
   if (!a) return;
   ev.preventDefault();
   if (a.dataset.b !== undefined) goTo(Number(a.dataset.b));
+  else if (a.dataset.t !== undefined) search(a.dataset.t);
   else showAccount(a.dataset.a);
 });
 
@@ -126,16 +143,20 @@ async function refreshStatus() {
 
 // ---- Últimos bloques y últimas transacciones ----
 async function refreshLatest() {
-  const idx = [];
-  for (let i = height - 1; i >= Math.max(0, height - 6); i--) idx.push(i);
-  const bs = await Promise.all(idx.map(block));
+  const sums = await summariesOf(Math.max(0, height - 6), height - 1);
   $("latestBlocks").innerHTML = "<tr><th>Bloque</th><th>Hace</th><th>Minero</th><th class=\"num\">Tx</th><th>Hash</th></tr>" +
-    bs.map((b) => `<tr><td>${blockLink(b.index)}</td><td class="muted">${ago(b.timestamp)}</td>
-      <td class="mono">${esc(b.miner ?? "—")}</td><td class="num">${b.transactions.length}</td>
+    sums.map((b) => `<tr><td>${blockLink(b.index)}</td><td class="muted">${ago(b.timestamp)}</td>
+      <td class="mono">${esc(b.miner ?? "—")}</td><td class="num">${b.tx_count + b.reward_count}</td>
       <td class="mono">${short(b.block_hash)}</td></tr>`).join("");
-  const txs = bs.flatMap((b) => b.transactions.map((t) => ({ ...t, block: b.index, time: b.timestamp }))).slice(0, 8);
+  // Para las últimas 8 tx alcanza con los bloques más nuevos que tengan alguna (casi siempre el primero o el segundo).
+  const txs = [];
+  for (const s of sums) {
+    if (txs.length >= 8) break;
+    if (s.tx_count + s.reward_count) txs.push(...(await block(s.index)).transactions.map((t) => ({ ...t, block: s.index, time: s.timestamp })));
+  }
+  txs.splice(8);
   $("latestTxs").innerHTML = "<tr><th>tx_id</th><th>De</th><th>Para</th><th class=\"num\">Monto</th><th>Bloque</th></tr>" +
-    (txs.length ? txs.map((t) => `<tr><td class="mono">${short(t.tx_id, 12)}</td>
+    (txs.length ? txs.map((t) => `<tr><td>${txLink(t.tx_id, 12)}</td>
       <td>${t.sender === "recompensa" ? '<span class="tag ok">premio</span>' : accLink(t.sender)}</td>
       <td>${accLink(t.receiver)}</td><td class="num">${money(t.amount)}</td><td>${blockLink(t.block)}</td></tr>`).join("")
       : '<tr><td colspan="5" class="muted">Todavía no hay transacciones.</td></tr>');
@@ -149,18 +170,16 @@ let height = 0, pageTop = null, selected = null;
 
 async function refreshBlocks() {
   const hi = Math.min(pageTop ?? height - 1, height - 1), lo = Math.max(0, hi - PAGE + 1);
-  const idx = [];
-  for (let i = hi; i >= lo; i--) idx.push(i);
-  const bs = await Promise.all(idx.map(block));
+  const bs = await summariesOf(lo, hi);
   $("pageInfo").textContent = `bloques ${lo} a ${hi} de ${height - 1}`;
   $("newer").disabled = hi >= height - 1;
   $("older").disabled = lo <= 0;
   $("blocks").innerHTML = "<tr><th>Bloque</th><th>Hace</th><th>Hash</th><th>Hash anterior</th><th>Prefijo</th><th class=\"num\">Tx</th><th class=\"num\">Premios</th><th>Minero</th></tr>" +
     bs.map((b) => {
-      const rewards = b.transactions.filter((t) => t.sender === "recompensa").length;
-      return `<tr class="click${b.index === selected ? " sel" : ""}" data-i="${b.index}"><td>${b.index}</td><td class="muted">${ago(b.timestamp)}</td>
+      // El número es un link (21/11): así la fila también se abre con el teclado, no solo con clic.
+      return `<tr class="click${b.index === selected ? " sel" : ""}" data-i="${b.index}"><td>${blockLink(b.index)}</td><td class="muted">${ago(b.timestamp)}</td>
         <td class="mono">${short(b.block_hash, 14)}</td><td class="mono">${short(b.previous_hash, 14)}</td>
-        <td class="mono">${esc(b.prefix || "—")}</td><td class="num">${b.transactions.length - rewards}</td><td class="num">${rewards}</td>
+        <td class="mono">${esc(b.prefix || "—")}</td><td class="num">${b.tx_count}</td><td class="num">${b.reward_count}</td>
         <td class="mono">${esc(b.miner ?? "—")}</td></tr>`;
     }).join("");
   document.querySelectorAll("#blocks tr.click").forEach((tr) => tr.onclick = () => showBlock(Number(tr.dataset.i), true));
@@ -185,9 +204,16 @@ async function showBlock(i, scroll) {
     ["Premio", b.reward_cents == null ? "—" : `${money(b.reward_cents)}${b.subsidy_cents != null
       ? ` = ${money(b.subsidy_cents)} de subsidio + ${money(b.fees_cents)} de comisiones` : ""} (se paga en el bloque ${b.index + 1})`],
     ["Rearmado", b.rearmed ? `sí, ${b.rearmed} vez/veces (se fue hashrate)` : "no"],
-    ["Comprobación", "md5(hash anterior + tx_digest + nonce) = hash, y el hash empieza con el prefijo"],
+    ["Comprobación", '<span id="verif" class="muted">recalculando…</span>'],
   ];
   $("blockInfo").innerHTML = rows.map(([k, v]) => `<tr><th>${k}</th><td>${v}</td></tr>`).join("");
+  // 21/11: se recalcula de verdad (GET /blocks/<i>/verify) en vez de mostrar la fórmula como texto fijo
+  get(`/blocks/${b.index}/verify`).then((v) => {
+    const nombres = { tx_digest: "SHA-256 de las tx", md5: "md5(hash anterior + tx_digest + nonce) = hash", prefijo: "empieza con el prefijo", enlace: "enlace con el bloque anterior", genesis: "génesis" };
+    if ($("verif")) $("verif").innerHTML = Object.entries(v.checks).map(([k, ok]) =>
+      `<span class="tag ${ok ? "ok" : "bad"}">${ok ? "✓" : "✗"} ${nombres[k] || k}</span>`).join(" ") +
+      ' <span class="muted">(desde afuera: pilar2/tools/verify_chain.py)</span>';
+  }).catch(() => { if ($("verif")) $("verif").textContent = "no se pudo recalcular"; });
   $("txTitle").textContent = `Transacciones (${b.transactions.length - rewards.length} de usuarios, ${rewards.length} de premio)`;
   $("blockTxs").innerHTML = "<tr><th>#</th><th>tx_id</th><th>Tipo</th><th>De</th><th>Para</th><th class=\"num\">Monto</th><th class=\"num\">Comisión</th></tr>" +
     b.transactions.map((t, n) => `<tr><td>${n + 1}</td><td class="mono">${esc(t.tx_id)}</td>
@@ -228,13 +254,21 @@ $("accType").onchange = drawAccounts;
 
 // ---- Mis workers: como en los pools, cada dueño busca su cuenta; el detalle de todos está en Grafana ----
 let miners = [];
+// "minando" solo si entregó trabajo hace poco (21/11): antes lo decía de cualquier worker conectado fuera de cuarentena.
+function estadoWorker(x) {
+  if (x.quarantined) return '<span class="tag bad">cuarentena</span>';
+  const hace = x.last_result ? Date.now() / 1000 - x.last_result : null;
+  const ultimo = hace === null ? "sin trabajo entregado" : `último trabajo hace ${hace < 60 ? Math.round(hace) + " s" : Math.round(hace / 60) + " min"}`;
+  const tag = hace !== null && hace < 120 ? '<span class="tag ok">minando</span>' : '<span class="tag">conectado</span>';
+  return `${tag}${x.trial ? ' <span class="tag">en prueba</span>' : ""} <span class="muted">${ultimo}</span>`;
+}
 function drawMiners() {
   $("poolSum").textContent = `${miners.length} conectados`;
   const q = $("mine").value.trim();
   const mine = miners.filter((m) => q && m.account === q);
   $("miners").innerHTML = "<tr><th>Worker</th><th>Tipo</th><th>Estado</th><th>Clase</th><th class=\"num\">Real</th><th class=\"num\">Efectivo</th><th class=\"num\">Informado</th></tr>" +
     (mine.length ? mine.map((x) => `<tr><td class="mono">${esc(x.miner_id)}</td><td>${esc(x.kind)}</td>
-      <td>${x.quarantined ? '<span class="tag bad">cuarentena</span>' : '<span class="tag ok">minando</span>'}</td><td>${esc(x.class ?? "—")}</td>
+      <td>${estadoWorker(x)}</td><td>${esc(x.class ?? "—")}</td>
       <td class="num">${rate(x.motor)}</td><td class="num">${rate(x.efectivo)}</td><td class="num">${rate(x.declared)}</td></tr>`).join("")
       : `<tr><td colspan="7" class="muted">${q ? `La cuenta "${esc(q)}" no tiene workers conectados.` : "Escribí tu cuenta para ver tus workers."}</td></tr>`);
 }
@@ -255,17 +289,31 @@ $("resultClose").onclick = (ev) => { ev.preventDefault(); $("result").hidden = t
 const txState = (t) => t.status === "confirmed" || t.event === "tx.confirmed"
   ? `<span class="tag ok">confirmada</span> en el bloque ${blockLink(t.block ?? t.index)}`
   : '<span class="tag">pendiente</span> esperando que se mine (se actualiza solo)';
+// Las del génesis son exactamente user-0..user-96 (21/11: antes cualquier "user-…" salía como del génesis)
+const esGenesis = (name) => /^user-(0|[1-9]\d?)$/.test(name) && Number(name.slice(5)) <= 96;
 async function showAccount(name) {
   const b = await get(`/balances/${encodeURIComponent(name)}`);
+  const vacia = !b.balance_cents && !b.pending_out_cents;
+  const tipo = b.multisig ? `cuenta compartida: ${b.multisig.threshold} de ${b.multisig.owners.length} firmas (${b.multisig.owners.map(esc).join(", ")})`
+    : b.registered ? `registrada con clave Ed25519 (seq ${b.seq})` : esGenesis(name) ? "cuenta de prueba del génesis (sin firma)"
+    : name.startsWith("colecta:") ? "cuenta de una colecta" : null;
+  if (tipo === null && vacia) {  // nombre que nadie usó: no mostrar un saldo 0 como si fuera una cuenta
+    return showResult("Sin resultados", [["Búsqueda", `<span class="mono">${esc(name)}</span>`],
+      ["", "No hay ningún bloque, transacción ni cuenta con ese nombre."]]);
+  }
   showResult(`Cuenta ${name}`, [
     ["Saldo", money(b.balance_cents)], ["Reservado (en tx pendientes)", money(b.pending_out_cents)],
-    ["Disponible", money(b.available_cents)],
-    ["Tipo", b.multisig ? `cuenta compartida: ${b.multisig.threshold} de ${b.multisig.owners.length} firmas (${b.multisig.owners.map(esc).join(", ")})`
-      : b.registered ? `registrada con clave Ed25519 (seq ${b.seq})` : name.startsWith("user-") ? "cuenta de prueba del génesis (sin firma)" : "sin registrar"],
+    ["Disponible", money(b.available_cents)], ["Tipo", tipo ?? "sin dueño (recibió plata antes de exigir cuentas)"],
   ]);
 }
 async function search(q) {
-  if (/^\d+$/.test(q)) { $("result").hidden = true; return goTo(Number(q)); }
+  if (/^\d+$/.test(q)) {
+    if (height && Number(q) >= height) {  // 21/11: antes mostraba el último bloque sin decir nada
+      return showResult("Sin resultados", [["Bloque", esc(q)],
+        ["", `Todavía no existe: la cadena va por el bloque ${height - 1}.`]]);
+    }
+    $("result").hidden = true; return goTo(Number(q));
+  }
   try {
     const t = await get(`/transactions/${encodeURIComponent(q)}`);
     showResult("Transacción", [["tx_id", `<span class="mono">${esc(t.tx_id)}</span>`], ["Estado", txState(t)]]);

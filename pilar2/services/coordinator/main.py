@@ -11,7 +11,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from prometheus_client import Counter, Gauge
 
-from tpi_common import keys, rabbit, store
+from tpi_common import keys, pow, rabbit, store
 from tpi_common.config import POD_NAME, env_float, env_str
 from tpi_common.logs import log, setup_logging
 from tpi_common.web import install_common_routes
@@ -21,7 +21,7 @@ from . import crowdfund
 from . import ledger
 from . import multisig
 from .blocks import BLOCK_REWARD_CENTS, HALVING_BLOCKS, Chain
-from .reward import block_subsidy
+from .reward import REWARD_SENDER, block_subsidy
 
 logger = setup_logging("coordinator")
 POLL = env_float("BLOCK_POLL_SECONDS", 1.0)  # duda 5 (propuesta): loop cada 1 s
@@ -35,6 +35,9 @@ MAX_BULK = 10_000
 TX_ACCEPTED = Counter("tx_accepted_total", "Transacciones aceptadas")
 TX_REJECTED = Counter("tx_rejected_total", "Transacciones rechazadas", ["reason"])
 PENDING = Gauge("pending_transactions", "Tx que todavía no están en un bloque sellado")
+# 21/11: la altura que guarda Redis (la misma de /status). El contador blocks_sealed_total vuelve a 0 cuando se
+# reemplaza un pod, así que sumarlo daba una altura menor en Grafana; queda como métrica de actividad.
+HEIGHT = Gauge("chain_height", "Altura de la cadena guardada en Redis (incluye el génesis)")
 IS_LEADER = Gauge("coordinator_is_leader", "1 si esta réplica es la líder")
 
 state: dict = {}
@@ -51,6 +54,7 @@ async def leader_loop(chain: Chain, leader: store.Leader) -> None:
                 await retry_multisig()
                 await chain.leader_tick()
             PENDING.set(await chain.pending_count())
+            HEIGHT.set(await chain.r.llen(keys.CHAIN))
         except Exception:  # noqa: BLE001 - el loop no se puede morir
             logger.exception("error en el loop del líder")
         with contextlib.suppress(asyncio.TimeoutError):
@@ -106,19 +110,16 @@ async def _receiver_exists(name: str) -> bool:
     return bool(await r.exists(keys.account_pubkey(name)))
 
 
+async def _claim_name(account: str, kind: str) -> bool:
+    """Reserva el nombre en un registro único (21/11). La cuenta personal y la compartida se guardan en claves
+    distintas, y antes cada alta solo miraba que no existiera la otra: dos altas simultáneas del mismo nombre, una de
+    cada tipo, pasaban las dos. Devuelve True si el nombre quedó para este tipo (o ya era de este tipo)."""
+    r = state["r"]
+    return bool(await r.set(keys.account_name(account), kind, nx=True)) or await r.get(keys.account_name(account)) == kind
+
+
 async def _ms_status(account: str) -> str:
     return await state["r"].get(multisig.status_key(account)) or "activa"
-
-
-async def _contributed(tx: dict) -> None:
-    """Aporte admitido: se anota para la liquidación (devolución o pago)."""
-    cid = crowdfund.of_account(tx["receiver"])
-    if cid is None:
-        return
-    r = state["r"]
-    await r.hincrby(crowdfund.contrib_key(cid), tx["sender"], tx["amount"])
-    await r.hincrby(crowdfund.key(cid), "raised", tx["amount"])
-    await r.sadd(crowdfund.txs_key(cid), tx["tx_id"])
 
 
 async def _submit(body) -> tuple[int, dict]:
@@ -159,7 +160,6 @@ async def _submit(body) -> tuple[int, dict]:
         reason = ledger.RESERVE_ERRORS[rc]
         TX_REJECTED.labels(reason).inc()
         return 400, {"error": reason}
-    await _contributed(tx)
     TX_ACCEPTED.inc()
     return 202, {"tx_id": tx["tx_id"]}
 
@@ -219,8 +219,8 @@ async def register_account(request: Request):
     if not isinstance(body, dict):
         raise HTTPException(400, "se esperaba un objeto JSON")
     account, pubkey = body.get("account"), body.get("public_key")
-    if not isinstance(account, str) or not account or len(account) > ledger.MAX_NAME:
-        raise HTTPException(400, "account inválido")
+    if not isinstance(account, str) or not ledger.ACCOUNT_NAME.fullmatch(account):
+        raise HTTPException(400, ledger.ACCOUNT_NAME_RULE)
     if cuentas.reserved(account):
         raise HTTPException(400, "nombre reservado (cuentas del génesis, premio o mineros)")
     if not isinstance(pubkey, str) or len(pubkey) != 64:
@@ -232,6 +232,8 @@ async def register_account(request: Request):
     if await state["r"].exists(keys.balance(account)) or await state["r"].exists(keys.pending_out(account)):
         # Ya recibió plata sin tener dueño (de antes de exigir que el destino exista): registrarlo sería quedársela.
         raise HTTPException(409, "ese nombre ya tiene saldo sin dueño: elegí otro")
+    if not await _claim_name(account, "personal"):
+        raise HTTPException(409, "ese nombre ya es una cuenta compartida")
     if not await state["r"].set(keys.account_pubkey(account), pubkey.lower(), nx=True):
         raise HTTPException(409, "la cuenta ya está registrada")
     log(logger, "cuenta registrada", account=account)
@@ -297,7 +299,6 @@ async def _admit(pid: str) -> None:
         log(logger, "propuesta rechazada", proposal=pid, reason=ledger.RESERVE_ERRORS[rc])
         return
     await r.hset(multisig.proposal_key(pid), mapping={"status": "admitida", "tx_id": tx["tx_id"], "reason": ""})
-    await _contributed(tx)
     TX_ACCEPTED.inc()
     log(logger, "propuesta admitida", proposal=pid, account=tx["sender"], tx_id=tx["tx_id"])
 
@@ -335,8 +336,8 @@ async def create_multisig(request: Request):
     if not isinstance(body, dict):
         raise HTTPException(400, "se esperaba un objeto JSON")
     account, creator = body.get("account"), body.get("creator")
-    if not isinstance(account, str) or not account or len(account) > ledger.MAX_NAME or account == "recompensa":
-        raise HTTPException(400, "account inválido")
+    if not isinstance(account, str) or not ledger.ACCOUNT_NAME.fullmatch(account) or account == "recompensa":
+        raise HTTPException(400, ledger.ACCOUNT_NAME_RULE)
     if cuentas.reserved(account):
         raise HTTPException(400, "nombre reservado (cuentas del génesis, premio o mineros)")
     try:
@@ -353,6 +354,8 @@ async def create_multisig(request: Request):
     if await r.exists(keys.account_pubkey(account)) or await r.get(keys.balance(account)):
         raise HTTPException(409, "ese nombre ya es una cuenta")
     d = {"account": account, "owners": owners, "threshold": threshold, "creator": creator, "created": time.time()}
+    if not await _claim_name(account, "compartida"):
+        raise HTTPException(409, "ese nombre ya es una cuenta")
     if not await r.set(multisig.key(account), json.dumps(d), nx=True):
         raise HTTPException(409, "la cuenta compartida ya existe")
     await r.set(multisig.status_key(account), "pendiente")
@@ -561,8 +564,11 @@ async def list_crowdfunds(limit: int = 50):
     """Las últimas colectas, abiertas y cerradas."""
     r = state["r"]
     ids = await r.zrevrange(crowdfund.INDEX, 0, max(1, min(limit, 200)) - 1)
-    return {"crowdfunds": [crowdfund.view(raw) for cid in ids if (raw := await r.hgetall(crowdfund.key(cid)))],
-            "fee_cents": ledger.TX_FEE_CENTS}
+    out = []
+    for cid in ids:
+        if raw := await r.hgetall(crowdfund.key(cid)):
+            out.append(await _with_settlement(cid, raw, crowdfund.view(raw)))
+    return {"crowdfunds": out, "fee_cents": ledger.TX_FEE_CENTS}
 
 
 @app.get("/crowdfunds/{cid}")
@@ -571,7 +577,65 @@ async def get_crowdfund(cid: str):
     raw = await r.hgetall(crowdfund.key(cid))
     if not raw:
         raise HTTPException(404, "no existe esa colecta")
-    return crowdfund.view(raw, await r.hgetall(crowdfund.contrib_key(cid)))
+    return await _with_settlement(cid, raw, crowdfund.view(raw, await r.hgetall(crowdfund.contrib_key(cid))))
+
+
+async def _with_settlement(cid: str, raw: dict, view: dict) -> dict:
+    """Si ya se liquidó, si las tx del pago o de las devoluciones están en un bloque (21/11). El estado pasa a
+    exitosa/fallida al reservar esas tx, y antes la página decía "devuelta" mientras la plata todavía no se había
+    acreditado (bloque 604: casi 12 h sin mineros)."""
+    if view["status"] not in ("exitosa", "fallida"):
+        return view
+    r = state["r"]
+    pays = crowdfund.payments(view["status"], raw, await r.hgetall(crowdfund.contrib_key(cid)))
+    ids = [crowdfund.settlement_tx(cid, receiver, amount, view["status"], 0)["tx_id"] for receiver, amount in pays]
+    where = await r.hmget(keys.TX_STATUS, ids) if ids else []
+    blocks = [int(w) for w in where if w not in (None, "pending")]
+    view["settlement"] = {"tx_ids": ids, "confirmed": len(blocks) == len(ids),
+                          "block": max(blocks) if blocks and len(blocks) == len(ids) else None}
+    return view
+
+
+SUMMARY_FIELDS = ("index", "timestamp", "block_hash", "previous_hash", "prefix", "miner", "nonce", "reward_cents")
+
+
+@app.get("/blocks")
+async def block_summaries(start: int = 0, limit: int = 20):
+    """Encabezados de bloques [start, start+limit) con la cantidad de tx y de premios, sin las tx (21/11): para la
+    tabla del explorador alcanza con esto, y antes pedía bloques enteros (6.490 tx para 20 filas)."""
+    r = state["r"]
+    idx = range(max(0, start), max(0, start) + max(1, min(limit, 100)))
+    out = []
+    for raw in await r.mget([keys.block(i) for i in idx]):
+        if raw is None:
+            continue
+        b = json.loads(raw)
+        rewards = sum(t["sender"] == REWARD_SENDER for t in b["transactions"])
+        out.append({k: b.get(k) for k in SUMMARY_FIELDS} | {"tx_count": len(b["transactions"]) - rewards,
+                                                             "reward_count": rewards})
+    return {"height": await r.llen(keys.CHAIN), "blocks": out}
+
+
+@app.get("/blocks/{index}/verify")
+async def verify_block(index: int):
+    """Recalcula el bloque (21/11, para el explorador: antes mostraba la fórmula como texto fijo). Mismo criterio
+    que tools/verify_chain.py, que hace lo mismo desde afuera y sirve para verificarlo sin confiar en el servidor."""
+    r = state["r"]
+    raw = await r.get(keys.block(index))
+    if raw is None:
+        raise HTTPException(404, "no existe")
+    b = json.loads(raw)
+    if index == 0:
+        return {"index": 0, "ok": True, "checks": {"genesis": True}}
+    prev = await r.get(keys.block(index - 1))
+    digest = pow.tx_digest(b["transactions"])
+    checks = {
+        "tx_digest": digest == b["tx_digest"],
+        "md5": pow.md5_hex(b["previous_hash"] + digest, int(b["nonce"])) == b["block_hash"],
+        "prefijo": b["block_hash"].startswith(b["prefix"]),
+        "enlace": prev is not None and json.loads(prev)["block_hash"] == b["previous_hash"],
+    }
+    return {"index": index, "ok": all(checks.values()), "checks": checks, "tx_digest": digest}
 
 
 @app.get("/blocks/{index}")
@@ -608,12 +672,18 @@ async def status():
     except Exception:  # noqa: BLE001
         services["redis"] = "down"
     services["rabbitmq"] = "ok" if not state["conn"].is_closed else "down"
-    signal = await r.get(keys.POOL_SCALING)
-    services["pool"] = "ok" if signal else "sin señal"
     gateway_ok, notifier_ok = await asyncio.gather(asyncio.to_thread(_http_ok, GATEWAY_HEALTH_URL),
                                                    asyncio.to_thread(_http_ok, NOTIFIER_HEALTH_URL))
     services["gateway"] = "ok" if gateway_ok else "down"
     services["notifier"] = "ok" if notifier_ok else "down"
+    if services["redis"] != "ok":
+        # Sin Redis no hay cadena ni señal del pool que leer (21/11): antes la lectura siguiente tiraba excepción y
+        # /status devolvía 500 justo cuando más hace falta. Se informa lo que sí responde y lo demás queda en null.
+        services["pool"] = "desconocido (sin Redis)"
+        return {"services": services, "pending_transactions": None, "chain_height": None, "chain_tip": None,
+                "mining": None, "miners": None, "pool_plan": None, "pool_signal": None, "leader": None, "economy": None}
+    signal = await r.get(keys.POOL_SCALING)
+    services["pool"] = "ok" if signal else "sin señal"
     workers = await store.alive_workers(r)
     cur = await chain.current()
     return {

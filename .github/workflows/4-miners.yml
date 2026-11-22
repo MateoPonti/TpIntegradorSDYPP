@@ -49,16 +49,20 @@ jobs:
       - name: Token for the gateway (idempotent, value never printed)
         env:
           MINER_TOKEN: ${{ secrets.MINER_TOKEN }}
+          SCALING_TOKEN: ${{ secrets.SCALING_TOKEN }}
         run: |
           kubectl apply -f pilar3/k3s-local/namespace.yaml
           kubectl -n tpi-miners create secret generic gateway-auth \
             --from-literal=miner-token="$MINER_TOKEN" \
+            --from-literal=scaling-token="$SCALING_TOKEN" \
             --dry-run=client -o yaml | kubectl apply -f -
       - name: Pin the image and the gateway URL
         working-directory: pilar3/k3s-local
         run: |
           sed -i "s#ghcr.io/OWNER/REPO/miner-cpu#${{ needs.build.outputs.image }}#; s#newTag: latest#newTag: ${{ github.sha }}#" kustomization.yaml
-          sed -i "s#http://GATEWAY_IP#${{ vars.GATEWAY_URL }}#" config.yaml keda-scaledobject.yaml
+          # Reemplaza la URL que haya (antes buscaba un marcador http://GATEWAY_IP que ya no estaba en los archivos)
+          sed -i -E "s#(GATEWAY_URL: ).*#\1${{ vars.GATEWAY_URL }}#" config.yaml
+          sed -i -E "s#(url: ).*/scaling#\1${{ vars.GATEWAY_URL }}/scaling#" keda-scaledobject.yaml
       - run: |
           kubectl apply -k pilar3/k3s-local
           kubectl -n tpi-miners get deploy,scaledobject

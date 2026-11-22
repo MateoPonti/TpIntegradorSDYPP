@@ -41,6 +41,7 @@ jobs:
           RABBIT_PASS: ${{ secrets.RABBITMQ_PASSWORD }}
           REDIS_PASS: ${{ secrets.REDIS_PASSWORD }}
           MINER_TOKEN: ${{ secrets.MINER_TOKEN }}
+          SCALING_TOKEN: ${{ secrets.SCALING_TOKEN }}
         run: |
           kubectl -n tpi create secret generic rabbitmq-auth \
             --from-literal=username="$RABBIT_USER" \
@@ -53,6 +54,7 @@ jobs:
             --dry-run=client -o yaml | kubectl apply -f -
           kubectl -n tpi create secret generic gateway-auth \
             --from-literal=miner-token="$MINER_TOKEN" \
+            --from-literal=scaling-token="$SCALING_TOKEN" \
             --dry-run=client -o yaml | kubectl apply -f -
 
       - name: RabbitMQ and Redis

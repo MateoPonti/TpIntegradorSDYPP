@@ -52,20 +52,23 @@ SHARES = Counter("shares_total", "Shares recibidas", ["result"])
 BLOCK_TXS = Histogram("block_transactions", "Transacciones por bloque (sin las de premio)",
                       buckets=(1, 10, 50, 100, 250, 500, 1000, 2500, 5000, 10000))
 
-# KEYS: tx:pending, tx:inflight:<i>   ARGV: max tx, fin de la ventana, tx de premio (JSON)...
-# Toma desde el principio solo las tx de la ventana (ts < fin), hasta el tope. Las de premio van primero.
+# KEYS: tx:pending, tx:inflight:<i>   ARGV: max tx, inicio de la ventana, fin de la ventana, tx de premio (JSON)...
+# Toma desde el principio solo las tx de la ventana (inicio <= ts < fin), hasta el tope. Las de premio van primero.
+# Corta en la primera tx de otra ventana, también si es de una anterior (21/11): dos tx que llegan casi juntas pueden
+# quedar en la cola en orden inverso a su hora, y antes la de la ventana anterior se colaba en este bloque.
 # Si ya hay tx en vuelo para ese índice (el líder anterior murió a mitad), se reusan.
 TAKE_LUA = """
 if redis.call('EXISTS', KEYS[2]) == 1 then return redis.call('LRANGE', KEYS[2], 0, -1) end
 local txs = redis.call('LRANGE', KEYS[1], 0, tonumber(ARGV[1]) - 1)
 local n = 0
 for i, raw in ipairs(txs) do
-  if tonumber(cjson.decode(raw)['ts']) >= tonumber(ARGV[2]) then break end
+  local ts = tonumber(cjson.decode(raw)['ts'])
+  if ts < tonumber(ARGV[2]) or ts >= tonumber(ARGV[3]) then break end
   n = i
 end
 if n == 0 then return {} end
 redis.call('LTRIM', KEYS[1], n, -1)
-for i = 3, #ARGV do redis.call('RPUSH', KEYS[2], ARGV[i]) end
+for i = 4, #ARGV do redis.call('RPUSH', KEYS[2], ARGV[i]) end
 for i = 1, n do redis.call('RPUSH', KEYS[2], txs[i]) end
 return redis.call('LRANGE', KEYS[2], 0, -1)
 """
@@ -247,7 +250,8 @@ class Chain:
         prev = await self.r.get(keys.CHAIN_TIP)
         rewards = await self._rewards(index)
         raw = await self._take(keys=[keys.TX_PENDING, keys.tx_inflight(index)],
-                               args=[MAX_TX_PER_BLOCK, end, *(pow.canonical_json(t) for t in rewards)])
+                               args=[MAX_TX_PER_BLOCK, end - BLOCK_WINDOW, end,
+                                     *(pow.canonical_json(t) for t in rewards)])
         txs = [json.loads(t) for t in raw]
         if not txs:
             return None

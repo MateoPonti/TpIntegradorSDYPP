@@ -150,6 +150,29 @@ function dibujarMovs() {
       : '<tr><td colspan="5" class="muted">Todavía nada. Cuando se confirme un movimiento de tu cuenta aparece acá.</td></tr>');
 }
 
+// Movimientos perdidos durante un corte (21/11): la foto trae el saldo y la altura, pero los movimientos solo llegan
+// como avisos. Al reconectar se leen los bloques que se sellaron mientras tanto (hasta 50).
+let ultimoBloque = null;  // último bloque cuyos movimientos ya están en la lista
+async function completarHueco(tope) {
+  if (ultimoBloque === null) { ultimoBloque = tope; return; }  // primera foto: arranca desde acá
+  const desde = ultimoBloque + 1, hasta = Math.min(tope, ultimoBloque + 50), yo = cuenta;
+  ultimoBloque = Math.max(ultimoBloque, tope);
+  for (let i = desde; i <= hasta; i++) {
+    try {
+      const b = await (await fetch(`/blocks/${i}`)).json();
+      const nuevos = [];
+      for (const t of b.transactions || []) {
+        for (const [dir, otro] of [["out", t.receiver], ["in", t.sender]]) {
+          if ((dir === "out" ? t.sender : t.receiver) !== yo || (t.sender === t.receiver && dir === "in")) continue;
+          if (vistos.has(`${t.tx_id}:${dir}`)) continue;
+          vistos.add(`${t.tx_id}:${dir}`);
+          nuevos.push({ tx_id: t.tx_id, dir, other: otro, amount: t.amount, index: i });
+        }
+      }
+      if (nuevos.length && yo === cuenta) { movs.unshift(...nuevos.reverse()); dibujarMovs(); }
+    } catch { /* se ve igual en el explorador */ }
+  }
+}
 const wsSend = (m) => { if (wsOpen) ws.send(JSON.stringify({ id: ++reqId, ...m })); return reqId; };
 function onAviso(n) {
   if (n.type === "subscribed" && n.topic === "account") {
@@ -158,6 +181,8 @@ function onAviso(n) {
   }
   // Se movió una cuenta compartida tuya (entró plata o salió un pago): se recarga al instante.
   if (n.event === "account.changed" && subsCompartidas.has(n.account)) cargarCompartidas();
+  if (n.type === "snapshot" && n.account === cuenta) completarHueco(n.height - 1);
+  if (n.event === "account.changed" && n.account === cuenta) ultimoBloque = Math.max(ultimoBloque ?? -1, n.index);
   if ((n.type === "snapshot" && n.account === cuenta) || (n.event === "account.changed" && n.account === cuenta)) {
     saldo = n;
     const nuevos = (n.movements || []).filter((m) => !vistos.has(`${m.tx_id}:${m.dir}`));
@@ -200,7 +225,7 @@ async function abrir(nombre, nuevoPar) {
   const otra = nombre !== cuenta;
   par = nuevoPar; cuenta = nombre;
   if (otra) {
-    movs.length = 0; vistos.clear();
+    movs.length = 0; vistos.clear(); ultimoBloque = null;
     for (const sub of subsCompartidas.values()) if (sub) wsSend({ op: "unsubscribe", sub });
     subsCompartidas.clear(); pedidosCompartidas.clear();
   }
@@ -386,6 +411,13 @@ $("mLista").addEventListener("click", async (ev) => {
 // ---- Colectas: crear (firma el que la crea) y aportar (tx firmada a colecta:<id>) ----
 const cfEstado = { abierta: "tag", cerrando: "tag", liquidando: "tag", exitosa: "tag ok", fallida: "tag bad" };
 const cfTexto = { exitosa: "llegó: pagada", fallida: "no llegó: devuelta" };
+// 21/11: "pagada"/"devuelta" recién cuando las tx de la liquidación están en un bloque; antes, "pendiente".
+function cfEstadoHtml(c) {
+  const s = c.settlement;
+  if (s && !s.confirmed) return `<span class="tag">${c.status === "exitosa" ? "llegó: pago pendiente" : "no llegó: devolución pendiente"}</span>`;
+  const enBloque = s && s.block !== null ? ` en el <a href="/?q=${s.block}">bloque ${s.block}</a>` : "";
+  return `<span class="${cfEstado[c.status] || "tag"}">${esc(cfTexto[c.status] || c.status)}</span>${enBloque}`;
+}
 async function cargarColectas() {
   try {
     const { crowdfunds } = await (await fetch("/crowdfunds")).json();
@@ -398,7 +430,7 @@ async function cargarColectas() {
           <td class="mono">${esc(c.beneficiary)}</td>
           <td class="num">${money(c.raised_cents)} / ${money(c.goal_cents)}</td>
           <td class="muted">${new Date(c.deadline * 1000).toLocaleString("es-AR")}</td>
-          <td><span class="${cfEstado[c.status] || "tag"}">${esc(cfTexto[c.status] || c.status)}</span></td><td>${aportar}</td></tr>`;
+          <td>${cfEstadoHtml(c)}</td><td>${aportar}</td></tr>`;
       }).join("") || '<tr><td colspan="6" class="muted">Todavía no hay colectas.</td></tr>');
   } catch { /* se reintenta en la próxima vuelta */ }
 }

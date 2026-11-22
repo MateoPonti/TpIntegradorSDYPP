@@ -4,12 +4,14 @@ Modelo de cuentas: disponible = balance - pending_out. La reserva es atómica en
 dos tx simultáneas del mismo usuario no gasten dos veces la misma plata. Montos en centavos enteros.
 """
 import os
+import re
 import time
 import uuid
 from decimal import Decimal, InvalidOperation
 
 from tpi_common import keys
 
+from . import crowdfund
 from .reward import REWARD_SENDER
 
 MAX_AMOUNT_CENTS = 10**12  # tope: el Lua de sellado convierte números con %.14g
@@ -17,10 +19,17 @@ MAX_AMOUNT_CENTS = 10**12  # tope: el Lua de sellado convierte números con %.14
 # del bloque junto con el premio. Hace que mandar tx basura (o a uno mismo) cueste.
 TX_FEE_CENTS = int(os.getenv("TX_FEE_CENTS", "10"))
 MAX_NAME = 64
+# Nombres de cuentas nuevas (personales y compartidas, 21/11). Antes valía cualquier texto: una cuenta con "/" se
+# registraba y después /balances/<nombre> daba 404, y el nombre va adentro del comando que se copia en /unirse.
+ACCOUNT_NAME = re.compile(r"[A-Za-z0-9._-]{1,64}")
+ACCOUNT_NAME_RULE = "nombre de cuenta: 1 a 64 letras, números, punto, guion o guion bajo"
 
 # KEYS: balance:<sender>, pending_out:<sender>, tx:pending, tx:seen, tx:status, account:<sender>:seq
+#       [+ crowdfund:<id>:contrib, crowdfund:<id>, crowdfund:<id>:txs si la tx aporta a una colecta]
 # ARGV: tx_id, amount_cents, tx_json, seq ('' si la cuenta es del génesis y no firma)
 # El seq se controla y avanza acá adentro: si la tx se rechaza por saldo, el seq no se consume.
+# Un aporte a una colecta se anota en el mismo script (21/11): antes era un paso aparte y, si el coordinator se
+# caía en el medio, quedaba una tx minable que la liquidación no conocía.
 RESERVE_LUA = """
 if redis.call('SISMEMBER', KEYS[4], ARGV[1]) == 1 then return -1 end
 if ARGV[4] ~= '' and tonumber(ARGV[4]) ~= tonumber(redis.call('GET', KEYS[6]) or '0') + 1 then return -3 end
@@ -32,6 +41,12 @@ redis.call('INCRBY', KEYS[2], ARGV[2])
 redis.call('SADD', KEYS[4], ARGV[1])
 redis.call('HSET', KEYS[5], ARGV[1], 'pending')
 redis.call('RPUSH', KEYS[3], ARGV[3])
+if #KEYS >= 9 then
+  local tx = cjson.decode(ARGV[3])
+  redis.call('HINCRBY', KEYS[7], tx['sender'], tx['amount'])
+  redis.call('HINCRBY', KEYS[8], 'raised', tx['amount'])
+  redis.call('SADD', KEYS[9], ARGV[1])
+end
 return 1
 """
 
@@ -84,5 +99,8 @@ def normalize(body) -> dict:
 
 
 def reserve_keys(tx: dict) -> list[str]:
-    return [keys.balance(tx["sender"]), keys.pending_out(tx["sender"]), keys.TX_PENDING, keys.TX_SEEN, keys.TX_STATUS,
-            keys.account_seq(tx["sender"])]
+    out = [keys.balance(tx["sender"]), keys.pending_out(tx["sender"]), keys.TX_PENDING, keys.TX_SEEN, keys.TX_STATUS,
+           keys.account_seq(tx["sender"])]
+    if (cid := crowdfund.of_account(tx["receiver"])) is not None:  # aporte: se anota en el mismo Lua que reserva
+        out += [crowdfund.contrib_key(cid), crowdfund.key(cid), crowdfund.txs_key(cid)]
+    return out

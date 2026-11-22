@@ -5,7 +5,8 @@ metadata:
   namespace: tpi-miners
 data:
   # Public URL of the gateway Service in GKE (kubectl -n tpi get svc gateway).
-  GATEWAY_URL: http://34.63.209.225
+  # HTTPS (21/11): el token viaja cifrado. La IP fija http://34.63.209.225 sigue andando, pero sin TLS.
+  GATEWAY_URL: https://gateway.35-223-237-60.sslip.io
   MINER_KIND: cpu
   # Nombre de ESTA PC / cluster (cambiarlo en cada una): queda al principio del id de cada minero.
   MINER_CLUSTER: pc-mateo

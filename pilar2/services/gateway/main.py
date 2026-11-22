@@ -57,6 +57,7 @@ from tpi_common.web import install_common_routes
 
 logger = setup_logging("gateway")
 MINER_TOKEN = env_str("MINER_TOKEN", "")
+SCALING_TOKEN = env_str("SCALING_TOKEN", "")
 WORKER_NAME = re.compile(r"[A-Za-z0-9_-]{1,32}")
 LEASE_SECONDS = env_int("TASK_LEASE_SECONDS", 60)
 MAX_ATTEMPTS = env_int("TASK_MAX_ATTEMPTS", 3)
@@ -584,7 +585,15 @@ async def ws_miners(ws: WebSocket):
         WS_CONNECTED.set(len(state["sockets"]))
 
 
-@app.get("/scaling", dependencies=[Depends(auth)])
+async def scaling_auth(authorization: str = Header(default="")) -> None:
+    """GET /scaling: el token de solo lectura de KEDA (SCALING_TOKEN, 21/11: separado de la identidad de los
+    mineros, así el escalador no tiene un token con el que se pueda minar) o, como antes, uno de minero."""
+    if SCALING_TOKEN and hmac.compare_digest(authorization, f"Bearer {SCALING_TOKEN}"):
+        return
+    await auth(authorization)
+
+
+@app.get("/scaling", dependencies=[Depends(scaling_auth)])
 async def scaling():
     """Señal del pool. Si el pool murió la clave venció: 503 en vez de un número viejo."""
     raw = await state["r"].get(keys.POOL_SCALING)

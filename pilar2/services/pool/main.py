@@ -63,7 +63,10 @@ async def measure(r, workers: list[dict], now: float) -> list[dict]:
                     "hashrate": rate, "source": source,
                     "motor": rates[0] if rates else None, "efectivo": rates[1] if rates else None,
                     "calibrated": calib["hashrate"] if calib else None, "class": calib["class"] if calib else None,
-                    "declared": w.get("hashrate", 0), "quarantined": quarantined})
+                    "declared": w.get("hashrate", 0), "quarantined": quarantined,
+                    # 21/11: para que "Mis workers" no diga "minando" a uno conectado que no entrega nada
+                    "trial": bool(await r.exists(keys.worker_trial(mid))),
+                    "last_result": max((x.get("ts", 0) for x in results), default=None)})
     return out
 
 

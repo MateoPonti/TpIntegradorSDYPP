@@ -73,6 +73,35 @@ GKE no se volvieron a correr después de este cambio (la última, 6/6, es del 13
   el bloque siguiente: si ese bloque salía más de 24 h después (sin tx no hay bloques), el premio no se le pagaba a
   nadie. Ahora se borran recién en el `SEAL_LUA` del bloque siguiente, ya pagadas.
 - **Propuesta trabada en "admitiendo".** Ver "Cuentas compartidas": el líder la retoma a los 30 s.
+- **Aporte de colecta en un solo paso.** Reservar el saldo y anotar el aporte (quién, cuánto, `tx_id`) eran pasos
+  separados: un corte en el medio dejaba una tx minable que la liquidación no conocía. Ahora lo hace el mismo
+  `RESERVE_LUA` (recibe las claves de la colecta cuando el destino es `colecta:<id>`).
+- **Ventanas que no se mezclan.** Dos tx que llegan casi juntas pueden quedar en la cola en orden inverso a su
+  hora. Si la primera era de la ventana siguiente, el lote se llevaba también la de la anterior. `TAKE_LUA` ahora
+  toma solo tx de la ventana de la primera (`inicio <= ts < fin`) y corta en la primera que no lo es. Probado con
+  `redis-cli --eval`: con B (10,01 s) delante de A (9,99 s), el lote de [10, 20) se llevó solo B.
+- **Nombres.** La cuenta personal y la compartida se guardan en claves distintas y cada alta solo miraba que no
+  existiera la otra: dos altas simultáneas del mismo nombre pasaban las dos. Ahora las dos reservan `name:<cuenta>`
+  con `SET NX` (probado a la vez: una 201 y la otra 409). Los nombres nuevos son 1 a 64 letras, números, `.`, `-` o
+  `_`: antes valía cualquier texto, una cuenta con `/` daba 404 en `/balances/…` y el nombre va adentro del
+  comando que se copia en `/unirse`.
+- **`/status` con Redis caído.** El primer chequeo lo detectaba, pero la lectura siguiente tiraba excepción (500).
+  Ahora responde 200 con `redis: down`, los demás servicios y lo que sale de Redis en `null` (probado parando Redis
+  en el compose). `/health` sigue siendo solo "el proceso vive".
+- **Lo que ve el usuario.** Una colecta liquidada dice "devolución pendiente" o "pago pendiente" hasta que esas tx
+  están en un bloque, y después "devuelta en el bloque N" con link (antes decía "devuelta" al reservarlas: el
+  bloque 604 tardó casi 12 h porque no había mineros prendidos). "Mis workers" dice "minando" solo si entregó
+  trabajo en los últimos 2 min, muestra "en prueba" y el último trabajo. El portal explica que se cobra por shares.
+  El buscador avisa si el bloque no existe todavía o si nadie usó ese nombre (antes `user-999` salía como cuenta
+  del génesis), los `tx_id` de las listas tienen link, el número de cada bloque es un link (teclado), el detalle
+  del bloque recalcula de verdad su comprobación (`/blocks/{i}/verify`), y las tablas piden solo encabezados
+  (`/blocks?start=&limit=`) en vez de bloques enteros. Al reconectar, `/cuenta` lee los bloques que se perdió y
+  completa los movimientos.
+- **Grafana.** El panel "Altura de la cadena" sumaba `blocks_sealed_total`, que vuelve a 0 al reemplazar un pod.
+  Ahora usa `chain_height`, la altura que guarda Redis.
+- **Mineros del k3s.** Van por HTTPS (`https://gateway.35-223-237-60.sslip.io`), KEDA usa un `scaling-token` propio
+  en vez del token de los mineros, y el pipeline 4 reemplaza la URL que haya (antes buscaba un marcador que ya no
+  estaba).
 
 ## Arquitectura
 
@@ -131,8 +160,12 @@ Así el gateway y el coordinator ni se enteran de quién minó, y el binario CUD
 
 **Coordinator** (público): `POST /transactions` · `POST /transactions/bulk` · `GET /transactions/{id}` ·
 `GET /balances/{user}` · `GET /accounts` (todas las cuentas, usuarios y cobro de mineros) ·
-`POST /crowdfunds` · `GET /crowdfunds` · `GET /crowdfunds/{id}` (colectas) · `GET /blocks/{i}` · `GET /chain` · `GET /status` · `GET /miners` · `GET /` (explorador) · `GET /cuenta` (billetera) · `GET /unirse` (sumar un worker) ·
-`/health` `/metrics` `/logs`
+`POST /crowdfunds` · `GET /crowdfunds` · `GET /crowdfunds/{id}` (colectas; ya liquidadas, `settlement` dice si las
+tx del pago o la devolución están en un bloque) · `GET /blocks/{i}` · `GET /blocks?start=&limit=` (solo
+encabezados y cantidad de tx, para las tablas) · `GET /blocks/{i}/verify` (recalcula SHA-256 de las tx, MD5,
+prefijo y enlace) · `GET /chain` · `GET /status` (con Redis caído responde igual, con lo que no sabe en `null`) ·
+`GET /miners` · `GET /` (explorador) · `GET /cuenta` (billetera) · `GET /unirse` (sumar un worker) ·
+`/health` `/metrics` `/logs`. Toda la API documentada en `/docs`.
 
 **Gateway** (todo con `Authorization: Bearer <MINER_TOKEN>`):
 
@@ -143,7 +176,7 @@ Así el gateway y el coordinator ni se enteran de quién minó, y el binario CUD
 | `POST /tasks/{task_id}/release` | "No pude": el agente devuelve la tarea cuando se le rompe el motor. Vuelve a la cola al instante (sin esperar los 60 s) y cuenta como falla. `410` si el préstamo ya no existe. |
 | `POST /results` | Publica el resultado en `mining.results` (el coordinator lo verifica de nuevo). Con token propio, el `worker` del resultado sale del token. Las `shares` solo pasan si el resultado es de un préstamo, con el `share_prefix` de esa tarea. |
 | `POST /keepalive` | `{miner_id, type: cpu\|gpu, hashrate, account?}` → `worker:<id>` con TTL 15 s y `miner:<id>:account` (cuenta de cobro, 1 día). |
-| `GET /scaling` | Señal del pool para KEDA. `503` si el pool no la renovó. |
+| `GET /scaling` | Señal del pool para KEDA. `503` si el pool no la renovó. Acepta el `SCALING_TOKEN` de solo lectura (21/11: KEDA ya no usa el token de los mineros) o uno de minero. |
 | `WS /ws/miners` | Avisos al minero: `{"type": "tareas"}` (hay tareas en la cola) y `{"type": "block.solved", "block_id"}`. Solo avisa: pedir y entregar sigue siendo HTTP. |
 
 ## Mensajes (JSON, `"v": 1`)
@@ -360,14 +393,14 @@ Polkadot: un dueño propone un pago, los demás firman lo mismo y al juntar el m
 |---|---|
 | `POST /multisig` | Crea la cuenta: `{account, owners, threshold, creator, signature}`. Firma un dueño sobre `multisig:create:<cuenta>:<m>:<dueños separados por coma>`. Los dueños tienen que ser cuentas registradas. Queda **pendiente** hasta que acepten todos |
 | `POST /multisig/{cuenta}/accept` · `/reject` | Un dueño acepta firmando **la misma definición** que el creador (`multisig:create:…`) o rechaza firmando `multisig:reject:<cuenta>`. Con todos, queda **activa**; con un rechazo, queda **rechazada** |
- Un dueño propone: `{receiver, amount, nonce, signer, signature}`, firmando `multisig:<cuenta>:<para>:<centavos>:<nonce>` |
+| `POST /multisig/{cuenta}/proposals` | Un dueño propone: `{receiver, amount, nonce, signer, signature}`, firmando `multisig:<cuenta>:<para>:<centavos>:<nonce>` |
 | `POST /multisig/proposals/{id}/sign` | Otro dueño firma el mismo texto |
 | `GET /multisig/{cuenta}` · `GET /multisig/proposals/{id}` · `GET /multisig?owner=` | Ver la cuenta y sus propuestas, una propuesta, y las cuentas de un dueño |
 
 - **Cada dueño tiene que aceptar** (20/11, como Polkadot): antes la creaba uno sin que los demás aceptaran (como Safe), y
   cualquiera podía meter a otro en cuentas (spam). Pendiente: no recibe plata ni se proponen pagos. Las invitaciones se
   ven en `/cuenta` (`GET /multisig?owner=` devuelve `accounts` e `invites`). Las cuentas de antes cuentan como activas.
-: el contrato pide una transferencia con *aprobación extra*; con 1, cualquier dueño gastaría
+- **Mínimo 2 firmas** (20/11): el contrato pide una transferencia con *aprobación extra*; con 1, cualquier dueño gastaría
   solo y sería una cuenta común con varios dueños. El que propone ya firma, así que con 2 de 3 alcanza con otro más.
 - El **id de la propuesta es el hash del texto firmado** (como Polkadot): cambiar el monto o el destino da otra
   propuesta, así que las firmas de una no sirven para la otra.
@@ -490,7 +523,9 @@ Además de las del Word: `mining:current` (candidato que se mina), `tx:status` (
 `crowdfund:<id>` / `:contrib` / `:txs`, `crowdfunds` y `crowdfunds:open` (colectas),
 `block:<block_id>:notfound:<minero>` (rangos "no encontré", por si falla un canario),
 `miner:<id>:results` / `:calibration` / `:expired`, `quarantine:<id>`, `pool:miners`, `pool:last_work`,
-`gateway:canary:counter` y `events:outbox` (eventos sellados que falta publicar).
+`gateway:canary:counter` y `events:outbox` (eventos sellados que falta publicar). Del 21/11: `name:<cuenta>`
+(registro único del nombre: personal o compartida) y `multisig:waiting` (propuestas que esperan saldo o quedaron
+en "admitiendo").
 
 ## Pendiente
 

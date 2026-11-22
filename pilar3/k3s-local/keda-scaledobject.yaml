@@ -22,7 +22,7 @@ spec:
   triggers:
     - type: metrics-api
       metadata:
-        url: http://34.63.209.225/scaling
+        url: https://gateway.35-223-237-60.sslip.io/scaling
         valueLocation: desired_cpu_miners
         targetValue: "1"
         authMode: bearer
@@ -38,4 +38,4 @@ spec:
   secretTargetRef:
     - parameter: token
       name: gateway-auth
-      key: miner-token
+      key: scaling-token   # solo lectura de /scaling (21/11): KEDA no tiene un token con el que se pueda minar

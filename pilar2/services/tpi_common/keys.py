@@ -52,6 +52,11 @@ def pending_out(user: str) -> str:
     return f"pending_out:{user}"
 
 
+def account_name(user: str) -> str:
+    """STRING personal | compartida: registro único del nombre (SET NX), para que no lo tomen los dos tipos."""
+    return f"name:{user}"
+
+
 def account_pubkey(user: str) -> str:
     """Clave pública Ed25519 (hex) de una cuenta registrada. Se escribe una vez (SET NX)."""
     return f"account:{user}:pubkey"

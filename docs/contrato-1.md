@@ -8,9 +8,9 @@ punto lo confirma el grupo.
 | # | Punto (tal como lo definió el grupo) | Estado |
 |---|---|---|
 | 1 | Servicio de registro de workers y personas (clave pública y privada) | **Hecho** (17/11): cuentas con Ed25519 + `seq`; workers con token propio por HTTPS desde `/unirse` (no mTLS) |
-| 2 | Cuenta compartida / fee, crowdfunding (transferencia con aprobación extra) | Por hacer |
+| 2 | Cuenta compartida / fee, crowdfunding (transferencia con aprobación extra) | **Hecho** (20 y 21/11): cuentas compartidas m de n con aceptación de cada dueño y pago que espera saldo (como Safe), comisión de 0,10 al minero con halving, colectas todo o nada |
 | 3 | Notificar por websocket, para no gastar ciclos de gusto | **Hecho** (20/11): servicio `notifier`, outbox y foto del estado al reconectarse; suscripciones públicas (como Bitcoin y Ethereum) |
-| 4 | El gateway comprueba que el worker funciona y "dice la verdad" + clasificación de nodo por potencia y recompensa + websocket | **En parte** (canarios, calibración, clases, premio y token propio por worker ya están; faltan el websocket y decidir las shares) |
+| 4 | El gateway comprueba que el worker funciona y "dice la verdad" + clasificación de nodo por potencia y recompensa + websocket | **Hecho** (20/11): canarios, calibración, clases, token propio, en prueba, cuarentena que crece, shares con reparto PROP y WebSocket de mineros |
 | 5 | KEDA: ajuste de escalado dinámico, colas con quorum, recreación de un bloque a partir del cambio de dificultad | **Hecho** |
 
 Dependencias: el **1** (claves y firmas) es la base del **2** (no se puede aprobar un pago sin firmas) y mejora
