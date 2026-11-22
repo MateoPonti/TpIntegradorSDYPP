@@ -1,7 +1,7 @@
 """Test de integración: flujo completo contra el docker compose levantado.
 
     cd pilar2 && docker compose up -d --build
-    TPI_E2E_URL=http://localhost:8000 python -m pytest -q pilar2/tests/test_integration.py
+    TPI_E2E_URL=http://127.0.0.1:18080 python -m pytest -q pilar2/tests/test_integration.py
 Se saltea si TPI_E2E_URL no está definida (así el CI de unitarios no necesita Docker).
 """
 import json

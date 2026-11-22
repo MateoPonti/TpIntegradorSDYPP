@@ -10,3 +10,5 @@ terraform.tfvars
 __pycache__/
 results.csv
 charts/
+# Los gráficos de las pruebas guardadas sí van al repo (los pide el informe)
+!loadtest/resultados/*/charts/

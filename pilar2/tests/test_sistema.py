@@ -1,11 +1,14 @@
 """Pruebas del sistema andando (local con docker compose o en GKE). Necesitan al menos un minero conectado
 al gateway (el agente CPU de la PC, el k3s o la GPU), porque esperan que las tx se confirmen.
 
-    TPI_E2E_URL=http://35.223.237.60 python -m pytest -v pilar2/tests/test_sistema.py -k doble
+    TPI_E2E_URL=http://127.0.0.1:18080 python -m pytest -v pilar2/tests/test_sistema.py -k doble     # compose
     TPI_E2E_URL=http://35.223.237.60 TPI_K8S_CONTEXT=gke_tp3distribuidos_us-central1-a_tp3 \
       python -m pytest -v pilar2/tests/test_sistema.py -k caida
 
-* Doble gasto: dos tx simultáneas que gastan el mismo saldo. Una entra (202) y la otra no (400).
+Actualizadas el 21/11: las cuentas de prueba se registran con clave Ed25519 y gastan firmando con su seq, y el
+saldo esperado descuenta la comisión de 0,10.
+
+* Doble gasto: dos tx simultáneas y firmadas que gastan el mismo saldo. Una entra (202) y la otra no (400).
 * Caídas: se mata un pod de cada servicio (y RabbitMQ y Redis). Después de cada una, una tx nueva tiene
   que terminar confirmada y la cadena tiene que seguir íntegra (verify_chain).
 """
@@ -19,6 +22,8 @@ import urllib.request
 import uuid
 
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 import verify_chain
 
@@ -59,8 +64,21 @@ def wait_confirmed(tx_id: str, limit: float = 240) -> dict:
     pytest.fail(f"la tx {tx_id} no se confirmó en {limit} s (¿hay algún minero conectado?)")
 
 
-def new_user(tag: str) -> str:
-    return f"test-{tag}-{uuid.uuid4().hex[:6]}"
+def new_user(tag: str) -> tuple[str, Ed25519PrivateKey]:
+    """Cuenta registrada con su clave (17/11: sin registro no hay cuenta propia, y desde el 20/11 el destino de una
+    tx tiene que existir)."""
+    name, key = f"test-{tag}-{uuid.uuid4().hex[:6]}", Ed25519PrivateKey.generate()
+    pub = key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw).hex()
+    code, body = post("/accounts/register", {"account": name, "public_key": pub,
+                                             "signature": key.sign(f"register:{name}:{pub}".encode()).hex()})
+    assert code == 201, body
+    return name, key
+
+
+def signed(sender: str, key: Ed25519PrivateKey, receiver: str, amount_cents: int, seq: int) -> dict:
+    """Tx de una cuenta registrada: firma sobre tx:<de>:<para>:<centavos>:<seq>."""
+    return {"sender": sender, "receiver": receiver, "amount": f"{amount_cents / 100:.2f}", "seq": seq,
+            "signature": key.sign(f"tx:{sender}:{receiver}:{amount_cents}:{seq}".encode()).hex()}
 
 
 def send_ok(sender: str, receiver: str, amount) -> str:
@@ -74,15 +92,17 @@ def send_ok(sender: str, receiver: str, amount) -> str:
 
 
 def test_doble_gasto_simultaneo():
-    ana = new_user("ana")
+    ana, key = new_user("ana")
     wait_confirmed(send_ok("user-1", ana, 100))
+    # Dos gastos de 80,00 firmados con el mismo seq, a destinos distintos, en el mismo instante: alcanza para uno.
+    bodies = [signed(ana, key, new_user(n)[0], 8000, 1) for n in ("beto", "caro")]
     barrier, out = threading.Barrier(2), []
 
-    def spend(receiver: str) -> None:
+    def spend(body: dict) -> None:
         barrier.wait()  # las dos salen en el mismo instante
-        out.append(post("/transactions", {"sender": ana, "receiver": receiver, "amount": 80}))
+        out.append(post("/transactions", body))
 
-    threads = [threading.Thread(target=spend, args=(new_user(n),)) for n in ("beto", "caro")]
+    threads = [threading.Thread(target=spend, args=(b,)) for b in bodies]
     for t in threads:
         t.start()
     for t in threads:
@@ -92,8 +112,18 @@ def test_doble_gasto_simultaneo():
     accepted = next(body for code, body in out if code == 202)
     wait_confirmed(accepted["tx_id"])
     balance = get(f"/balances/{ana}")
-    assert balance["balance_cents"] == 2000 and balance["pending_out_cents"] == 0
+    # 100,00 − 80,00 − 0,10 de comisión
+    assert balance["balance_cents"] == 1990 and balance["pending_out_cents"] == 0
     assert verify_chain.verify(URL) == 0
+
+
+def test_doble_gasto_con_seq_distinto():
+    """Mismo caso con seq 1 y 2: las dos firmas son válidas, pero el saldo alcanza para una sola."""
+    ana, key = new_user("ana")
+    wait_confirmed(send_ok("user-1", ana, 100))
+    codes = [post("/transactions", signed(ana, key, new_user(n)[0], 8000, seq))[0]
+             for n, seq in (("beto", 1), ("caro", 2))]
+    assert codes == [202, 400]
 
 
 def kubectl(*args: str) -> str:
@@ -107,7 +137,7 @@ def test_caida_de_un_servicio(app):
     pods = kubectl("get", "pods", "-l", f"app={app}", "-o", "jsonpath={.items[*].metadata.name}").split()
     assert pods, f"no hay pods de {app}"
     kubectl("delete", "pod", pods[0], "--wait=false")
-    tx_id = send_ok("user-2", new_user(f"caida-{app}"), 1)
+    tx_id = send_ok("user-2", new_user(f"caida-{app}")[0], 1)
     wait_confirmed(tx_id)
     kind = "statefulset" if app in ("rabbitmq", "redis") else "deployment"
     kubectl("rollout", "status", f"{kind}/{app}", "--timeout=300s")
@@ -130,7 +160,7 @@ def test_caida_del_redis_principal():
     while redis_master(via) == old:
         assert time.time() < deadline, "Sentinel no ascendió a ninguna réplica"
         time.sleep(2)
-    tx_id = send_ok("user-2", new_user("caida-redis-principal"), 1)
+    tx_id = send_ok("user-2", new_user("caida-redis-principal")[0], 1)
     wait_confirmed(tx_id)
     kubectl("rollout", "status", "statefulset/redis", "--timeout=300s")
     assert verify_chain.verify(URL) == 0

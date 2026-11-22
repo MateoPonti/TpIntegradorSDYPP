@@ -99,17 +99,22 @@ con prefijo de 7 ceros, uno que contiene una solución y otro que no (verificado
 
 | Caso | CPU 12 procesos | GPU | Speedup |
 |---|---|---|---|
-| Prefijo 1 a 3 | < 1 ms | ~0,5 ms | gana la CPU: hay muy poco trabajo y la GPU paga su arranque |
+| Prefijo 1 y 2 | 0,05 y 0,34 ms | ~0,5 ms | gana la CPU en el motor: hay muy poco trabajo y la GPU paga su arranque |
+| Prefijo 3 | 0,99 ms | 0,60 ms | 1,7× (desde acá gana la GPU) |
 | Prefijo 4 | 0,19 s | 0,002 s | 98× |
 | Prefijo 5 | 0,30 s | 0,005 s | 56× |
 | Prefijo 6 | 3,56 s | 0,021 s | 170× |
 | Prefijo 7 | 11,4 s | 0,044 s | 260× |
 | Prefijo 8 | (~9 min, no se corrió) | 8,2 s | — |
-| Rango **sin** solución (100 M) | 11,75 s · 8,5 MH/s | 0,098 s · 1.020 MH/s | **120×** |
+| Rango **sin** solución (100 M) | 11,75 s · 8,5 MH/s | 0,098 s · 1.020 MH/s | **120×** (65× con el arranque) |
 | Rango **con** solución (100 M) | 5,65 s | 0,032 s | 179× |
 
 - **El speedup de referencia es 120×**: es el caso sin solución, donde los dos hacen exactamente el mismo
   trabajo (los 100 M nonces). Es contra la mejor CPU (12 procesos), no contra un solo proceso (sería ~680×).
+  Son tiempos **del motor** (`seg_motor`, el JSON del binario). **Contando el arranque del proceso**
+  (`seg_total`: 11,84 s contra 0,181 s) da **65×**; las dos cifras salen del mismo ensayo y son de esta PC.
+- La tabla usa la mediana de 5 corridas del tiempo del motor. Con el arranque incluido, en los prefijos 1 a 3 los
+  dos tardan lo mismo (~0,08 a 0,09 s): lo que se mide ahí es levantar el proceso, no minar.
 - Con solución, el tiempo depende de la suerte: cada motor devuelve el primer nonce que cruza, y no es el
   mismo. Por eso los speedups del Hit #6 varían (56× a 260×).
 - Con prefijos de 4 y 5 la CPU tarda 0,2 a 0,3 s en levantar los 12 procesos (en Windows es lento); el

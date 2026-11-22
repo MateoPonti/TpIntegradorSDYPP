@@ -109,11 +109,16 @@ tarda ~4 min por bloque y la GPU ~19 s: **13 veces más rápido**. 0 errores en 
    sacaba del Service fallaron (no hubo ningún rechazo: `tx_rejected_total` en 0). **Arreglo** (en
    `pilar3/k8s/apps/coordinator.yaml` y `gateway.yaml`): `preStop` con `sleep 10` y `scaleDown.stabilizationWindowSeconds`
    de 120 a 300. **Después del arreglo:** el bulk de 10.000 con GPU dio **0 errores** en las 3 corridas (fase 2).
+   Ojo: esas 3 corridas fueron con prefijo fijo de 7 ceros, no con el automático de la corrida que falló. Falta
+   repetir el caso original (GPU, automático, 10.000) para afirmar que quedó resuelto en las mismas condiciones.
 3. **Hasta 6 ceros, el límite es la ventana de 10 s, no el minado.** Para bajar la latencia habría que achicar la
    ventana (decisión del grupo y comentario del profe del 13/11), no sumar potencia.
-4. **El techo de entrada:** ~300 tx/s desde adentro de GKE (`bench.py` manda de a una tx por pedido HTTP). Con
-   ventanas de 10 s y bloques de hasta 1.000 tx, el sistema confirma como mucho ~100 tx/s; por eso 100.000 tx
-   tardan entre 10 y 23 min.
+4. **El techo de entrada:** ~300 tx/s desde adentro de GKE (`bench.py` manda de a una tx por pedido HTTP). La
+   confirmación no tiene un techo fijo de 100 tx/s (corregido el 21/11): una ventana cerrada puede dar varios
+   bloques de hasta 1.000 tx, que se minan de a uno. Con CPU, 100.000 aceptadas (0 errores) dejaron el contador de
+   pendientes en 0 a los 569 s: **~176 tx/s en promedio**; con GPU y prefijo automático (8 ceros), 1.377 s. Es una
+   tasa calculada con el contador global de pendientes: `bench.py` no guarda cada `tx_id`, así que no se verificó
+   la inclusión de cada una.
 
 ## Qué salió mal (y quedó corregido)
 

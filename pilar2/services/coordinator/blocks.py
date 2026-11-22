@@ -117,14 +117,14 @@ SEAL_ERRORS = {-1: "tip cambió", -2: "bloque viejo", -3: "hash repetido"}
 
 # KEYS: block:<i>:sharenonces, block:<i>:shares   ARGV: minero, peso, nonces...
 # Suma el peso de cada share que todavía no se había pagado en ese bloque (la misma share no cobra dos veces).
+# Sin vencimiento (21/11): son el derecho a cobrar el premio, que se paga al armar el bloque siguiente, y ese bloque
+# puede salir mucho después (sin tx no hay bloques). Se borran en SEAL_LUA del bloque siguiente, ya pagadas.
 SHARES_LUA = """
 local n = 0
 for i = 3, #ARGV do
   if redis.call('SADD', KEYS[1], ARGV[i]) == 1 then n = n + 1 end
 end
 if n > 0 then redis.call('HINCRBY', KEYS[2], ARGV[1], n * tonumber(ARGV[2])) end
-redis.call('EXPIRE', KEYS[1], 86400)
-redis.call('EXPIRE', KEYS[2], 86400)
 return n
 """
 
@@ -198,11 +198,10 @@ class Chain:
 
     async def pending_count(self) -> int:
         """Lo que mira bench.py: tx que todavía no están en un bloque sellado (pendientes + en vuelo)."""
-        n = await self.r.llen(keys.TX_PENDING)
-        cur = await self.current()
-        if cur:
-            n += await self.r.llen(keys.tx_inflight(cur["index"]))
-        return n
+        # El lote en vuelo se cuenta por el índice que sigue en la cadena, no por mining:current: si el líder murió
+        # entre sacar el lote de pendientes y guardar el candidato, el lote existe aunque no haya candidato.
+        index = await self.r.llen(keys.CHAIN)
+        return await self.r.llen(keys.TX_PENDING) + await self.r.llen(keys.tx_inflight(index))
 
     # ---- NCT.1: armado y publicación (solo el líder) ----
 
@@ -232,13 +231,19 @@ class Chain:
                                    int(prev.get("reward_cents", BLOCK_REWARD_CENTS)), finder_account, round(time.time(), 3))
 
     async def _assemble(self) -> dict | None:
-        first = await self.r.lindex(keys.TX_PENDING, 0)
-        if first is None:
-            return None  # sin tx no hay bloque (no se minan bloques vacíos)
-        end = window_end(json.loads(first)["ts"], BLOCK_WINDOW)
-        if time.time() < end:
-            return None  # la ventana de la primera pendiente todavía no cerró
         index = await self.r.llen(keys.CHAIN)  # el génesis es el 0
+        # Un lote en vuelo sin candidato: el líder anterior murió entre sacarlo de pendientes y guardar
+        # mining:current. Se retoma ya (su ventana cerró), aunque la cola de pendientes esté vacía; TAKE_LUA lo
+        # devuelve tal cual, con sus premios, sin tomar nada nuevo.
+        resume = await self.r.exists(keys.tx_inflight(index))
+        end = 0.0
+        if not resume:
+            first = await self.r.lindex(keys.TX_PENDING, 0)
+            if first is None:
+                return None  # sin tx no hay bloque (no se minan bloques vacíos)
+            end = window_end(json.loads(first)["ts"], BLOCK_WINDOW)
+            if time.time() < end:
+                return None  # la ventana de la primera pendiente todavía no cerró
         prev = await self.r.get(keys.CHAIN_TIP)
         rewards = await self._rewards(index)
         raw = await self._take(keys=[keys.TX_PENDING, keys.tx_inflight(index)],
@@ -269,7 +274,7 @@ class Chain:
         user_txs = sum(t["sender"] != REWARD_SENDER for t in txs)
         BLOCK_TXS.observe(user_txs)
         log(self.logger, "bloque armado", block_id=cur["block_id"], txs=user_txs, rewards=len(txs) - user_txs,
-            prefix=cur["prefix"], range_size=cur["range_size"])
+            prefix=cur["prefix"], range_size=cur["range_size"], retomado=bool(resume))
         return cur
 
     async def _maybe_rearm(self, cur: dict) -> dict:

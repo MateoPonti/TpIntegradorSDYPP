@@ -9,7 +9,8 @@ mínimo, el pago se admite (se reserva el saldo con el mismo Lua de siempre) y v
   de otra propuesta no sirven.
 - Mientras falten firmas no se reserva saldo. Si al llegar al mínimo no alcanza, queda **esperando saldo** (como Safe,
   donde las firmas siguen valiendo y se ejecuta cuando hay plata; decidido el 21/11): el líder la reintenta en cada
-  vuelta, en orden de creación, y se paga sola cuando entra la plata. Si vence antes, queda vencida.
+  vuelta, en orden de creación, y se paga sola cuando entra la plata. Si vence antes, queda vencida. Una que quedó en
+  'admitiendo' porque el coordinator se cayó antes de pagar también se retoma (tx_id fijo: se paga una sola vez).
 - Vence a las MULTISIG_TTL_SECONDS (24 h) por hora del servidor: los bloques solo salen si hay tx, así que no sirven
   de reloj.
 - Dueños y mínimo quedan fijos.
@@ -135,17 +136,26 @@ def tx_id(pid: str) -> str:
     return f"multisig-{pid}"
 
 
-# KEYS: proposal:<id>   ARGV: ahora
-# Una propuesta que espera saldo pasa a 'admitiendo' (devuelve 'admitir') o a 'vencida'. Es un Lua para que solo un
-# intento la tome, aunque cambie el líder en el medio.
+STUCK_SECONDS = 30  # una propuesta en 'admitiendo' más que esto: el que la estaba admitiendo se cayó
+
+# KEYS: proposal:<id>   ARGV: ahora, segundos para darla por trabada
+# Una propuesta que espera saldo pasa a 'admitiendo' (devuelve 'admitir') o a 'vencida'. Una que quedó en
+# 'admitiendo' (el coordinator se cayó entre juntar las firmas y pagar) se retoma pasado STUCK_SECONDS: el tx_id fijo
+# hace que un reintento no pague dos veces. Es un Lua para que solo un intento la tome, aunque cambie el líder.
 RETRY_LUA = """
 local status = redis.call('HGET', KEYS[1], 'status')
+local now = tonumber(ARGV[1])
+if status == 'admitiendo' then
+  if now - tonumber(redis.call('HGET', KEYS[1], 'admitting') or '0') < tonumber(ARGV[2]) then return 'admitiendo' end
+  redis.call('HSET', KEYS[1], 'admitting', ARGV[1])
+  return 'admitir'
+end
 if status ~= 'esperando_saldo' then return status or 'no_existe' end
-if tonumber(redis.call('HGET', KEYS[1], 'expires')) < tonumber(ARGV[1]) then
+if tonumber(redis.call('HGET', KEYS[1], 'expires')) < now then
   redis.call('HSET', KEYS[1], 'status', 'vencida')
   return 'vencida'
 end
-redis.call('HSET', KEYS[1], 'status', 'admitiendo')
+redis.call('HSET', KEYS[1], 'status', 'admitiendo', 'admitting', ARGV[1])
 return 'admitir'
 """
 
@@ -156,9 +166,10 @@ def tx_extra(raw: dict) -> dict:
                          "signatures": {k[4:]: v for k, v in raw.items() if k.startswith("sig:")}}}
 
 
-# KEYS: proposal:<id>   ARGV: dueño, firma, mínimo, ahora
+# KEYS: proposal:<id>, multisig:waiting   ARGV: dueño, firma, mínimo, ahora
 # Agrega la firma (una por dueño) y, si se llegó al mínimo, pasa a 'admitiendo' y devuelve 'admitir'. Como es un
-# solo Lua, si dos dueños firman a la vez solo uno recibe 'admitir': el pago no se puede admitir dos veces.
+# solo Lua, si dos dueños firman a la vez solo uno recibe 'admitir': el pago no se puede admitir dos veces. Al pasar a
+# 'admitiendo' queda anotada en multisig:waiting, así el líder la retoma si este coordinator se cae antes de pagar.
 SIGN_LUA = """
 local status = redis.call('HGET', KEYS[1], 'status')
 if not status then return 'no_existe' end
@@ -173,7 +184,8 @@ for _, f in ipairs(redis.call('HKEYS', KEYS[1])) do
   if string.sub(f, 1, 4) == 'sig:' then n = n + 1 end
 end
 if n >= tonumber(ARGV[3]) then
-  redis.call('HSET', KEYS[1], 'status', 'admitiendo')
+  redis.call('HSET', KEYS[1], 'status', 'admitiendo', 'admitting', ARGV[4])
+  redis.call('ZADD', KEYS[2], redis.call('HGET', KEYS[1], 'created'), redis.call('HGET', KEYS[1], 'id'))
   return 'admitir'
 end
 return 'pendiente'

@@ -56,6 +56,24 @@ TPI_E2E_URL=http://35.223.237.60 TPI_K8S_CONTEXT=gke_tp3distribuidos_us-central1
   python -m pytest -v pilar2/tests/test_sistema.py
 ```
 
+Los tests de sistema se actualizaron el 21/11 (los había dejado viejos el cambio de cuentas): las cuentas de prueba
+se registran con clave Ed25519 y gastan firmando con su `seq` (antes mandaban a nombres sin registrar y daban `400
+destino inexistente` antes de probar nada), y el doble gasto espera 19,90 (100,00 − 80,00 − 0,10 de comisión). Hay
+uno nuevo con `seq` distinto. Contra el compose del 21/11: integración + 2 de doble gasto, **3/3**. Las caídas en
+GKE no se volvieron a correr después de este cambio (la última, 6/6, es del 13/11).
+
+**Recuperación (arreglos del 21/11, a partir de una auditoría externa):**
+- **Lote en vuelo sin candidato.** Si el líder del coordinator se cae entre sacar el último lote de `tx:pending`
+  (`TAKE_LUA`) y guardar `mining:current`, el siguiente veía la cola vacía y no lo retomaba hasta que llegara otra
+  tx; `pending_count` tampoco lo contaba. Ahora `_assemble` mira primero `tx:inflight:<índice siguiente>` y lo
+  retoma, y el contador cuenta ese lote por el índice, no por el candidato. Probado en compose: con los dos
+  coordinators frenados se movió el lote a "en vuelo" a mano; al volver, el líder lo retomó solo (`retomado: true`
+  en el log) y la tx se confirmó en el bloque 72 sin que entrara otra.
+- **Shares sin vencimiento.** Tenían `EXPIRE` de 24 h, pero son el derecho a cobrar el premio, que se paga al armar
+  el bloque siguiente: si ese bloque salía más de 24 h después (sin tx no hay bloques), el premio no se le pagaba a
+  nadie. Ahora se borran recién en el `SEAL_LUA` del bloque siguiente, ya pagadas.
+- **Propuesta trabada en "admitiendo".** Ver "Cuentas compartidas": el líder la retoma a los 30 s.
+
 ## Arquitectura
 
 ```mermaid
@@ -361,6 +379,10 @@ Polkadot: un dueño propone un pago, los demás firman lo mismo y al juntar el m
   esperan en cada vuelta (1 s), en orden de creación (`multisig:waiting`); `RETRY_LUA` pasa una sola a `admitiendo`
   aunque cambie el líder, y el `tx_id` es fijo (`multisig-<id>`), así un reintento a mitad no paga dos veces. Si vence
   antes de que entre la plata, queda vencida. Estados: pendiente, esperando saldo, admitida, rechazada, vencida.
+- **Si el coordinator se cae entre juntar las firmas y pagar**, la propuesta quedaba en "admitiendo" para siempre.
+  Ahora `SIGN_LUA` la anota en `multisig:waiting` al pasar a "admitiendo" y el líder la retoma si sigue así a los
+  30 s (`STUCK_SECONDS`); con el `tx_id` fijo, el reintento se paga una sola vez. Probado en compose (21/11): una
+  propuesta trabada a mano se pagó sola, una sola vez (bloque 74, saldo 4,90).
 - **Vence a las 24 h** (`MULTISIG_TTL_SECONDS`, hora del servidor): los bloques solo salen si hay tx, así que no
   sirven de reloj. Dueños y mínimo **fijos**.
 - La cuenta compartida no se puede gastar con `POST /transactions` (`400`) ni registrar con clave. La tx del pago

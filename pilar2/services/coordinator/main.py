@@ -284,7 +284,8 @@ async def _admit(pid: str) -> None:
     rc = await state["reserve"](keys=ledger.reserve_keys(tx), args=[tx["tx_id"], tx["amount"] + tx["fee"], json.dumps(tx), ""])
     if rc == -2:  # saldo insuficiente: las firmas siguen valiendo hasta que vence
         await r.hset(multisig.proposal_key(pid), mapping={"status": "esperando_saldo", "reason": "esperando saldo"})
-        if await r.zadd(multisig.WAITING, {pid: float(raw["created"])}, nx=True):
+        await r.zadd(multisig.WAITING, {pid: float(raw["created"])})
+        if raw.get("reason") != "esperando saldo":  # la primera vez (después se reintenta cada vuelta)
             log(logger, "propuesta esperando saldo", proposal=pid, account=tx["sender"])
         return
     await r.zrem(multisig.WAITING, pid)
@@ -303,14 +304,15 @@ async def _admit(pid: str) -> None:
 
 async def retry_multisig() -> None:
     """Propuestas con las firmas juntas que esperan saldo (solo el líder, en cada vuelta): en orden de creación, la
-    que ya alcanza se paga y la que pasó de hora queda vencida."""
+    que ya alcanza se paga y la que pasó de hora queda vencida. También retoma las que quedaron en 'admitiendo' porque
+    el coordinator que las admitía se cayó (pasados STUCK_SECONDS)."""
     r, now = state["r"], time.time()
     for pid in await r.zrange(multisig.WAITING, 0, -1):
-        status = await state["retry"](keys=[multisig.proposal_key(pid)], args=[now])
+        status = await state["retry"](keys=[multisig.proposal_key(pid)], args=[now, multisig.STUCK_SECONDS])
         if status == "admitir":
             await _admit(pid)
         elif status != "admitiendo":
-            await r.zrem(multisig.WAITING, pid)  # vencida, o ya resuelta por otro camino
+            await r.zrem(multisig.WAITING, pid)  # vencida, o ya admitida o rechazada
 
 
 async def _sign(pid: str, signer: str, signature: str, d: dict) -> dict:
@@ -320,7 +322,8 @@ async def _sign(pid: str, signer: str, signature: str, d: dict) -> dict:
         raise HTTPException(400, f"{signer} no es dueño de {raw['account']}")
     if not cuentas.verify(await _owner_key(signer), raw["message"].encode(), signature):
         raise HTTPException(400, "firma inválida")
-    if await state["sign"](keys=[multisig.proposal_key(pid)], args=[signer, signature, d["threshold"], time.time()]) == "admitir":
+    if await state["sign"](keys=[multisig.proposal_key(pid), multisig.WAITING],
+                           args=[signer, signature, d["threshold"], time.time()]) == "admitir":
         await _admit(pid)
     return multisig.view(await r.hgetall(multisig.proposal_key(pid)), d["threshold"])
 
