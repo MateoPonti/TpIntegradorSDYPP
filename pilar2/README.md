@@ -356,17 +356,25 @@ Polkadot: un dueño propone un pago, los demás firman lo mismo y al juntar el m
 - Una firma por dueño (firmar dos veces no suma). Agregar la firma y ver si se llegó al mínimo es **un solo Lua**
   (`SIGN_LUA`): si dos dueños firman a la vez, solo uno admite el pago.
 - Mientras faltan firmas **no se reserva saldo**. Al llegar al mínimo se reserva monto + comisión con el mismo Lua de
-  siempre; si no alcanza, la propuesta queda **rechazada**. Estados: pendiente, admitida, rechazada, vencida.
+  siempre. **Si no alcanza, queda esperando saldo** (21/11, como Safe: las firmas siguen valiendo y se ejecuta cuando
+  hay plata). Antes quedaba rechazada para siempre y había que volver a juntar las firmas. El líder reintenta las que
+  esperan en cada vuelta (1 s), en orden de creación (`multisig:waiting`); `RETRY_LUA` pasa una sola a `admitiendo`
+  aunque cambie el líder, y el `tx_id` es fijo (`multisig-<id>`), así un reintento a mitad no paga dos veces. Si vence
+  antes de que entre la plata, queda vencida. Estados: pendiente, esperando saldo, admitida, rechazada, vencida.
 - **Vence a las 24 h** (`MULTISIG_TTL_SECONDS`, hora del servidor): los bloques solo salen si hay tx, así que no
   sirven de reloj. Dueños y mínimo **fijos**.
 - La cuenta compartida no se puede gastar con `POST /transactions` (`400`) ni registrar con clave. La tx del pago
   lleva el texto y las firmas de los dueños (`multisig`), así quedan en el bloque.
 - Página: sección "Cuentas compartidas" en `/cuenta` (crear, proponer y firmar desde el navegador de cada dueño). El
-  explorador marca las cuentas compartidas y los pagos con sus firmas.
+  explorador marca las cuentas compartidas y los pagos con sus firmas. El creador se agrega solo como dueño y su
+  propuesta ya cuenta como 1 firma. **El saldo de cada compartida llega en vivo por el notifier** (21/11: la página se
+  suscribe al tema `account` de cada una); las firmas de los otros dueños no son bloques y no tienen aviso, así que
+  esa parte pregunta cada 5 s.
 - Probado en compose (20/11): crear 2 de 3; crearla de nuevo 409; gastar directo 400; propuesta pendiente sin
   reservar; firma sobre otro destino rechazada; firmar dos veces no suma; con 2 firmas se admitió y se confirmó en el
   bloque; la 3.ª firma no cobró de nuevo; misma propuesta 409; propuesta sin saldo rechazada; saldo final
-  20,00 − 5,00 − 0,10. La página probada en Chrome (crear y proponer).
+  20,00 − 5,00 − 0,10. La página probada en Chrome (crear y proponer). Prueba del 21/11 (compose): 2 de 2 sin saldo,
+  con las 2 firmas quedó esperando saldo; se le mandaron 10,00 y a los 26 s se pagó sola (bloque 66, saldo 4,90).
 
 ### Colectas "todo o nada" (crowdfunding, punto 2 del Contrato SDMER, 20/11/2026)
 

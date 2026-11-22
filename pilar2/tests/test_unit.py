@@ -340,6 +340,11 @@ def test_multisig_view_counts_signatures_and_expires():
     assert (v["status"], v["signatures"], v["missing"], v["signers"]) == ("pendiente", 1, 1, ["mateo"])
     assert multisig.view(raw, threshold=2, now=1000.0 + multisig.TTL + 1)["status"] == "vencida"
     assert multisig.tx_extra(raw | {"sig:ana": "bb"})["multisig"]["signatures"] == {"mateo": "aa", "ana": "bb"}
+    # esperando saldo (21/11, como Safe): las firmas siguen valiendo, pero igual vence
+    waiting = raw | {"status": "esperando_saldo"}
+    assert multisig.view(waiting, threshold=2, now=1001.0)["status"] == "esperando_saldo"
+    assert multisig.view(waiting, threshold=2, now=1000.0 + multisig.TTL + 1)["status"] == "vencida"
+    assert multisig.tx_id("p1") == "multisig-p1"  # fijo: un reintento no paga dos veces
 
 
 # ---- Shares (punto 4 del contrato, 20/11) ----

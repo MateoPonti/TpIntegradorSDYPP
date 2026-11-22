@@ -127,6 +127,13 @@
 <script>
 let par = null, cuenta = "", ws = null, wsOpen = false, conectando = false, retry = 1000, reqId = 0, saldo = null;
 let subCuenta = null;  // suscripción a la cuenta abierta (una sola: si no, cada aviso llega repetido)
+const subsCompartidas = new Map();  // cuenta compartida -> sub del notifier (null mientras se suscribe)
+const pedidosCompartidas = new Map();  // id del pedido de suscripción -> cuenta compartida
+function suscribirCompartida(acc) {  // el aviso "subscribed" no trae la cuenta: se la reconoce por el id del pedido
+  if (!wsOpen || subsCompartidas.has(acc)) return;
+  subsCompartidas.set(acc, null);
+  pedidosCompartidas.set(wsSend({ op: "subscribe", topic: "account", account: acc }), acc);
+}
 const movs = [], vistos = new Set(), esperando = new Map();  // esperando: tx_id -> mensaje donde se avisa
 
 function dibujarSaldo() {
@@ -143,9 +150,14 @@ function dibujarMovs() {
       : '<tr><td colspan="5" class="muted">Todavía nada. Cuando se confirme un movimiento de tu cuenta aparece acá.</td></tr>');
 }
 
-const wsSend = (m) => { if (wsOpen) ws.send(JSON.stringify({ id: ++reqId, ...m })); };
+const wsSend = (m) => { if (wsOpen) ws.send(JSON.stringify({ id: ++reqId, ...m })); return reqId; };
 function onAviso(n) {
-  if (n.type === "subscribed" && n.topic === "account") subCuenta = n.sub;
+  if (n.type === "subscribed" && n.topic === "account") {
+    if (pedidosCompartidas.has(n.id)) { subsCompartidas.set(pedidosCompartidas.get(n.id), n.sub); pedidosCompartidas.delete(n.id); }
+    else subCuenta = n.sub;
+  }
+  // Se movió una cuenta compartida tuya (entró plata o salió un pago): se recarga al instante.
+  if (n.event === "account.changed" && subsCompartidas.has(n.account)) cargarCompartidas();
   if ((n.type === "snapshot" && n.account === cuenta) || (n.event === "account.changed" && n.account === cuenta)) {
     saldo = n;
     const nuevos = (n.movements || []).filter((m) => !vistos.has(`${m.tx_id}:${m.dir}`));
@@ -167,6 +179,9 @@ async function conectar() {
   conectando = false;
   ws.onopen = () => {
     subCuenta = null;
+    const compartidas = [...subsCompartidas.keys()];  // conexión nueva: hay que volver a suscribirse
+    subsCompartidas.clear(); pedidosCompartidas.clear();
+    setTimeout(() => compartidas.forEach(suscribirCompartida));
     wsOpen = true; retry = 1000;
     if (cuenta) wsSend({ op: "subscribe", topic: "account", account: cuenta });  // la foto trae el saldo
     for (const tx of esperando.keys()) wsSend({ op: "subscribe", topic: "tx", tx_id: tx });
@@ -184,7 +199,11 @@ async function abrir(nombre, nuevoPar) {
   if (subCuenta && nombre !== cuenta) wsSend({ op: "unsubscribe", sub: subCuenta });
   const otra = nombre !== cuenta;
   par = nuevoPar; cuenta = nombre;
-  if (otra) { movs.length = 0; vistos.clear(); }
+  if (otra) {
+    movs.length = 0; vistos.clear();
+    for (const sub of subsCompartidas.values()) if (sub) wsSend({ op: "unsubscribe", sub });
+    subsCompartidas.clear(); pedidosCompartidas.clear();
+  }
   $("titulo").textContent = `Cuenta ${nombre}`;
   $("panel").classList.remove("off");
   saldo = await (await fetch("/balances/" + encodeURIComponent(nombre))).json();
@@ -257,15 +276,17 @@ $("monto").oninput = () => mostrarTotal("monto", "total3");
 $("gMonto").oninput = () => mostrarTotal("gMonto", "total4");
 
 // ---- Cuentas compartidas: crear, proponer y firmar (cada dueño firma desde su navegador con su .key) ----
-const estado = { pendiente: "tag", admitiendo: "tag", admitida: "tag ok", rechazada: "tag bad", vencida: "tag bad" };
+const estado = { pendiente: "tag", admitiendo: "tag", esperando_saldo: "tag", admitida: "tag ok", rechazada: "tag bad", vencida: "tag bad" };
+const esperandoTxt = "Se juntaron las firmas, pero la cuenta no tiene saldo: se paga sola cuando entre la plata (hasta que venza).";
 function dibujarCompartida(c) {
   const filas = c.proposals.map((p) => {
     const firmo = p.signers.includes(cuenta);
     const accion = p.status === "pendiente" && !firmo
       ? `<button class="sec" data-firmar="${esc(p.id)}" data-msg="${esc(p.message)}">Firmar</button>`
       : firmo && p.status === "pendiente" ? '<span class="muted">ya firmaste</span>' : "";
-    const vence = p.status === "pendiente" ? new Date(p.expires * 1000).toLocaleString("es-AR") : "—";
-    return `<tr><td><span class="${estado[p.status] || "tag"}">${esc(p.status)}</span>${p.reason ? ` <span class="muted">${esc(p.reason)}</span>` : ""}</td>
+    const vence = ["pendiente", "esperando_saldo"].includes(p.status) ? new Date(p.expires * 1000).toLocaleString("es-AR") : "—";
+    const motivo = p.reason && p.status !== "esperando_saldo" ? ` <span class="muted">${esc(p.reason)}</span>` : "";
+    return `<tr><td><span class="${estado[p.status] || "tag"}">${esc(p.status.replace("_", " "))}</span>${motivo}</td>
       <td class="mono">${esc(p.receiver)}</td><td class="num">${money(p.amount_cents)}</td>
       <td>${p.signatures} de ${p.threshold} <span class="muted">(${p.signers.map(esc).join(", ")})</span></td>
       <td class="muted">${vence}</td><td>${accion}</td></tr>`;
@@ -301,11 +322,18 @@ async function cargarCompartidas() {
         (dueños: ${c.owners.map(esc).join(", ")}). Si aceptás, podés proponer y firmar pagos de esta cuenta. Tu saldo no se toca.</p>
         <div class="row"><button data-aceptar="${esc(c.account)}" data-msg="${esc(`multisig:create:${c.account}:${c.threshold}:${c.owners.join(",")}`)}">Aceptar</button>
         <button class="sec" data-rechazar="${esc(c.account)}">Rechazar</button></div></div>`).join("");
+    datos.filter((c) => c.status === "activa").forEach((c) => suscribirCompartida(c.account));  // saldo en vivo
+    // Redibujar sin perder lo que se está escribiendo (para y monto de cada cuenta) ni el foco.
+    const escrito = [...$("mLista").querySelectorAll("input")].map((i) => [i.id, i.value]);
+    const foco = document.activeElement?.id;
     $("mLista").innerHTML = inv + datos.map(dibujarCompartida).join("")
       || '<div class="body muted" style="padding-top:0">Todavía no sos dueño de ninguna cuenta compartida.</div>';
+    for (const [id, v] of escrito) if (document.getElementById(id)) document.getElementById(id).value = v;
+    if (foco && document.getElementById(foco)) document.getElementById(foco).focus();
   } catch { /* se reintenta en la próxima vuelta */ }
 }
-setInterval(cargarCompartidas, 15000);
+// El saldo llega por el notifier; las firmas de los otros dueños no son bloques (no tienen aviso): cada 5 s.
+setInterval(cargarCompartidas, 5000);
 
 $("mCrear").onclick = async () => {
   try {
@@ -331,7 +359,9 @@ $("mLista").addEventListener("click", async (ev) => {
       const nonce = hex(nacl.randomBytes(8));
       const p = await post(`/multisig/${encodeURIComponent(acc)}/proposals`, { receiver: para, amount: (cents / 100).toFixed(2), nonce,
         signer: cuenta, signature: firmar(par, `multisig:${acc}:${para}:${cents}:${nonce}`) });
-      say(msgId, p.status === "admitida" ? "Pago admitido: entra en el próximo bloque." : `Propuesta creada: faltan ${p.missing} firma(s).`, true);
+      say(msgId, p.status === "admitida" ? "Pago admitido: entra en el próximo bloque."
+        : p.status === "esperando_saldo" ? esperandoTxt
+        : `Propuesta creada: tu firma ya cuenta, faltan ${p.missing} firma(s).`, true);
     } catch (e) { say(msgId, e.message); }
   } else if (b.dataset.aceptar) {
     try {
@@ -346,7 +376,8 @@ $("mLista").addEventListener("click", async (ev) => {
   } else if (b.dataset.firmar) {
     try {
       const p = await post(`/multisig/proposals/${b.dataset.firmar}/sign`, { signer: cuenta, signature: firmar(par, b.dataset.msg) });
-      say("msgM", p.status === "admitida" ? "Firmaste: se juntaron las firmas y el pago entra en el próximo bloque." : `Firmaste: faltan ${p.missing}.`, true);
+      say("msgM", p.status === "admitida" ? "Firmaste: se juntaron las firmas y el pago entra en el próximo bloque."
+        : p.status === "esperando_saldo" ? `Firmaste. ${esperandoTxt}` : `Firmaste: faltan ${p.missing}.`, true);
     } catch (e) { say("msgM", e.message); }
   }
   cargarCompartidas();

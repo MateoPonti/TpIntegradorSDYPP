@@ -5,7 +5,6 @@ import contextlib
 import json
 import time
 import urllib.request
-import uuid
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
@@ -49,6 +48,7 @@ async def leader_loop(chain: Chain, leader: store.Leader) -> None:
             if is_leader:
                 await chain.flush_outbox()  # lo que quedó sin publicar (se cayó RabbitMQ o un pod a mitad)
                 await settle_crowdfunds()
+                await retry_multisig()
                 await chain.leader_tick()
             PENDING.set(await chain.pending_count())
         except Exception:  # noqa: BLE001 - el loop no se puede morir
@@ -71,7 +71,7 @@ async def lifespan(app: FastAPI):
     loop = asyncio.create_task(leader_loop(chain, store.Leader(r, keys.COORD_LEADER, POD_NAME)))
     state.update(r=r, conn=conn, chain=chain, reserve=r.register_script(ledger.RESERVE_LUA),
                  sign=r.register_script(multisig.SIGN_LUA), cf_start=r.register_script(crowdfund.START_LUA),
-                 accept=r.register_script(multisig.ACCEPT_LUA))
+                 accept=r.register_script(multisig.ACCEPT_LUA), retry=r.register_script(multisig.RETRY_LUA))
     log(logger, "coordinator listo", pod=POD_NAME)
     yield
     loop.cancel()
@@ -272,23 +272,45 @@ async def _owner_key(name: str) -> str:
 
 async def _admit(pid: str) -> None:
     """Se llegó al mínimo de firmas: el pago entra como una tx más (misma reserva de saldo y comisión que siempre).
-    Si no alcanza el saldo, la propuesta queda rechazada y no se reintenta."""
+    Si no alcanza el saldo, queda esperando saldo (como Safe, 21/11) y retry_multisig la vuelve a intentar."""
     r = state["r"]
     raw = await r.hgetall(multisig.proposal_key(pid))
-    tx = {"tx_id": uuid.uuid4().hex, "sender": raw["account"], "receiver": raw["receiver"],
+    tx = {"tx_id": multisig.tx_id(pid), "sender": raw["account"], "receiver": raw["receiver"],
           "amount": int(raw["amount"]), "ts": round(time.time(), 3), "fee": int(raw["fee"]), **multisig.tx_extra(raw)}
     if reason := await _crowdfund_closed(tx):
         await r.hset(multisig.proposal_key(pid), mapping={"status": "rechazada", "reason": reason})
+        await r.zrem(multisig.WAITING, pid)
         return
     rc = await state["reserve"](keys=ledger.reserve_keys(tx), args=[tx["tx_id"], tx["amount"] + tx["fee"], json.dumps(tx), ""])
+    if rc == -2:  # saldo insuficiente: las firmas siguen valiendo hasta que vence
+        await r.hset(multisig.proposal_key(pid), mapping={"status": "esperando_saldo", "reason": "esperando saldo"})
+        if await r.zadd(multisig.WAITING, {pid: float(raw["created"])}, nx=True):
+            log(logger, "propuesta esperando saldo", proposal=pid, account=tx["sender"])
+        return
+    await r.zrem(multisig.WAITING, pid)
+    if rc == -1:  # ya había entrado (el líder se cayó antes de marcarla): no se paga dos veces
+        await r.hset(multisig.proposal_key(pid), mapping={"status": "admitida", "tx_id": tx["tx_id"], "reason": ""})
+        return
     if rc < 0:
         await r.hset(multisig.proposal_key(pid), mapping={"status": "rechazada", "reason": ledger.RESERVE_ERRORS[rc]})
         log(logger, "propuesta rechazada", proposal=pid, reason=ledger.RESERVE_ERRORS[rc])
         return
-    await r.hset(multisig.proposal_key(pid), mapping={"status": "admitida", "tx_id": tx["tx_id"]})
+    await r.hset(multisig.proposal_key(pid), mapping={"status": "admitida", "tx_id": tx["tx_id"], "reason": ""})
     await _contributed(tx)
     TX_ACCEPTED.inc()
     log(logger, "propuesta admitida", proposal=pid, account=tx["sender"], tx_id=tx["tx_id"])
+
+
+async def retry_multisig() -> None:
+    """Propuestas con las firmas juntas que esperan saldo (solo el líder, en cada vuelta): en orden de creación, la
+    que ya alcanza se paga y la que pasó de hora queda vencida."""
+    r, now = state["r"], time.time()
+    for pid in await r.zrange(multisig.WAITING, 0, -1):
+        status = await state["retry"](keys=[multisig.proposal_key(pid)], args=[now])
+        if status == "admitir":
+            await _admit(pid)
+        elif status != "admitiendo":
+            await r.zrem(multisig.WAITING, pid)  # vencida, o ya resuelta por otro camino
 
 
 async def _sign(pid: str, signer: str, signature: str, d: dict) -> dict:

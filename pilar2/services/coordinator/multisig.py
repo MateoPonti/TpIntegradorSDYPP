@@ -7,7 +7,9 @@ mínimo, el pago se admite (se reserva el saldo con el mismo Lua de siempre) y v
 - La firma es sobre `multisig:<cuenta>:<para>:<centavos>:<nonce>`; el id de la propuesta es el hash de ese texto
   (como Polkadot, que aprueba sobre el hash de la operación). Cambiar el monto o el destino cambia el id: las firmas
   de otra propuesta no sirven.
-- Mientras falten firmas no se reserva saldo. Si al llegar al mínimo no alcanza, la propuesta queda rechazada.
+- Mientras falten firmas no se reserva saldo. Si al llegar al mínimo no alcanza, queda **esperando saldo** (como Safe,
+  donde las firmas siguen valiendo y se ejecuta cuando hay plata; decidido el 21/11): el líder la reintenta en cada
+  vuelta, en orden de creación, y se paga sola cuando entra la plata. Si vence antes, queda vencida.
 - Vence a las MULTISIG_TTL_SECONDS (24 h) por hora del servidor: los bloques solo salen si hay tx, así que no sirven
   de reloj.
 - Dueños y mínimo quedan fijos.
@@ -24,7 +26,8 @@ from tpi_common.config import env_int
 
 MAX_OWNERS = 10
 TTL = env_int("MULTISIG_TTL_SECONDS", 86400)
-STATES = ("pendiente", "admitiendo", "admitida", "rechazada", "vencida")
+STATES = ("pendiente", "admitiendo", "esperando_saldo", "admitida", "rechazada", "vencida")
+WAITING = "multisig:waiting"  # ZSET id -> hora de creación: propuestas con las firmas juntas que esperan saldo
 
 
 def key(account: str) -> str:
@@ -111,11 +114,12 @@ def check_definition(account: str, owners, threshold) -> tuple[list[str], int]:
 
 
 def view(raw: dict, threshold: int, now: float | None = None) -> dict:
-    """Propuesta para la API: firmas, cuántas faltan y estado (una pendiente pasada de hora se muestra vencida)."""
+    """Propuesta para la API: firmas, cuántas faltan y estado (una pendiente o esperando saldo pasada de hora se
+    muestra vencida)."""
     now = time.time() if now is None else now
     sigs = {k[4:]: v for k, v in raw.items() if k.startswith("sig:")}
     status = raw.get("status", "pendiente")
-    if status == "pendiente" and float(raw.get("expires", 0)) < now:
+    if status in ("pendiente", "esperando_saldo") and float(raw.get("expires", 0)) < now:
         status = "vencida"
     return {"id": raw.get("id"), "account": raw.get("account"), "receiver": raw.get("receiver"),
             "amount_cents": int(raw.get("amount", 0)), "fee_cents": int(raw.get("fee", 0)),
@@ -123,6 +127,27 @@ def view(raw: dict, threshold: int, now: float | None = None) -> dict:
             "expires": float(raw.get("expires", 0)), "status": status, "signers": sorted(sigs),
             "signatures": len(sigs), "threshold": threshold, "missing": max(0, threshold - len(sigs)),
             "tx_id": raw.get("tx_id") or None, "reason": raw.get("reason") or None}
+
+
+def tx_id(pid: str) -> str:
+    """tx_id fijo por propuesta: si el líder se cae entre reservar y marcarla admitida, el reintento da 'duplicada' en
+    vez de pagar dos veces."""
+    return f"multisig-{pid}"
+
+
+# KEYS: proposal:<id>   ARGV: ahora
+# Una propuesta que espera saldo pasa a 'admitiendo' (devuelve 'admitir') o a 'vencida'. Es un Lua para que solo un
+# intento la tome, aunque cambie el líder en el medio.
+RETRY_LUA = """
+local status = redis.call('HGET', KEYS[1], 'status')
+if status ~= 'esperando_saldo' then return status or 'no_existe' end
+if tonumber(redis.call('HGET', KEYS[1], 'expires')) < tonumber(ARGV[1]) then
+  redis.call('HSET', KEYS[1], 'status', 'vencida')
+  return 'vencida'
+end
+redis.call('HSET', KEYS[1], 'status', 'admitiendo')
+return 'admitir'
+"""
 
 
 def tx_extra(raw: dict) -> dict:
