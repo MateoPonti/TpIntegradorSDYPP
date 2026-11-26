@@ -205,7 +205,7 @@ Un rearmado mantiene índice y base y solo acorta el prefijo, así que un nonce 
 - Modify: `.github/workflows/ci.yml` (`services: redis: image: redis:7.4-alpine`, `env: REDIS_URL`)
 
 **Interfaces:**
-- Produces: fixture `redis_db` (async, `redis.asyncio.Redis` sobre `REDIS_URL` db 15, `flushdb` antes y después; `pytest.skip` si no está `REDIS_URL`). Lo usan las Tasks 6, 7, 11 y 12.
+- Produces (hecho en el PR #2): fixture `redis_db`, que devuelve **una función** que crea un `redis.asyncio.Redis` (cada test lo crea adentro de su `asyncio.run`, porque el cliente queda atado al event loop). Usa la base 15 con `flushdb` antes y después, y se saltea sin `REDIS_URL` o si la URL no es de la base 15. También `conftest.import_gateway()`, para importar el gateway junto al coordinator. Ejemplos en `pilar2/tests/test_lua.py`. Lo usan las Tasks 6, 7, 10, 12 y 14.
 
 - [ ] **Step 1: Tests:**
   - `test_reserva_no_deja_saldo_negativo`: 100 reservas en paralelo de 10 sobre un saldo de 500 → exactamente 50 aceptadas y `pending_out == 500`.
@@ -339,6 +339,8 @@ def test_pplns_ventana_vacia_devuelve_vacio():
 - [ ] **Step 6:** Commit `A3-a+b: notifier JSON-RPC 2.0 y front sin polling`.
 
 ### Task 14: A3-c + A3-f: el gateway empuja el trabajo y `authorize` con desafío firmado
+
+> **Hecho en el PR #7, con un cambio:** la clave del worker no se genera en `/unirse`. Se ata en su primer `authorize` (TOFU), así sirve también para los pods del k3s. La entrega, `renew` y `release` siguen por HTTP (`POST /results` firmado). El detalle está en el PR y en `pilar2/README.md`.
 
 La más grande. Si el **01/12 a la noche** no está en verde, se deja el HTTP pull y se corrige el texto de c y f en el contrato (con el motivo). Todo lo demás del plan no depende de esta tarea.
 
