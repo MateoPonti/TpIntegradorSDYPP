@@ -50,7 +50,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, 
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import Counter, Gauge
 
-from tpi_common import firmas, keys, pow, quarantine, rabbit, store
+from tpi_common import firmas, keys, pow, quarantine, rabbit, ratelimit, store
 from tpi_common.config import POD_NAME, WORKER_TTL_SECONDS, env_int, env_str
 from tpi_common.logs import log, setup_logging
 from tpi_common.web import install_common_routes
@@ -62,6 +62,7 @@ WORKER_NAME = re.compile(r"[A-Za-z0-9_-]{1,32}")
 LEASE_SECONDS = env_int("TASK_LEASE_SECONDS", 60)
 MAX_ATTEMPTS = env_int("TASK_MAX_ATTEMPTS", 3)
 REAPER_PERIOD = env_int("REAPER_PERIOD_SECONDS", 5)
+WORKERS_PER_IP_HOUR = env_int("WORKERS_PER_IP_HOUR", 20)  # altas de workers por IP y por hora (B1.4, 26/11)
 CALIB_RANGE = {"gpu": env_int("CALIB_RANGE_GPU", 1_000_000_000), "cpu": env_int("CALIB_RANGE_CPU", 2_000_000)}
 CALIB_BASE = hashlib.md5(b"calibracion").hexdigest() + hashlib.sha256(b"calibracion").hexdigest()
 CALIB_PREFIX = "f" * 20  # no aparece nunca: el minero recorre el rango entero
@@ -298,8 +299,9 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["POST"], 
 install_common_routes(app)
 
 
-async def lend(task: dict, miner_id: str, kind: str, special: str | None = None) -> dict:
-    lease = {"task": task, "miner_id": miner_id, "kind": kind, "since": time.time(), "special": special}
+async def lend(task: dict, miner_id: str, kind: str, special: str | None = None, extra: dict | None = None) -> dict:
+    lease = {"task": task, "miner_id": miner_id, "kind": kind, "since": time.time(), "special": special,
+             **(extra or {})}
     await state["r"].set(keys.lease(task["task_id"]), json.dumps(lease))
     await state["r"].zadd(keys.LEASE_DEADLINES, {task["task_id"]: time.time() + LEASE_SECONDS})
     LEASED.labels(kind).inc()
@@ -311,22 +313,42 @@ def calibration_task(kind: str) -> dict:
             "from": 0, "to": CALIB_RANGE.get(kind, CALIB_RANGE["cpu"]) - 1, "attempts": 0}
 
 
-async def canary_task(cur: dict) -> dict | None:
-    """Rango del tamaño de una tarea normal, de un bloque ya sellado, que contiene su nonce conocido.
-    Lleva el block_id actual: para el minero es una tarea más (solo cambia la base)."""
-    r = state["r"]
-    height = await r.llen(keys.CHAIN)
-    if height < 2:
+def make_canary(cur: dict, ranges: list[dict], miner_id: str) -> tuple[dict, list[int]] | None:
+    """Canario (B1.1, 26/11): un rango del bloque **actual** que otro minero ya resolvió y cuyas shares ya verificó
+    el coordinator con MD5. Para el minero es una tarea más: mismo block_id, base, prefijo, share_prefix y tamaño
+    (mismo formato que blocks.new_task). No sabe qué rangos les tocaron a otros, y la respuesta no es pública: las
+    shares no salen en GET /blocks (antes el canario era un bloque ya sellado, con el nonce a la vista).
+    Devuelve (tarea, shares conocidas) o None si no hay ningún rango que sirva."""
+    ok = [v for v in ranges if v.get("worker") != miner_id and v.get("shares")
+          and cur["prefix"].startswith(v.get("share_prefix") or "-")]
+    if not ok:
         return None
-    raw = await r.get(keys.block(random.randrange(1, height)))
-    old = json.loads(raw) if raw else None
-    if not old or not old.get("prefix"):
-        return None
-    size = int(cur["range_size"])
-    lo = max(0, int(old["nonce"]) - random.randrange(size))
-    return {"v": 1, "task_id": uuid.uuid4().hex, "block_id": cur["block_id"],
-            "base": old["previous_hash"] + old["tx_digest"], "prefix": old["prefix"],
-            "from": lo, "to": lo + size - 1, "attempts": 0}
+    v = random.choice(ok)
+    task = {"v": 1, "task_id": uuid.uuid4().hex, "block_id": cur["block_id"], "base": cur["base"],
+            "prefix": cur["prefix"], "from": int(v["from"]), "to": int(v["to"]), "attempts": 0,
+            "share_prefix": v["share_prefix"]}
+    return task, [int(n) for n in v["shares"]]
+
+
+def canary_passed(known: list[int], got: list[int]) -> bool:
+    """Pasa si devolvió todas las shares conocidas (`got` ya viene verificado con MD5). Si el original mandó el
+    máximo, pudo haber cortado y un GPU devuelve otras: alcanza con el máximo de shares válidas."""
+    known_set, got_set = set(known), set(got)
+    if len(known_set) >= pow.MAX_SHARES:
+        return len(got_set) >= pow.MAX_SHARES
+    return known_set <= got_set
+
+
+async def canary_task(cur: dict, miner_id: str) -> tuple[dict, list[int]] | None:
+    raws = await state["r"].lrange(keys.block_verified_ranges(cur["index"]), 0, -1)
+    return make_canary(cur, [json.loads(x) for x in raws], miner_id)
+
+
+def lease_owner_ok(lease: dict, ident: dict | None, miner_id: str | None) -> bool:
+    """El préstamo es de quien llama (B1.3, 26/11). Con token propio, el nombre sale del token (no se puede mentir);
+    con el token compartido de los pods del k3s, del miner_id que manda el agente."""
+    who = ident["miner_id"] if ident else miner_id
+    return bool(who) and who == lease.get("miner_id")
 
 
 @app.get("/tasks/next")
@@ -363,9 +385,10 @@ async def pick_task(miner_id: str, kind: str) -> dict | Response:
     else:
         canary_due = CANARY_EVERY > 0 and await r.incr(keys.CANARY_COUNTER) % CANARY_EVERY == 0
     if cur and canary_due:
-        canary = await canary_task(cur)
-        if canary:
-            return await lend(canary, miner_id, kind, special="canary")
+        found = await canary_task(cur, miner_id)
+        if found:
+            canary, known = found
+            return await lend(canary, miner_id, kind, special="canary", extra={"canary_shares": known})
     current = cur["block_id"] if cur else None
     for _ in range(50):  # descarta de una las tareas de bloques viejos
         async with state["get_lock"]:
@@ -383,14 +406,16 @@ async def pick_task(miner_id: str, kind: str) -> dict | Response:
     return Response(status_code=204)
 
 
-@app.post("/tasks/{task_id}/renew", dependencies=[Depends(auth)])
-async def renew(task_id: str):
-    """El wrapper pregunta entre tramo y tramo. 410 = el bloque se cerró: abandonar."""
+@app.post("/tasks/{task_id}/renew")
+async def renew(task_id: str, miner_id: str | None = None, ident: dict | None = Depends(auth)):
+    """El wrapper pregunta entre tramo y tramo. 410 = el bloque se cerró: abandonar. 409 = no es tuyo."""
     r = state["r"]
     raw = await r.get(keys.lease(task_id))
     if raw is None:
         raise HTTPException(410, "préstamo inexistente o vencido")
     lease = json.loads(raw)
+    if not lease_owner_ok(lease, ident, miner_id):
+        raise HTTPException(409, "ese préstamo es de otro minero")
     block_id = lease["task"]["block_id"]
     if lease.get("special") != "calib" and (block_id in state["solved"] or block_id != await current_block_id()):
         await r.zrem(keys.LEASE_DEADLINES, task_id)
@@ -406,11 +431,16 @@ async def renew(task_id: str):
     return {"lease_seconds": LEASE_SECONDS}
 
 
-@app.post("/tasks/{task_id}/release", dependencies=[Depends(auth)])
-async def release(task_id: str):
+@app.post("/tasks/{task_id}/release")
+async def release(task_id: str, miner_id: str | None = None, ident: dict | None = Depends(auth)):
     """El minero devuelve la tarea porque no pudo terminarla (se le rompió el motor). Vuelve a la cola al
     instante, sin esperar los 60 s del préstamo, y cuenta como una falla (a las 3 seguidas, cuarentena)."""
     r = state["r"]
+    raw = await r.get(keys.lease(task_id))
+    if raw is None:
+        raise HTTPException(410, "préstamo inexistente o vencido")
+    if not lease_owner_ok(json.loads(raw), ident, miner_id):
+        raise HTTPException(409, "ese préstamo es de otro minero")
     raw = await r.getdel(keys.lease(task_id))
     await r.zrem(keys.LEASE_DEADLINES, task_id)
     if raw is None:
@@ -436,16 +466,23 @@ async def finish_calibration(lease: dict, res: dict) -> None:
 
 async def finish_canary(lease: dict, res: dict) -> None:
     task, miner = lease["task"], lease["miner_id"]
-    ok = bool(res.get("found")) and int(task["from"]) <= int(res.get("nonce", -1)) <= int(task["to"]) \
-        and pow.verify(task["base"], task["prefix"], int(res["nonce"]), res.get("hash", ""))
+    got = pow.valid_shares(task["base"], task["share_prefix"], int(task["from"]), int(task["to"]), res.get("shares"))
+    ok = canary_passed(lease.get("canary_shares") or [], got)
     CANARIES.labels("ok" if ok else "falla").inc()
+    if res.get("found"):
+        # El canario es un rango del bloque actual: si el otro minero dijo "no encontré" y acá aparece la solución,
+        # es la del bloque. Se reenvía como un resultado más (el coordinator la verifica con MD5).
+        await state["exchange"].publish(rabbit.message({"v": 1, **res, "from": task["from"], "to": task["to"],
+                                                        "block_id": task["block_id"], "worker": miner}),
+                                        routing_key=f"result.{lease['kind']}")
     if ok:
         if await state["r"].exists(keys.worker_trial(miner)) and await state["r"].incr(keys.worker_trial(miner)) >= TRIAL_CANARIES:
             await state["r"].delete(keys.worker_trial(miner), keys.miner_tasks(miner))
             TRIAL_PASSED.inc()
             log(logger, "worker pasó la prueba: ya cobra", miner_id=miner)
         return
-    log(logger, "canario fallado", miner_id=miner, task_from=task["from"], task_to=task["to"])
+    log(logger, "canario fallado", miner_id=miner, task_from=task["from"], task_to=task["to"],
+        esperadas=len(lease.get("canary_shares") or []), devueltas=len(got))
     await put_in_quarantine(miner, "canario")  # no cobra el bloque y sus "no encontré" van a otros
     await revoke_token(miner, "canario")  # alta pública: mentir le cuesta el token
 
@@ -471,9 +508,25 @@ async def post_result(request: Request, ident: dict | None = Depends(auth)):
     if ident:  # token propio: el resultado es de ese worker, diga lo que diga (si no, cobra otro o se saltea la prueba)
         res["worker"] = ident["miner_id"]
     r = state["r"]
+    raw = await r.get(keys.lease(res["task_id"]))
+    if raw is not None and not lease_owner_ok(json.loads(raw), ident, res["worker"]):
+        raise HTTPException(409, "ese préstamo es de otro minero")  # B1.3: el préstamo sigue siendo del dueño
     raw = await r.getdel(keys.lease(res["task_id"]))
     await r.zrem(keys.LEASE_DEADLINES, res["task_id"])
     lease = json.loads(raw) if raw else None
+    if lease:
+        # B1.3 (26/11): el rango, el bloque y el prefijo de shares son los que se prestaron, no los que dice el pedido.
+        task = lease["task"]
+        res.update({"from": task["from"], "to": task["to"], "block_id": task["block_id"]})
+    elif res["found"]:
+        # Sin préstamo (venció y se re-publicó): un "encontré" se reenvía igual, el coordinator lo verifica con MD5.
+        # Del rango no se le cree nada: solo el nonce.
+        try:
+            res["from"] = res["to"] = int(res.get("nonce"))
+        except (TypeError, ValueError):
+            raise HTTPException(400, "nonce inválido") from None
+    else:
+        raise HTTPException(410, "préstamo inexistente o vencido: ese rango ya lo está haciendo otro minero")
     if lease and lease.get("special") == "calib":
         await finish_calibration(lease, res)
         return Response(status_code=202)
@@ -553,6 +606,10 @@ async def register_worker(request: Request):
         raise HTTPException(400, "cuenta no registrada: primero creá la cuenta")
     if not firmas.verify(pubkey, firmas.worker_message(account, worker), body.get("signature")):
         raise HTTPException(400, firmas.INVALID)
+    ip = ratelimit.client_ip(request)
+    if not await ratelimit.allow(r, f"ratelimit:workers:{ip}", WORKERS_PER_IP_HOUR, 3600):  # B1.4: Sybil
+        log(logger, "alta de worker frenada por límite", ip=ip)
+        raise HTTPException(429, f"demasiados workers nuevos desde esta IP (máximo {WORKERS_PER_IP_HOUR} por hora)")
     miner_id, token = f"{account}.{worker}", secrets.token_urlsafe(32)
     if await r.exists(keys.worker_token_of(miner_id)):
         raise HTTPException(409, "ese worker ya existe: elegí otro nombre")

@@ -210,7 +210,7 @@ class Miner:
                 out = self.run_engine(task["base"], task["prefix"], lo, end, share if len(shares) < MAX_SHARES else "",
                                       MAX_SHARES - len(shares))
             except Abandoned:
-                self.gw.call("POST", f"/tasks/{task['task_id']}/renew")  # 410: el gateway borra el préstamo
+                self.gw.call("POST", f"/tasks/{task['task_id']}/renew?miner_id={self.id}")  # 410: el gateway borra el préstamo
                 return "abandoned"
             shares += out.get("shares") or []
             hashes += int(out["hashes"])
@@ -221,7 +221,7 @@ class Miner:
                 break
             lo = end + 1
             if lo <= hi:
-                status, _ = self.gw.call("POST", f"/tasks/{task['task_id']}/renew")
+                status, _ = self.gw.call("POST", f"/tasks/{task['task_id']}/renew?miner_id={self.id}")
                 if status == 410:
                     return "abandoned"
         result.update(hashes=hashes, seconds=round(time.perf_counter() - t0, 3),
@@ -263,7 +263,7 @@ class Miner:
                 # El gateway lo cuenta como falla (a las 3 seguidas, cuarentena).
                 log.error("tarea %s falló: %s", task["task_id"][:8], exc)
                 try:
-                    self.gw.call("POST", f"/tasks/{task['task_id']}/release")
+                    self.gw.call("POST", f"/tasks/{task['task_id']}/release?miner_id={self.id}")
                 except OSError:
                     pass  # si tampoco llega al gateway, el préstamo vence solo
                 time.sleep(max(self.idle, 2))

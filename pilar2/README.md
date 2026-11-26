@@ -176,9 +176,9 @@ prefijo y enlace) · `GET /chain` · `GET /status` (con Redis caído responde ig
 | Endpoint | Qué hace |
 |---|---|
 | `GET /tasks/next?miner_id=&kind=` | Saca una tarea de `mining.tasks`, la presta (`lease:<task_id>`) y la devuelve. `204` si no hay o si el minero está en cuarentena. `204` también si ya tiene `MAX_LEASES_PER_MINER` (2) préstamos abiertos (20/11): uno que pida sin parar no se lleva la tanda entera. La primera de cada minero es la **calibración** y 1 de cada `CANARY_EVERY` es un **canario**. |
-| `POST /tasks/{task_id}/renew` | El agente pregunta entre tramo y tramo. Renueva el préstamo, o `410` si el bloque ya se cerró o el minero está en cuarentena (en ese caso la tarea vuelve a la cola). |
-| `POST /tasks/{task_id}/release` | "No pude": el agente devuelve la tarea cuando se le rompe el motor. Vuelve a la cola al instante (sin esperar los 60 s) y cuenta como falla. `410` si el préstamo ya no existe. |
-| `POST /results` | Publica el resultado en `mining.results` (el coordinator lo verifica de nuevo). Con token propio, el `worker` del resultado sale del token. Las `shares` solo pasan si el resultado es de un préstamo, con el `share_prefix` de esa tarea. |
+| `POST /tasks/{task_id}/renew?miner_id=` | El agente pregunta entre tramo y tramo. Renueva el préstamo, o `410` si el bloque ya se cerró o el minero está en cuarentena (en ese caso la tarea vuelve a la cola). `409` si el préstamo es de otro minero (26/11). |
+| `POST /tasks/{task_id}/release?miner_id=` | "No pude": el agente devuelve la tarea cuando se le rompe el motor. Vuelve a la cola al instante (sin esperar los 60 s) y cuenta como falla. `410` si el préstamo ya no existe y `409` si es de otro minero. |
+| `POST /results` | Publica el resultado en `mining.results` (el coordinator lo verifica de nuevo). Con token propio, el `worker` del resultado sale del token. **Desde el 26/11 (B1.3):** `409` si el préstamo es de otro minero, y `from`, `to`, `block_id` y `share_prefix` salen **del préstamo**, no del pedido. Sin préstamo (venció y se re-publicó), un "no encontré" da `410` y un "encontré" se reenvía igual con `from = to = nonce` (el coordinator lo verifica con MD5, así no se pierde un bloque). |
 | `POST /keepalive` | `{miner_id, type: cpu\|gpu, hashrate, account?}` → `worker:<id>` con TTL 15 s y `miner:<id>:account` (cuenta de cobro, 1 día). |
 | `GET /scaling` | Señal del pool para KEDA. `503` si el pool no la renovó. Acepta el `SCALING_TOKEN` de solo lectura (21/11: KEDA ya no usa el token de los mineros) o uno de minero. |
 | `WS /ws/miners` | Avisos al minero: `{"type": "tareas"}` (hay tareas en la cola) y `{"type": "block.solved", "block_id"}`. Solo avisa: pedir y entregar sigue siendo HTTP. |
@@ -230,11 +230,21 @@ prefijo y enlace) · `GET /chain` · `GET /status` (con Redis caído responde ig
   La GPU no va en KEDA: es una sola placa, y el agente ya la deja en reposo cuando no hay tareas.
 - **Calibración** (profe 2): la primera tarea de cada minero es una prueba fija en el gateway (base fija,
   prefijo imposible, `CALIB_RANGE_GPU` / `CALIB_RANGE_CPU`). Da su hashrate inicial y una clase.
-- **Canarios:** 1 de cada `CANARY_EVERY` (20) tareas es un rango de un bloque ya sellado que contiene su nonce.
-  Si el minero contesta "no encontré", está roto o miente: **cuarentena** (`QUARANTINE_SECONDS`), su trabajo
+- **Canarios** (rehechos el 26/11, pedido B1.1 del profe): 1 de cada `CANARY_EVERY` (20) tareas es un rango **del
+  bloque actual** que otro minero ya resolvió y cuyas shares el coordinator ya verificó con MD5
+  (`block:<i>:verified`, los últimos 200). Tiene el mismo formato que una tarea real (`blocks.new_task`: mismo
+  `block_id`, base, prefijo, `share_prefix` y tamaño), así que el minero no lo puede distinguir. Además su respuesta
+  no es pública: antes el canario era un rango de un bloque **sellado**, cuyo nonce salía en `GET /blocks/{i}`.
+  Pasa si devuelve todas las shares conocidas de ese rango (si el original mandó `MAX_SHARES`, alcanza con
+  `MAX_SHARES` válidas). Nunca le toca un rango propio. Si en el canario aparece la solución del bloque (el original
+  dijo "no encontré" y mintió), se reenvía al coordinator como un resultado más.
+  Si falla, está roto o miente: **cuarentena** (`QUARANTINE_SECONDS`), su trabajo
   de ese bloque no cobra y sus rangos "no encontré" se re-publican. También va a cuarentena con
   `QUARANTINE_AFTER_EXPIRED` préstamos vencidos seguidos (o devueltos con `release`). Nada de esto mina en GCP:
-  el canario se arma con datos guardados y se verifica con un solo MD5.
+  el canario se arma con datos guardados y se verifica con el MD5 de unas ~32 shares.
+- **Límite de identidades** (26/11, B1.4, contra granjas Sybil): altas de cuentas (`REGISTER_PER_IP_HOUR`, 20) y
+  de workers (`WORKERS_PER_IP_HOUR`, 20) por IP y por hora → `429`. La IP sale de `CF-Connecting-IP` (Cloudflare),
+  después de `X-Forwarded-For` (Traefik) y si no, de la conexión (`tpi_common/ratelimit.py`).
 - **Fallas** (13/11): no hay un "falló" que el minero mande; el sistema las detecta solo.
   - Un **"encontré" que no verifica** (MD5 o rango) lo detecta el coordinator: cuarentena, no cobra el bloque, y
     ese rango y sus "no encontré" se re-publican.
