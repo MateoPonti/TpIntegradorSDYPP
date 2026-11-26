@@ -50,3 +50,20 @@ def test_transactions_get_mined_and_chain_is_valid():
     tx = verify_chain.get(f"{URL}/transactions/{body['tx_id']}")
     assert tx["status"] == "confirmed"
     assert verify_chain.verify(URL) == 0
+
+
+def test_genesis_no_transfiere_a_una_cuenta_propia():
+    """A1 (la verificación del profe): un POST /transactions sin firma desde user-3 hacia una cuenta propia → 400."""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    key = Ed25519PrivateKey.generate()
+    pub = key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw).hex()
+    name = f"propia-{int(time.time() * 1000) % 10**8}"
+    code, body = post("/accounts/register", {"account": name, "public_key": pub,
+                                             "signature": key.sign(f"register:{name}:{pub}".encode()).hex()})
+    assert code == 201, body
+    code, body = post("/transactions", {"sender": "user-3", "receiver": name, "amount": 1000})
+    assert code == 400 and "génesis" in body["error"]
+    assert verify_chain.get(f"{URL}/balances/{name}")["balance_cents"] == 0
+    assert post("/transactions", {"sender": "user-3", "receiver": "user-4", "amount": 1})[0] == 202  # dentro, sí

@@ -289,9 +289,17 @@ prefijo y enlace) · `GET /chain` · `GET /status` (con Redis caído responde ig
   `asdasdasasdasd` y `sda`, 40,00 en total, quedan sin dueño).
 - **La cuenta de cobro de un minero tiene que estar registrada** (`MINER_ACCOUNT`, en el keep-alive; si no, `400` y el
   agente lo avisa en el log). La de por defecto, `miner:<id>`, sigue valiendo: nadie la puede registrar.
-- **Limitación conocida (decidido el 20/11, opción B):** las cuentas del génesis (`user-0..96`) no firman, así que
-  cualquiera puede mover plata de ellas a cualquier cuenta. Se deja así porque `bench.py` de la cátedra no firma. Se
-  evaluó que sin firma solo puedan pagarle a otra cuenta del génesis (`bench.py` solo usa esas) y quedó descartado.
+- **El génesis solo transfiere dentro del génesis** (26/11, pedido A1 del profe; reemplaza la "limitación conocida"
+  del 20/11): como `user-0..96` no firman, cualquiera puede mandar en su nombre. Hasta el 26/11 eso permitía llevarse
+  los ~97M del génesis a una cuenta propia, contra menos de 100.000 que va a emitir el premio en total. Ahora una tx
+  de una cuenta del génesis a cualquier cuenta que no sea del génesis → `400` ("las cuentas del génesis solo
+  transfieren a otras cuentas del génesis"). Al génesis sí se le puede mandar.
+  - De las tres opciones del profe se eligió esta porque es la única que no rompe `bench.py` (no firma, no se puede
+    modificar y manda solo entre `user-0..96`). Anclar cada cuenta a una clave obligaba a firmar en `bench.py`. Bajar
+    el génesis a montos chicos dejaba el mismo agujero, solo que más chico.
+  - Consecuencia: la plata de las cuentas propias sale **solo del minado** (premio + comisiones). Para probar con una
+    cuenta propia hay que minar con `MINER_ACCOUNT=<cuenta>` o recibir de alguien que tenga saldo. Los tests de doble
+    gasto de `test_sistema.py` se fondean desde una cuenta así (`TPI_FONDOS_CUENTA` / `TPI_FONDOS_KEY`).
 - Cliente: `pilar2/tools/cuenta.py` (`claves`, `registrar`, `enviar`). `GET /balances/<cuenta>` dice si está registrada y su último `seq`.
 - ~~Pendiente: `MINER_ACCOUNT` sin registrar~~ → **resuelto el 20/11**: tiene que ser una cuenta registrada (ver arriba).
 

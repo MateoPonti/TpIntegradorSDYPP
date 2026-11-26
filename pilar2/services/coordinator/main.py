@@ -128,6 +128,9 @@ async def _submit(body) -> tuple[int, dict]:
     except ledger.InvalidTx as exc:
         TX_REJECTED.labels("formato").inc()
         return 400, {"error": str(exc)}
+    if not cuentas.genesis_transfer_ok(tx["sender"], tx["receiver"]):  # A1 (26/11): el génesis no firma
+        TX_REJECTED.labels("genesis fuera del genesis").inc()
+        return 400, {"error": "las cuentas del génesis solo transfieren a otras cuentas del génesis (user-0..96)"}
     if reason := await _crowdfund_closed(tx):
         TX_REJECTED.labels("colecta").inc()
         return 400, {"error": reason}
