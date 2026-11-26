@@ -11,8 +11,8 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from prometheus_client import Counter, Gauge
 
-from tpi_common import firmas, keys, pow, rabbit, store
-from tpi_common.config import CHAIN_ID, POD_NAME, env_float, env_str
+from tpi_common import firmas, keys, pow, rabbit, ratelimit, store
+from tpi_common.config import CHAIN_ID, POD_NAME, env_float, env_int, env_str
 from tpi_common.logs import log, setup_logging
 from tpi_common.web import install_common_routes
 
@@ -31,6 +31,9 @@ GATEWAY_PUBLIC_URL = env_str("GATEWAY_PUBLIC_URL", "http://127.0.0.1:18180")  # 
 NOTIFIER_PUBLIC_URL = env_str("NOTIFIER_PUBLIC_URL", "")  # websocket del notifier; vacío = /ws del mismo host
 REPO_URL = env_str("REPO_URL", "https://github.com/MateoPonti/TpIntegradorSDYPP")
 MAX_BULK = 10_000
+# Altas de cuentas por IP y por hora (B1.4, 26/11): una granja de identidades (Sybil) necesita muchas cuentas. 20 deja
+# correr los tests de sistema (registran ~7 por corrida) y frena a un script que registra sin parar.
+REGISTER_PER_IP_HOUR = env_int("REGISTER_PER_IP_HOUR", 20)
 
 TX_ACCEPTED = Counter("tx_accepted_total", "Transacciones aceptadas")
 TX_REJECTED = Counter("tx_rejected_total", "Transacciones rechazadas", ["reason"])
@@ -230,6 +233,10 @@ async def register_account(request: Request):
         raise HTTPException(400, "public_key: 32 bytes en hex")
     if not cuentas.verify(pubkey, cuentas.register_message(account, pubkey), body.get("signature")):
         raise HTTPException(400, firmas.INVALID)
+    ip = ratelimit.client_ip(request)
+    if not await ratelimit.allow(state["r"], f"ratelimit:register:{ip}", REGISTER_PER_IP_HOUR, 3600):
+        log(logger, "alta de cuenta frenada por límite", ip=ip)
+        raise HTTPException(429, f"demasiadas cuentas nuevas desde esta IP (máximo {REGISTER_PER_IP_HOUR} por hora)")
     if await state["r"].exists(multisig.key(account)):
         raise HTTPException(409, "ese nombre es una cuenta compartida")
     if await state["r"].exists(keys.balance(account)) or await state["r"].exists(keys.pending_out(account)):

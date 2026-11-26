@@ -127,6 +127,12 @@ def block_share_nonces(index: int) -> str:
     return f"block:{index}:sharenonces"
 
 
+def block_verified_ranges(index: int) -> str:
+    """LIST de rangos del bloque ya resueltos con sus shares verificadas (JSON {from, to, share_prefix, shares,
+    worker}). De acá salen los canarios (B1.1, 26/11): un rango repetido del bloque actual, con respuesta conocida."""
+    return f"block:{index}:verified"
+
+
 def miner_tasks(miner_id: str) -> str:
     """INCR por tarea prestada a ese minero (para darle un canario cada tantas)."""
     return f"miner:{miner_id}:tasks"

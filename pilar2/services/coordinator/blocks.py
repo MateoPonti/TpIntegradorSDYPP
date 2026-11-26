@@ -176,6 +176,21 @@ def genesis_block() -> dict:
             "prefix": "", "nonce": 0, "block_hash": pow.md5_hex(prev + digest, 0), "timestamp": 0, "miner": None}
 
 
+def new_task(cur: dict, start: int, end: int) -> dict:
+    """Tarea del rango [start, end) del bloque en curso. Los canarios del gateway copian este formato (B1.1)."""
+    return {"v": 1, "task_id": uuid.uuid4().hex, "block_id": cur["block_id"], "base": cur["base"],
+            "prefix": cur["prefix"], "from": start, "to": min(end - 1, NONCE_LIMIT), "attempts": 0,
+            "share_prefix": pow.share_prefix(cur["prefix"], cur["range_size"], SHARES_PER_TASK)}
+
+
+def verified_range(worker: str, lo: int, hi: int, share_prefix: str, shares: list[int]) -> dict:
+    """Un rango ya resuelto con sus shares verificadas con MD5: el gateway lo usa de canario para otro minero."""
+    return {"from": lo, "to": hi, "share_prefix": share_prefix, "shares": shares, "worker": worker}
+
+
+VERIFIED_KEPT = 200  # rangos verificados que se guardan por bloque (de ahí salen los canarios)
+
+
 class Chain:
     def __init__(self, r, exchange: aio_pika.abc.AbstractExchange, channel, logger):
         self.r, self.exchange, self.channel, self.logger = r, exchange, channel, logger
@@ -315,9 +330,7 @@ class Chain:
             if start > NONCE_LIMIT:
                 log(self.logger, "espacio de nonces agotado", block_id=cur["block_id"])
                 return
-            task = {"v": 1, "task_id": uuid.uuid4().hex, "block_id": cur["block_id"], "base": cur["base"],
-                    "prefix": cur["prefix"], "from": start, "to": min(end - 1, NONCE_LIMIT), "attempts": 0,
-                    "share_prefix": pow.share_prefix(cur["prefix"], size, SHARES_PER_TASK)}
+            task = new_task(cur, start, end)
             await self.exchange.publish(rabbit.message(task), routing_key="task.any")
             TASKS_PUBLISHED.inc()
 
@@ -378,6 +391,13 @@ class Chain:
         sent = len(res.get("shares") or [])
         SHARES.labels("ok").inc(len(good))
         SHARES.labels("invalida").inc(max(0, sent - len(good)))
+        if good and not res.get("found"):
+            # Rango resuelto con shares verificadas: sirve de canario para otro minero (B1.1, 26/11). Se guarda aunque
+            # el worker esté en prueba: lo que se guarda es lo que verificó el MD5 de acá, no lo que dijo él.
+            vkey = keys.block_verified_ranges(cur["index"])
+            await self.r.lpush(vkey, json.dumps(verified_range(worker, lo, hi, sp, good)))
+            await self.r.ltrim(vkey, 0, VERIFIED_KEPT - 1)
+            await self.r.expire(vkey, 3600)
         if not good or await self.r.exists(keys.worker_trial(worker)):
             return 0
         return await self._shares(keys=[keys.block_share_nonces(cur["index"]), keys.block_shares(cur["index"])],
