@@ -226,7 +226,7 @@ data:
                 "type": "prometheus",
                 "uid": "prometheus"
               },
-              "expr": "max by (miner_id, source) (miner_hashrate{namespace=\"tpi\", source=~\"motor|efectivo|calibrated\"})",
+              "expr": "max by (miner_id, source) (miner_hashrate{namespace=\"tpi\", source=~\"hashrate|motor|calibrated\"})",
               "legendFormat": "{{miner_id}} {{source}}",
               "refId": "A"
             }

@@ -266,10 +266,10 @@ function drawMiners() {
   $("poolSum").textContent = `${miners.length} conectados`;
   const q = $("mine").value.trim();
   const mine = miners.filter((m) => q && m.account === q);
-  $("miners").innerHTML = "<tr><th>Worker</th><th>Tipo</th><th>Estado</th><th>Clase</th><th class=\"num\">Real</th><th class=\"num\">Efectivo</th><th class=\"num\">Informado</th></tr>" +
+  $("miners").innerHTML = "<tr><th>Worker</th><th>Tipo</th><th>Estado</th><th>Clase</th><th class=\"num\" title=\"Shares verificadas con MD5 por el gateway: lo único que cuenta\">Medido</th><th class=\"num\" title=\"Lo que informa su motor (no se usa)\">Informa el motor</th><th class=\"num\" title=\"Lo que declara en el keep-alive (no se usa)\">Declarado</th></tr>" +
     (mine.length ? mine.map((x) => `<tr><td class="mono">${esc(x.miner_id)}</td><td>${esc(x.kind)}</td>
       <td>${estadoWorker(x)}</td><td>${esc(x.class ?? "—")}</td>
-      <td class="num">${rate(x.motor)}</td><td class="num">${rate(x.efectivo)}</td><td class="num">${rate(x.declared)}</td></tr>`).join("")
+      <td class="num">${x.source === "shares" ? rate(x.hashrate) : '<span class="muted">midiendo…</span>'}</td><td class="num">${rate(x.motor)}</td><td class="num">${rate(x.declared)}</td></tr>`).join("")
       : `<tr><td colspan="7" class="muted">${q ? `La cuenta "${esc(q)}" no tiene workers conectados.` : "Escribí tu cuenta para ver tus workers."}</td></tr>`);
 }
 async function refreshMiners() {

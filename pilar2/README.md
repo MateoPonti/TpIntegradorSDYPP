@@ -242,6 +242,20 @@ prefijo y enlace) · `GET /chain` · `GET /status` (con Redis caído responde ig
   de ese bloque no cobra y sus rangos "no encontré" se re-publican. También va a cuarentena con
   `QUARANTINE_AFTER_EXPIRED` préstamos vencidos seguidos (o devueltos con `release`). Nada de esto mina en GCP:
   el canario se arma con datos guardados y se verifica con el MD5 de unas ~32 shares.
+- **Hashrate medido** (26/11, B1.2): el hashrate que cuenta (prefijo automático, clase, `/miners`) sale de las
+  **shares que verifica el gateway con MD5** (`Σ shares · 16^largo / segundos medidos por el gateway`, con al menos
+  `MIN_SHARES_TO_MEASURE` = 20 shares en la ventana), no de lo que informa el minero (hashes y `engine_seconds` del
+  motor, el keep-alive o la calibración, que se pueden inflar). La calibración queda solo como valor inicial hasta
+  tener medición. En `/miners`, `source: "shares"`. En el explorador la columna "Medido" es esa; "Informa el motor" y
+  "Declarado" quedan a la vista pero no se usan.
+- **Vardiff** (26/11, punto d del contrato, como Stratum): con el hashrate medido, el gateway le pone a cada tarea
+  que presta el largo de share de ese worker (`tpi_common/vardiff.py`), apuntando a `VARDIFF_SHARES_PER_SECOND` (10)
+  shares por segundo: uno rápido recibe shares más difíciles (menos MD5 que verificar) y uno lento más fáciles. El
+  peso de cada share es `16^largo`, así que el premio no cambia. Límites por tarea: entre 8 y `MAX_SHARES` (256)
+  shares esperadas, porque con menos los canarios y la medición se quedan sin datos y con más se cortarían. Como el
+  prefijo es hex (cada largo es 16 veces más difícil), por cada tamaño de tarea entran 1 o 2 largos: Vardiff separa
+  a los mineros muy distintos, no afina como la dificultad continua de Stratum. Los canarios usan el largo del minero
+  (filtrando las shares conocidas), así siguen siendo iguales a sus tareas.
 - **Límite de identidades** (26/11, B1.4, contra granjas Sybil): altas de cuentas (`REGISTER_PER_IP_HOUR`, 20) y
   de workers (`WORKERS_PER_IP_HOUR`, 20) por IP y por hora → `429`. La IP sale de `CF-Connecting-IP` (Cloudflare),
   después de `X-Forwarded-For` (Traefik) y si no, de la conexión (`tpi_common/ratelimit.py`).
