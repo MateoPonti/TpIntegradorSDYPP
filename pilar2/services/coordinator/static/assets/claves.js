@@ -9,7 +9,14 @@ const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<
 const money = (c) => (c / 100).toLocaleString("es-AR", { minimumFractionDigits: 2 });
 
 function say(id, text, ok) { const m = $(id); m.textContent = text; m.className = "msg " + (ok ? "ok" : "bad"); }
-const firmar = (par, texto) => hex(nacl.sign.detached(new TextEncoder().encode(texto), par.secretKey));
+// Desde el 26/11 (A3-g, como EIP-155) todo lo que se firma lleva el id de la cadena adelante: sdmer:<id>:<texto>.
+// Se agrega acá, en el único lugar donde se firma, así ningún tipo de mensaje queda sin él.
+let CHAIN_ID = null;
+fetch("/chain-id").then((r) => r.json()).then((d) => { CHAIN_ID = d.chain_id; }).catch(() => {});
+function firmar(par, texto) {
+  if (CHAIN_ID === null) throw new Error("Todavía no se cargó el id de la cadena: probá de nuevo en un segundo.");
+  return hex(nacl.sign.detached(new TextEncoder().encode(`sdmer:${CHAIN_ID}:${texto}`), par.secretKey));
+}
 
 async function post(url, body) {
   const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });

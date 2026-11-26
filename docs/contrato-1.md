@@ -149,3 +149,22 @@ este punto:
   corto (mismas tx, `block_id` nuevo).
 
 Detalle en `docs/decisiones.docx` y `pilar2/README.md`.
+
+---
+
+## Cambios respecto de la v1 (revisión del profe del 21/11, pedido A3)
+
+El profe comparó el contrato con lo que hace el sistema y marcó 9 diferencias. Para cada una: o se implementa, o
+se corrige el texto explicando por qué cambió. Cada fila se completa en el PR de su tarea.
+
+| # | El contrato dice | Qué se hizo | Fecha / PR |
+|---|---|---|---|
+| a | Notifier con JSON-RPC 2.0 al estilo `eth_subscribe` | En curso (Task 13) | |
+| b | El frontend deja de hacer polling | En curso (Task 13) | |
+| c | El gateway empuja el trabajo (`mining.notify`) | En curso (Task 14) | |
+| d | Vardiff (dificultad de shares por worker) | En curso (Task 11) | |
+| e | Recompensa PPLNS | En curso (Task 12) | |
+| f | `authorize` firmado con desafío y resultados firmados | En curso (Task 14) | |
+| g | Nonce + id de cadena (EIP-155) | **Implementado.** Todo lo que se firma (registro, tx, alta de workers, cuentas compartidas, propuestas, colectas) lleva adelante `sdmer:<CHAIN_ID>:`, con `CHAIN_ID = 2026` (variable de entorno). El servidor lo agrega en un solo lugar (`firmas.verify`) y el navegador también (`firmar` en `claves.js`), así ningún mensaje queda sin él. El front y `tools/cuenta.py` lo leen de `GET /chain-id`. Una firma de otra red, o una de antes del cambio, da `400`. El nonce por cuenta ya estaba (`seq`). | 26/11, Task 2 |
+| h | KEDA: 0 mineros CPU a los 60 s | En curso (Task 3) | |
+| i | RabbitMQ de 1 nodo; las quorum dan límite de entregas | Se corrige el texto (Task 19) | |

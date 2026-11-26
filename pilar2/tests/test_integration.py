@@ -60,8 +60,9 @@ def test_genesis_no_transfiere_a_una_cuenta_propia():
     key = Ed25519PrivateKey.generate()
     pub = key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw).hex()
     name = f"propia-{int(time.time() * 1000) % 10**8}"
+    chain_id = verify_chain.get(f"{URL}/chain-id")["chain_id"]
     code, body = post("/accounts/register", {"account": name, "public_key": pub,
-                                             "signature": key.sign(f"register:{name}:{pub}".encode()).hex()})
+                                             "signature": key.sign(f"sdmer:{chain_id}:register:{name}:{pub}".encode()).hex()})
     assert code == 201, body
     code, body = post("/transactions", {"sender": "user-3", "receiver": name, "amount": 1000})
     assert code == 400 and "génesis" in body["error"]

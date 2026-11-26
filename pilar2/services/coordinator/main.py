@@ -11,8 +11,8 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from prometheus_client import Counter, Gauge
 
-from tpi_common import keys, pow, rabbit, store
-from tpi_common.config import POD_NAME, env_float, env_str
+from tpi_common import firmas, keys, pow, rabbit, store
+from tpi_common.config import CHAIN_ID, POD_NAME, env_float, env_str
 from tpi_common.logs import log, setup_logging
 from tpi_common.web import install_common_routes
 
@@ -154,7 +154,7 @@ async def _submit(body) -> tuple[int, dict]:
         msg = cuentas.tx_message(tx["sender"], tx["receiver"], tx["amount"], seq)
         if not cuentas.verify(pubkey, msg, body.get("signature")):
             TX_REJECTED.labels("firma inválida").inc()
-            return 400, {"error": "firma inválida"}
+            return 400, {"error": firmas.INVALID}
         tx.update(seq=seq, signature=body["signature"])  # quedan en el bloque: cualquiera puede re-verificar
     tx["fee"] = ledger.TX_FEE_CENTS  # no va en la firma: es fija y la pone el servidor
     total = tx["amount"] + tx["fee"]  # el disponible tiene que alcanzar para monto + comisión
@@ -229,7 +229,7 @@ async def register_account(request: Request):
     if not isinstance(pubkey, str) or len(pubkey) != 64:
         raise HTTPException(400, "public_key: 32 bytes en hex")
     if not cuentas.verify(pubkey, cuentas.register_message(account, pubkey), body.get("signature")):
-        raise HTTPException(400, "firma inválida")
+        raise HTTPException(400, firmas.INVALID)
     if await state["r"].exists(multisig.key(account)):
         raise HTTPException(409, "ese nombre es una cuenta compartida")
     if await state["r"].exists(keys.balance(account)) or await state["r"].exists(keys.pending_out(account)):
@@ -325,7 +325,7 @@ async def _sign(pid: str, signer: str, signature: str, d: dict) -> dict:
     if signer not in d["owners"]:
         raise HTTPException(400, f"{signer} no es dueño de {raw['account']}")
     if not cuentas.verify(await _owner_key(signer), raw["message"].encode(), signature):
-        raise HTTPException(400, "firma inválida")
+        raise HTTPException(400, firmas.INVALID)
     if await state["sign"](keys=[multisig.proposal_key(pid), multisig.WAITING],
                            args=[signer, signature, d["threshold"], time.time()]) == "admitir":
         await _admit(pid)
@@ -352,7 +352,7 @@ async def create_multisig(request: Request):
     for owner in owners:
         await _owner_key(owner)
     if not cuentas.verify(await _owner_key(creator), multisig.create_message(account, threshold, owners), body.get("signature")):
-        raise HTTPException(400, "firma inválida")
+        raise HTTPException(400, firmas.INVALID)
     r = state["r"]
     if await r.exists(keys.account_pubkey(account)) or await r.get(keys.balance(account)):
         raise HTTPException(409, "ese nombre ya es una cuenta")
@@ -388,7 +388,7 @@ async def accept_multisig(account: str, request: Request):
         raise HTTPException(400, f"{owner} no es dueño de {account}")
     message = multisig.create_message(account, d["threshold"], d["owners"])
     if not cuentas.verify(await _owner_key(owner), message, body.get("signature")):
-        raise HTTPException(400, "firma inválida")
+        raise HTTPException(400, firmas.INVALID)
     status = await state["accept"](keys=[multisig.status_key(account), multisig.accepted_key(account),
                                          multisig.invites_index(owner), multisig.owner_index(owner)],
                                    args=[owner, len(d["owners"]), account])
@@ -406,7 +406,7 @@ async def reject_multisig(account: str, request: Request):
     if owner not in d["owners"]:
         raise HTTPException(400, f"{owner} no es dueño de {account}")
     if not cuentas.verify(await _owner_key(owner), multisig.reject_message(account), body.get("signature")):
-        raise HTTPException(400, "firma inválida")
+        raise HTTPException(400, firmas.INVALID)
     r = state["r"]
     if await _ms_status(account) != "pendiente":
         raise HTTPException(409, "solo se puede rechazar mientras está pendiente")
@@ -549,7 +549,7 @@ async def create_crowdfund(request: Request):
         raise HTTPException(400, "beneficiary: tiene que ser una cuenta registrada o compartida (activa)")
     if not cuentas.verify(await _owner_key(creator if isinstance(creator, str) else ""),
                           crowdfund.create_message(cid, beneficiary, goal, deadline), body.get("signature")):
-        raise HTTPException(400, "firma inválida")
+        raise HTTPException(400, firmas.INVALID)
     now = time.time()
     if not await r.hsetnx(crowdfund.key(cid), "id", cid):
         raise HTTPException(409, "ya existe una colecta con ese id")
@@ -664,6 +664,12 @@ def _http_ok(url: str) -> bool:
         return False
 
 
+@app.get("/chain-id")
+async def chain_id():
+    """Id de la cadena (A3-g): el front y tools/cuenta.py lo leen de acá para armar lo que firman."""
+    return {"chain_id": CHAIN_ID}
+
+
 @app.get("/status")
 async def status():
     """Endpoint público de estado ({servicio: estado}). Lo usa bench.py (pending_transactions)."""
@@ -683,7 +689,7 @@ async def status():
         # Sin Redis no hay cadena ni señal del pool que leer (21/11): antes la lectura siguiente tiraba excepción y
         # /status devolvía 500 justo cuando más hace falta. Se informa lo que sí responde y lo demás queda en null.
         services["pool"] = "desconocido (sin Redis)"
-        return {"services": services, "pending_transactions": None, "chain_height": None, "chain_tip": None,
+        return {"services": services, "chain_id": CHAIN_ID, "pending_transactions": None, "chain_height": None, "chain_tip": None,
                 "mining": None, "miners": None, "pool_plan": None, "pool_signal": None, "leader": None, "economy": None}
     signal = await r.get(keys.POOL_SCALING)
     services["pool"] = "ok" if signal else "sin señal"
@@ -691,6 +697,7 @@ async def status():
     cur = await chain.current()
     return {
         "services": services,
+        "chain_id": CHAIN_ID,
         "pending_transactions": await chain.pending_count(),
         "chain_height": await r.llen(keys.CHAIN),
         "chain_tip": await r.get(keys.CHAIN_TIP),

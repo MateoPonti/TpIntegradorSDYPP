@@ -26,6 +26,10 @@ REDIS_PASSWORD = os.getenv("REDIS_PASSWORD") or None
 REDIS_SENTINELS = env_str("REDIS_SENTINELS", "")
 REDIS_MASTER_NAME = env_str("REDIS_MASTER_NAME", "tpi")
 
+# Id de la cadena (A3-g, 26/11, como el chain id de EIP-155): va adelante de todo lo que se firma, así una firma
+# hecha para otra red (por ejemplo el compose local o una cadena de prueba con otro CHAIN_ID) no vale en esta.
+CHAIN_ID = env_int("CHAIN_ID", 2026)
+
 # Parámetros del ConfigMap que comparten varios servicios (nombres del starter del Pilar 3).
 DIFFICULTY_PREFIX = env_str("DIFFICULTY_PREFIX", "00000")
 WORKER_TTL_SECONDS = env_int("GPU_KEEPALIVE_TIMEOUT_SECONDS", 15)
