@@ -114,6 +114,7 @@ class FakeRequest:
 
 def _state(gw, monkeypatch, r):
     ex = FakeExchange()
+    monkeypatch.setattr(gw, "REQUIRE_SIGNED_RESULTS", False)  # la firma de resultados se prueba en test_push.py
     monkeypatch.setattr(gw, "state", {"r": r, "exchange": ex, "dlx": FakeExchange(), "solved": set(),
                                       "sockets": set()})
     return ex

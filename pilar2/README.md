@@ -178,10 +178,11 @@ prefijo y enlace) · `GET /chain` · `GET /status` (con Redis caído responde ig
 | `GET /tasks/next?miner_id=&kind=` | Saca una tarea de `mining.tasks`, la presta (`lease:<task_id>`) y la devuelve. `204` si no hay o si el minero está en cuarentena. `204` también si ya tiene `MAX_LEASES_PER_MINER` (2) préstamos abiertos (20/11): uno que pida sin parar no se lleva la tanda entera. La primera de cada minero es la **calibración** y 1 de cada `CANARY_EVERY` es un **canario**. |
 | `POST /tasks/{task_id}/renew?miner_id=` | El agente pregunta entre tramo y tramo. Renueva el préstamo, o `410` si el bloque ya se cerró o el minero está en cuarentena (en ese caso la tarea vuelve a la cola). `409` si el préstamo es de otro minero (26/11). |
 | `POST /tasks/{task_id}/release?miner_id=` | "No pude": el agente devuelve la tarea cuando se le rompe el motor. Vuelve a la cola al instante (sin esperar los 60 s) y cuenta como falla. `410` si el préstamo ya no existe y `409` si es de otro minero. |
-| `POST /results` | Publica el resultado en `mining.results` (el coordinator lo verifica de nuevo). Con token propio, el `worker` del resultado sale del token. **Desde el 26/11 (B1.3):** `409` si el préstamo es de otro minero, y `from`, `to`, `block_id` y `share_prefix` salen **del préstamo**, no del pedido. Sin préstamo (venció y se re-publicó), un "no encontré" da `410` y un "encontré" se reenvía igual con `from = to = nonce` (el coordinator lo verifica con MD5, así no se pierde un bloque). |
+| `POST /results` | **Firmado** (26/11, punto f): `signature` sobre `sdmer:<chain>:result:<task_id>:<1\|0>:<nonce>:<sha256 de las shares ordenadas>` con la clave atada al worker; sin `authorize` o con firma mala → `401` (y el préstamo sigue siendo suyo). Publica el resultado en `mining.results` (el coordinator lo verifica de nuevo). Con token propio, el `worker` del resultado sale del token. **Desde el 26/11 (B1.3):** `409` si el préstamo es de otro minero, y `from`, `to`, `block_id` y `share_prefix` salen **del préstamo**, no del pedido. Sin préstamo (venció y se re-publicó), un "no encontré" da `410` y un "encontré" se reenvía igual con `from = to = nonce` (el coordinator lo verifica con MD5, así no se pierde un bloque). |
 | `POST /keepalive` | `{miner_id, type: cpu\|gpu, hashrate, account?}` → `worker:<id>` con TTL 15 s y `miner:<id>:account` (cuenta de cobro, 1 día). |
 | `GET /scaling` | Señal del pool para KEDA. `503` si el pool no la renovó. Acepta el `SCALING_TOKEN` de solo lectura (21/11: KEDA ya no usa el token de los mineros) o uno de minero. |
-| `WS /ws/miners` | Avisos al minero: `{"type": "tareas"}` (hay tareas en la cola) y `{"type": "block.solved", "block_id"}`. Solo avisa: pedir y entregar sigue siendo HTTP. |
+| `WS /ws/miners?miner_id=&kind=` | **Canal de trabajo** (26/11, puntos c y f del contrato, JSON-RPC 2.0 como Stratum). El gateway manda `mining.challenge` `{challenge, chain_id}`; el worker contesta `mining.authorize` `{worker, pubkey, signature}` firmando `sdmer:<chain>:authorize:<worker>:<challenge>` con su clave Ed25519 (si no, error `-32001` y se cierra). Después el gateway **empuja** las tareas con `mining.notify` (una a la vez por conexión: la siguiente apenas se cierra el préstamo de la anterior) y sigue avisando `block.solved`. La entrega, `renew` y `release` siguen por HTTP. Si el WebSocket se corta, el agente vuelve a pedir por HTTP, y la tarea que tenía vence y el reaper la re-publica. |
+| `GET /miners/challenge?miner_id=` · `POST /miners/authorize` | `authorize` por HTTP (el agente lo hace al arrancar, así puede firmar aunque el WebSocket no ande). Desafío de un solo uso y 60 s. |
 
 ## Mensajes (JSON, `"v": 1`)
 
@@ -248,6 +249,14 @@ prefijo y enlace) · `GET /chain` · `GET /status` (con Redis caído responde ig
   motor, el keep-alive o la calibración, que se pueden inflar). La calibración queda solo como valor inicial hasta
   tener medición. En `/miners`, `source: "shares"`. En el explorador la columna "Medido" es esa; "Informa el motor" y
   "Declarado" quedan a la vista pero no se usan.
+- **Clave del worker y TOFU** (26/11, punto f): cada worker tiene su clave Ed25519 (`MINER_KEY_FILE`, por defecto
+  `~/.sdmer/<miner_id>.key`, o `/tmp/sdmer/` si el home no se puede escribir, como en los pods; el agente la crea si
+  no existe). El gateway la **ata al worker en el primer `authorize`** (`workerkey:<id>`, vence a los 7 días sin uso),
+  como el `known_hosts` de SSH: el token dice quién es y la clave prueba que es el mismo de antes y firma sus
+  resultados. Se eligió esto en vez de generar la clave del worker en `/unirse` porque sirve igual para los pods del
+  k3s (que no pasan por `/unirse`) y no cambia el alta. Perder la clave obliga a dar de alta otro worker. El agente
+  firma con el código de referencia del RFC 8032 (solo stdlib, porque corre en Colab); `test_push.py` verifica que da
+  lo mismo que `cryptography`. `REQUIRE_SIGNED_RESULTS=0` apaga la exigencia (solo para una transición).
 - **Vardiff** (26/11, punto d del contrato, como Stratum): con el hashrate medido, el gateway le pone a cada tarea
   que presta el largo de share de ese worker (`tpi_common/vardiff.py`), apuntando a `VARDIFF_SHARES_PER_SECOND` (10)
   shares por segundo: uno rápido recibe shares más difíciles (menos MD5 que verificar) y uno lento más fáciles. El

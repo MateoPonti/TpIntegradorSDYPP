@@ -51,7 +51,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import Counter, Gauge
 
 from tpi_common import firmas, keys, pow, quarantine, rabbit, ratelimit, store, vardiff
-from tpi_common.config import POD_NAME, WORKER_TTL_SECONDS, env_float, env_int, env_str
+from tpi_common.config import CHAIN_ID, POD_NAME, WORKER_TTL_SECONDS, env_float, env_int, env_str
 from tpi_common.logs import log, setup_logging
 from tpi_common.web import install_common_routes
 
@@ -79,6 +79,12 @@ MAX_WORKERS_PER_ACCOUNT = env_int("MAX_WORKERS_PER_ACCOUNT", 10)
 MAX_LEASES_PER_MINER = env_int("MAX_LEASES_PER_MINER", 2)  # la que mina y una de colchón
 NOTICE_PERIOD = float(env_str("WS_NOTICE_SECONDS", "1"))
 MAX_WS = env_int("WS_MAX_MINERS", 500)
+# A3-f (26/11): todo resultado va firmado con la clave que el worker ató en su authorize. En 0 solo para una
+# transición (agentes viejos sin clave); el valor del TP es 1.
+REQUIRE_SIGNED_RESULTS = env_str("REQUIRE_SIGNED_RESULTS", "1") == "1"
+WORKER_KEY_TTL = 7 * 86400  # la clave atada vence a los 7 días sin authorize (un pod que no vuelve no deja basura)
+AUTHORIZE_TIMEOUT = 10.0  # segundos para contestar el desafío del WebSocket
+PUSH_POLL = env_float("WS_PUSH_POLL_SECONDS", 0.5)  # cada cuánto mira si el worker ya entregó (sin aviso local)
 
 LEASED = Counter("tasks_leased_total", "Tareas prestadas a mineros", ["kind"])
 DROPPED = Counter("tasks_dropped_stale_total", "Tareas de bloques viejos descartadas al sacarlas")
@@ -97,6 +103,8 @@ LIMITED = Counter("tasks_limited_total", "Pedidos de tarea rechazados porque el 
 TRIAL_PASSED = Counter("workers_trial_passed_total", "Workers que pasaron la prueba")
 WS_CONNECTED = Gauge("gateway_ws_miners", "Mineros conectados por WebSocket a esta réplica")
 WS_NOTICES = Counter("gateway_ws_notices_total", "Avisos mandados por WebSocket", ["type"])
+AUTHORIZED = Counter("miners_authorize_total", "authorize de workers (desafío firmado)", ["result"])
+PUSHED = Counter("tasks_pushed_total", "Tareas empujadas por WebSocket (mining.notify)", ["kind"])
 
 state: dict = {"solved": set(), "sockets": set()}
 
@@ -234,6 +242,8 @@ async def count_expired(miner_id: str) -> None:
 
 async def broadcast(msg: dict) -> None:
     """Manda un aviso a todos los mineros conectados a esta réplica. Uno que no contesta se descarta."""
+    for conn in state.get("workers_ws", {}).values():
+        conn["wake"].set()  # hay novedades: que el push loop mire ya
     for ws in list(state["sockets"]):
         try:
             await asyncio.wait_for(ws.send_json(msg), 2)
@@ -364,6 +374,61 @@ async def vardiff_len(miner_id: str, cur: dict) -> int | None:
     return vardiff.share_len(rate, len(cur["prefix"]), int(cur["range_size"]))
 
 
+async def authorize_worker(miner_id: str, pubkey, challenge: str, signature) -> str | None:
+    """authorize (A3-f, 26/11): el worker firma el desafío con su clave Ed25519. La primera vez la clave queda atada al
+    worker (TOFU, como known_hosts de SSH: el token ya dice quién es; la clave prueba que es el mismo de antes y firma
+    sus resultados). Devuelve None si está bien o el motivo del rechazo."""
+    if not isinstance(pubkey, str) or len(pubkey) != 64:
+        return "pubkey: 32 bytes en hex"
+    if not firmas.verify(pubkey, firmas.authorize_message(miner_id, challenge), signature):
+        return "firma del desafío inválida"
+    r = state["r"]
+    key = keys.worker_pubkey(miner_id)
+    if not await r.set(key, pubkey.lower(), nx=True, ex=WORKER_KEY_TTL) and await r.get(key) != pubkey.lower():
+        return "ese worker ya tiene otra clave (si se perdió, dar de alta otro worker)"
+    await r.expire(key, WORKER_KEY_TTL)
+    return None
+
+
+@app.get("/miners/challenge")
+async def miners_challenge(miner_id: str, ident: dict | None = Depends(auth)):
+    """Desafío para autorizarse por HTTP (fallback sin WebSocket). Un solo uso y 60 s."""
+    if ident:
+        miner_id = ident["miner_id"]
+    challenge = secrets.token_hex(16)
+    await state["r"].set(keys.miner_challenge(challenge), miner_id, ex=60)
+    return {"challenge": challenge, "chain_id": CHAIN_ID}
+
+
+@app.post("/miners/authorize")
+async def miners_authorize(request: Request, ident: dict | None = Depends(auth)):
+    body = await request.json()
+    miner_id = ident["miner_id"] if ident else body.get("miner_id")
+    challenge = body.get("challenge")
+    if not isinstance(miner_id, str) or not isinstance(challenge, str):
+        raise HTTPException(400, "se espera {miner_id, pubkey, challenge, signature}")
+    if await state["r"].getdel(keys.miner_challenge(challenge)) != miner_id:
+        raise HTTPException(401, "desafío inexistente, vencido o de otro minero")
+    if reason := await authorize_worker(miner_id, body.get("pubkey"), challenge, body.get("signature")):
+        AUTHORIZED.labels("rechazado").inc()
+        raise HTTPException(401, reason)
+    AUTHORIZED.labels("ok").inc()
+    return {"authorized": True}
+
+
+async def check_result_signature(res: dict) -> None:
+    """Resultados firmados (A3-f): con la clave atada al worker en su authorize. 401 si falta o no verifica."""
+    if not REQUIRE_SIGNED_RESULTS:
+        return
+    pubkey = await state["r"].get(keys.worker_pubkey(res["worker"]))
+    if pubkey is None:
+        raise HTTPException(401, "worker sin authorize: primero mining.authorize (o POST /miners/authorize)")
+    msg = firmas.result_message(res["task_id"], bool(res["found"]), res.get("nonce") if res["found"] else None,
+                                res.get("shares") if isinstance(res.get("shares"), list) else [])
+    if not firmas.verify(pubkey, msg, res.get("signature")):
+        raise HTTPException(401, "firma del resultado inválida")
+
+
 def lease_owner_ok(lease: dict, ident: dict | None, miner_id: str | None) -> bool:
     """El préstamo es de quien llama (B1.3, 26/11). Con token propio, el nombre sale del token (no se puede mentir);
     con el token compartido de los pods del k3s, del miner_id que manda el agente."""
@@ -375,6 +440,11 @@ def lease_owner_ok(lease: dict, ident: dict | None, miner_id: str | None) -> boo
 async def next_task(miner_id: str, kind: str = "cpu", ident: dict | None = Depends(auth)):
     if ident:  # worker con token propio: el nombre sale del token
         miner_id = ident["miner_id"]
+    return await take_task(miner_id, kind)
+
+
+async def take_task(miner_id: str, kind: str) -> dict | Response:
+    """Presta una tarea al minero (o 204). La usan GET /tasks/next (pull) y el WebSocket (push, mining.notify)."""
     r = state["r"]
     if await r.exists(keys.quarantine(miner_id)):
         return Response(status_code=204)
@@ -534,6 +604,7 @@ async def post_result(request: Request, ident: dict | None = Depends(auth)):
     if ident:  # token propio: el resultado es de ese worker, diga lo que diga (si no, cobra otro o se saltea la prueba)
         res["worker"] = ident["miner_id"]
     r = state["r"]
+    await check_result_signature(res)  # A3-f: antes de tocar el préstamo (uno sin firma no le saca la tarea al dueño)
     raw = await r.get(keys.lease(res["task_id"]))
     if raw is not None and not lease_owner_ok(json.loads(raw), ident, res["worker"]):
         raise HTTPException(409, "ese préstamo es de otro minero")  # B1.3: el préstamo sigue siendo del dueño
@@ -652,27 +723,90 @@ async def register_worker(request: Request):
 
 @app.websocket("/ws/miners")
 async def ws_miners(ws: WebSocket):
-    """Avisos al minero (punto 4): {"type": "tareas"} y {"type": "block.solved", "block_id"}. El minero no manda
-    nada por acá: pedir y entregar tareas sigue siendo HTTP, así que si esto se corta no se pierde trabajo."""
+    """Canal de trabajo de los mineros (A3-c y A3-f, 26/11), JSON-RPC 2.0 como Stratum:
+    gateway → {"method": "mining.challenge", "params": {challenge, chain_id}}
+    worker  → {"id": 1, "method": "mining.authorize", "params": {worker, pubkey, signature}}  (firma del desafío)
+    gateway → {"id": 1, "result": true}  o un error -32001 y se cierra
+    gateway → {"method": "mining.notify", "params": <tarea>}  apenas tiene lugar (una a la vez por conexión)
+    gateway → {"method": "mining.block_solved", "params": {block_id}}  (y los avisos de antes, {"type": ...})
+    La entrega (POST /results firmado), renew y release siguen por HTTP: ya tienen préstamo, reintentos y dueño. Si el
+    WebSocket se corta, la tarea prestada vence a los 60 s y el reaper la re-publica, como siempre."""
     try:
-        await auth(ws.headers.get("authorization", ""))
+        ident = await auth(ws.headers.get("authorization", ""))
     except HTTPException:
         await ws.close(code=1008)
         return
     if len(state["sockets"]) >= MAX_WS:
         await ws.close(code=1013)
         return
+    miner_id = ident["miner_id"] if ident else ws.query_params.get("miner_id")
+    kind = ws.query_params.get("kind") or "cpu"
+    if not miner_id or kind not in ("cpu", "gpu"):
+        await ws.close(code=1008)
+        return
     await ws.accept()
+    challenge = secrets.token_hex(16)
+    await ws.send_json({"jsonrpc": "2.0", "method": "mining.challenge",
+                        "params": {"challenge": challenge, "chain_id": CHAIN_ID}})
+    try:
+        msg = json.loads(await asyncio.wait_for(ws.receive_text(), AUTHORIZE_TIMEOUT))
+    except (asyncio.TimeoutError, ValueError, WebSocketDisconnect):
+        await ws.close(code=1008)
+        return
+    params = msg.get("params") if isinstance(msg, dict) else None
+    if not isinstance(params, dict) or msg.get("method") != "mining.authorize" or params.get("worker") != miner_id:
+        reason = "se esperaba mining.authorize de este worker"
+    else:
+        reason = await authorize_worker(miner_id, params.get("pubkey"), challenge, params.get("signature"))
+    if reason:
+        AUTHORIZED.labels("rechazado").inc()
+        log(logger, "authorize rechazado", miner_id=miner_id, reason=reason)
+        await ws.send_json({"jsonrpc": "2.0", "id": msg.get("id") if isinstance(msg, dict) else None,
+                            "error": {"code": -32001, "message": reason}})
+        await ws.close(code=1008)
+        return
+    AUTHORIZED.labels("ok").inc()
+    await ws.send_json({"jsonrpc": "2.0", "id": msg.get("id"), "result": True})
+    wake = asyncio.Event()
+    conn = {"ws": ws, "miner_id": miner_id, "wake": wake}
     state["sockets"].add(ws)
+    state.setdefault("workers_ws", {})[ws] = conn
     WS_CONNECTED.set(len(state["sockets"]))
+    pusher = asyncio.create_task(push_loop(conn, kind))
     try:
         while True:
-            await ws.receive_text()  # solo para enterarse si se cierra
+            await ws.receive_text()  # el worker no manda nada más por acá: solo para enterarse si se cierra
     except WebSocketDisconnect:
         pass
     finally:
+        pusher.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await pusher
         state["sockets"].discard(ws)
+        state.get("workers_ws", {}).pop(ws, None)
         WS_CONNECTED.set(len(state["sockets"]))
+
+
+async def push_loop(conn: dict, kind: str) -> None:
+    """mining.notify (A3-c): le manda una tarea apenas el worker no tiene ninguna empujada viva. Que la entregó (o que
+    venció) se ve en que su préstamo ya no existe. Se despierta con el aviso de "hay tareas" o cada PUSH_POLL."""
+    r, ws, current = state["r"], conn["ws"], None
+    while True:
+        try:
+            if current is None or not await r.exists(keys.lease(current)):
+                out = await take_task(conn["miner_id"], kind)
+                if isinstance(out, dict):
+                    current = out["task_id"]
+                    await ws.send_json({"jsonrpc": "2.0", "method": "mining.notify", "params": out})
+                    PUSHED.labels(kind).inc()
+                    continue
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - Redis o la red: se reintenta en la próxima vuelta
+            logger.exception("error empujando tareas")
+        conn["wake"].clear()
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(conn["wake"].wait(), PUSH_POLL)
 
 
 async def scaling_auth(authorization: str = Header(default="")) -> None:

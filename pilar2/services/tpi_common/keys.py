@@ -127,6 +127,17 @@ def block_share_nonces(index: int) -> str:
     return f"block:{index}:sharenonces"
 
 
+def worker_pubkey(miner_id: str) -> str:
+    """Clave pública Ed25519 (hex) atada al worker en su primer authorize (A3-f, 26/11; TOFU como known_hosts).
+    Con ella se verifican el authorize de cada conexión y la firma de cada resultado. Vence a los 7 días sin uso."""
+    return f"workerkey:{miner_id}"
+
+
+def miner_challenge(challenge: str) -> str:
+    """Desafío de authorize por HTTP (fallback sin WebSocket): de qué minero es. Un solo uso, 60 s."""
+    return f"challenge:{challenge}"
+
+
 def block_verified_ranges(index: int) -> str:
     """LIST de rangos del bloque ya resueltos con sus shares verificadas (JSON {from, to, share_prefix, shares,
     worker}). De acá salen los canarios (B1.1, 26/11): un rango repetido del bloque actual, con respuesta conocida."""

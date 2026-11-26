@@ -13,9 +13,15 @@ tramo POST /tasks/<id>/renew (410 = abandonar) -> POST /results. Si el motor fal
 Punto 4 del contrato (20/11):
   * Shares: si la tarea trae `share_prefix`, el motor también junta los nonces cuyo hash empieza con ese
     prefijo más corto y van en el resultado. El premio se reparte según las shares que verifica el coordinator.
-  * WebSocket (/ws/miners, otro hilo): el gateway avisa "hay tareas" (sin tarea, espera el aviso en vez de
-    preguntar cada 1 s) y "bloque sellado" (corta el motor al instante). Las tareas se siguen pidiendo y
-    entregando por HTTP: si el WebSocket se cae, el agente vuelve a preguntar cada 1 s como antes.
+  * WebSocket (/ws/miners, otro hilo): el gateway avisa "bloque sellado" (corta el motor al instante).
+
+Desde el 26/11 (A3-c y A3-f del contrato, como Stratum):
+  * authorize: el worker tiene una clave Ed25519 propia (MINER_KEY_FILE; si no existe se crea) y firma el desafío
+    que le manda el gateway en cada conexión. La primera vez la clave queda atada al worker.
+  * mining.notify: con el WebSocket autorizado, el gateway **empuja** las tareas; el agente ya no pide. Si el
+    WebSocket se cae, vuelve a pedir por HTTP (GET /tasks/next) como antes.
+  * Resultados firmados: cada POST /results lleva la firma de la tarea, el nonce y sus shares.
+  * Ed25519 con solo stdlib (este agente corre en Colab sin instalar nada): el código de referencia del RFC 8032.
 
     GATEWAY_URL=http://<ip> MINER_TOKEN=... MINER_KIND=gpu MINER_ID=pc-mateo MINER_ACCOUNT=mateo \
       python agent.py -- ../../../pilar1/build/miner_gpu
@@ -24,10 +30,12 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import json
 import logging
 import logging.handlers
 import os
+import queue
 import socket
 import ssl
 import struct
@@ -40,6 +48,105 @@ import urllib.parse
 import urllib.request
 
 log = logging.getLogger("miner")
+
+
+# ---- Ed25519 (RFC 8032, sección 6: código de referencia en Python, solo para firmar) ----
+# Fuente: https://www.rfc-editor.org/rfc/rfc8032#section-6 . Se usa solo stdlib porque el agente corre en Colab y en
+# una imagen sin dependencias. No es de tiempo constante (no importa acá: firma unas pocas veces por tarea y la clave
+# solo identifica al worker). test_push.py verifica que da exactamente lo mismo que la librería cryptography.
+_P = 2**255 - 19
+_Q = 2**252 + 27742317777372353535851937790883648493
+_D = -121665 * pow(121666, _P - 2, _P) % _P
+
+
+def _add(a, b):
+    x = (a[1] - a[0]) * (b[1] - b[0]) % _P
+    y = (a[1] + a[0]) * (b[1] + b[0]) % _P
+    c, d = 2 * a[3] * b[3] * _D % _P, 2 * a[2] * b[2] % _P
+    e, f, g, h = y - x, d - c, d + c, y + x
+    return e * f, g * h, f * g, e * h
+
+
+def _mul(s, pt):
+    acc = (0, 1, 1, 0)
+    while s > 0:
+        if s & 1:
+            acc = _add(acc, pt)
+        pt = _add(pt, pt)
+        s >>= 1
+    return acc
+
+
+def _recover_x(y, sign):
+    x2 = (y * y - 1) * pow(_D * y * y + 1, _P - 2, _P)
+    x = pow(x2, (_P + 3) // 8, _P)
+    if (x * x - x2) % _P:
+        x = x * pow(2, (_P - 1) // 4, _P) % _P
+    return _P - x if (x & 1) != sign else x
+
+
+_GY = 4 * pow(5, _P - 2, _P) % _P
+_GX = _recover_x(_GY, 0)
+_G = (_GX, _GY, 1, _GX * _GY % _P)
+
+
+def _compress(pt) -> bytes:
+    zinv = pow(pt[2], _P - 2, _P)
+    x, y = pt[0] * zinv % _P, pt[1] * zinv % _P
+    return int.to_bytes(y | ((x & 1) << 255), 32, "little")
+
+
+def _expand(seed: bytes):
+    h = hashlib.sha512(seed).digest()
+    a = int.from_bytes(h[:32], "little")
+    a &= (1 << 254) - 8
+    a |= 1 << 254
+    return a, h[32:]
+
+
+def ed25519_public(seed: bytes) -> bytes:
+    return _compress(_mul(_expand(seed)[0], _G))
+
+
+def ed25519_sign(seed: bytes, msg: bytes) -> bytes:
+    a, prefix = _expand(seed)
+    pub = _compress(_mul(a, _G))
+    r = int.from_bytes(hashlib.sha512(prefix + msg).digest(), "little") % _Q
+    big_r = _compress(_mul(r, _G))
+    h = int.from_bytes(hashlib.sha512(big_r + pub + msg).digest(), "little") % _Q
+    return big_r + int.to_bytes((r + h * a) % _Q, 32, "little")
+
+
+def shares_digest(shares) -> str:
+    """Igual que tpi_common.firmas.shares_digest (el agente no importa nada del servidor)."""
+    return hashlib.sha256(",".join(str(int(n)) for n in sorted(shares or [])).encode()).hexdigest()
+
+
+def sign_result(seed: bytes, chain_id: int, res: dict) -> str:
+    """Firma de un resultado (A3-f): sdmer:<chain>:result:<tarea>:<1|0>:<nonce>:<sha256 de las shares>."""
+    nonce = "" if not res.get("found") else int(res["nonce"])
+    text = f"result:{res['task_id']}:{1 if res.get('found') else 0}:{nonce}:{shares_digest(res.get('shares'))}"
+    return ed25519_sign(seed, f"sdmer:{chain_id}:{text}".encode()).hex()
+
+
+def load_key(miner_id: str) -> bytes:
+    """Semilla Ed25519 del worker (32 bytes, hex en un archivo). MINER_KEY_FILE o ~/.sdmer/<miner_id>.key (si el home
+    no se puede escribir, como en el pod, /tmp). Si no existe, se crea. Perderla obliga a dar de alta otro worker:
+    el gateway la ata al worker en el primer authorize."""
+    path = os.getenv("MINER_KEY_FILE")
+    if not path:
+        home = os.path.expanduser("~")
+        base = os.path.join(home, ".sdmer") if os.access(home, os.W_OK) else os.path.join("/tmp", "sdmer")
+        path = os.path.join(base, f"{miner_id}.key")
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as fh:
+            return bytes.fromhex(fh.read().strip())
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    seed = os.urandom(32)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(seed.hex())
+    log.info("clave nueva del worker en %s (no perderla: queda atada al worker)", path)
+    return seed
 
 
 class Gateway:
@@ -74,6 +181,7 @@ class Notices(threading.Thread):
         super().__init__(daemon=True)
         self.url, self.token, self.miner = url, token, miner
         self.connected = False
+        self.authorized = False  # authorize aceptado: las tareas llegan empujadas (mining.notify)
 
     def run(self) -> None:
         while not self.miner.stop.is_set():
@@ -104,17 +212,33 @@ class Notices(threading.Thread):
             pass
         sock.settimeout(90)  # uvicorn manda ping cada 20 s: si no llega nada en 90 s, la conexión murió
         self.connected = True
-        log.info("websocket conectado: espero avisos del gateway")
         try:
             while True:
                 op, data = self.frame(f)
                 if op == 1:
-                    self.miner.on_notice(json.loads(data))
+                    msg = json.loads(data)
+                    if msg.get("method") == "mining.challenge":  # A3-f: firmar el desafío de esta conexión
+                        self.miner.chain_id = int(msg["params"].get("chain_id", self.miner.chain_id))
+                        text = f"sdmer:{self.miner.chain_id}:authorize:{self.miner.id}:{msg['params']['challenge']}"
+                        self.send(sock, 1, json.dumps({"jsonrpc": "2.0", "id": 1, "method": "mining.authorize", "params": {
+                            "worker": self.miner.id, "pubkey": ed25519_public(self.miner.key).hex(),
+                            "signature": ed25519_sign(self.miner.key, text.encode()).hex()}}).encode())
+                    elif msg.get("id") == 1 and "error" in msg:
+                        log.error("authorize rechazado: %s", msg["error"].get("message"))
+                        return
+                    elif msg.get("id") == 1:
+                        self.authorized = True
+                        log.info("websocket autorizado: el gateway me empuja las tareas")
+                    elif msg.get("method") == "mining.notify":
+                        self.miner.pushed.put(msg["params"])  # A3-c: tarea empujada
+                    else:
+                        self.miner.on_notice(msg)
                 elif op == 9:
                     self.send(sock, 10, data)  # pong
                 elif op == 8:
                     return
         finally:
+            self.authorized = False
             sock.close()
 
     @staticmethod
@@ -135,9 +259,15 @@ class Notices(threading.Thread):
 
     @staticmethod
     def send(sock, op: int, data: bytes) -> None:
-        """Del cliente al servidor los frames van enmascarados (RFC 6455, 5.3)."""
-        mask = os.urandom(4)
-        sock.sendall(bytes([0x80 | op, 0x80 | len(data)]) + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(data)))
+        """Del cliente al servidor los frames van enmascarados (RFC 6455, 5.3). Largo de 7, 16 o 64 bits (5.2)."""
+        mask, n = os.urandom(4), len(data)
+        if n < 126:
+            head = bytes([0x80 | op, 0x80 | n])
+        elif n < 1 << 16:
+            head = bytes([0x80 | op, 0x80 | 126]) + struct.pack(">H", n)
+        else:
+            head = bytes([0x80 | op, 0x80 | 127]) + struct.pack(">Q", n)
+        sock.sendall(head + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(data)))
 
 
 class Miner:
@@ -155,6 +285,9 @@ class Miner:
         self.solved: str | None = None      # último block.solved avisado
         self.proc: subprocess.Popen | None = None
         self.lock = threading.Lock()
+        self.key = load_key(miner_id)        # Ed25519 del worker (A3-f)
+        self.chain_id = 2026                 # lo confirma el gateway en el desafío
+        self.pushed: queue.Queue = queue.Queue()  # tareas empujadas por el WebSocket (A3-c)
 
     def on_notice(self, msg: dict) -> None:
         """Lo llama el hilo del WebSocket."""
@@ -228,7 +361,11 @@ class Miner:
                       engine_seconds=round(engine_seconds, 6))
         if share:
             result["shares"] = shares
+        result["signature"] = sign_result(self.key, self.chain_id, result)  # A3-f
         status, _ = self.gw.call("POST", "/results", result)
+        if status == 401:
+            log.error("el gateway rechazó la firma del resultado: me vuelvo a autorizar")
+            self.authorize_http()
         log.info("tarea %s rango %d-%d found=%s shares=%d -> %s (%.0f H/s)", task["task_id"][:8],
                  int(task["from"]), hi, result["found"], len(shares), status, self.hashrate)
         return "found" if result["found"] else "exhausted"
@@ -239,18 +376,52 @@ class Miner:
         self.wake.wait(self.idle_ws if self.notices and self.notices.connected else self.idle)
         self.wake.clear()
 
+    def authorize_http(self) -> bool:
+        """authorize por HTTP (A3-f): ata la clave aunque el WebSocket no ande, así los resultados se pueden firmar."""
+        try:
+            status, ch = self.gw.call("GET", f"/miners/challenge?miner_id={self.id}")
+            if status != 200:
+                return False
+            self.chain_id = int(ch.get("chain_id", self.chain_id))
+            text = f"sdmer:{self.chain_id}:authorize:{self.id}:{ch['challenge']}"
+            status, body = self.gw.call("POST", "/miners/authorize", {
+                "miner_id": self.id, "pubkey": ed25519_public(self.key).hex(), "challenge": ch["challenge"],
+                "signature": ed25519_sign(self.key, text.encode()).hex()})
+        except OSError as exc:
+            log.warning("authorize falló: %s", exc)
+            return False
+        if status != 200:
+            log.error("authorize rechazado (%s): ¿la clave de este worker cambió? %s", status, body)
+        return status == 200
+
+    def next_task(self) -> tuple[int, dict]:
+        """Con el WebSocket autorizado, la tarea llega empujada (mining.notify). Sin él, se pide por HTTP."""
+        if self.notices and self.notices.authorized:
+            try:
+                return 200, self.pushed.get(timeout=self.idle_ws)
+            except queue.Empty:
+                return 204, {}
+        try:
+            return 200, self.pushed.get_nowait()  # alguna que llegó antes de que se cortara
+        except queue.Empty:
+            return self.gw.call("GET", f"/tasks/next?miner_id={self.id}&kind={self.kind}")
+
     def run(self, websocket: bool = True) -> None:
         threading.Thread(target=self.heartbeat_loop, daemon=True).start()
+        while not self.authorize_http():
+            time.sleep(5)
         if websocket:
             self.notices = Notices(self.gw.url, self.gw.token, self)
             self.notices.start()
         while True:
             try:
-                status, task = self.gw.call("GET", f"/tasks/next?miner_id={self.id}&kind={self.kind}")
+                status, task = self.next_task()
             except OSError as exc:
                 log.warning("gateway inaccesible: %s", exc)
                 time.sleep(self.idle)
                 continue
+            if status == 204 and self.notices and self.notices.authorized:
+                continue  # empujadas: esperar la próxima
             if status != 200:
                 if status in (401, 403):
                     log.error("token rechazado por el gateway")

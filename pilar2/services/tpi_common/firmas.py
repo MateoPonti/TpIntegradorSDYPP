@@ -5,6 +5,8 @@ Desde el 26/11 (A3-g, como EIP-155) todo lo que se firma lleva adelante el id de
 `sdmer:<CHAIN_ID>:<mensaje>`. Se agrega en un solo lugar de cada lado (`verify` acá, `firmar` en claves.js y
 `domain` en los clientes de Python), así ningún tipo de mensaje queda sin él. Una firma de otra red, o una de antes
 del cambio, no verifica."""
+import hashlib
+
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
@@ -27,6 +29,22 @@ def verify(public_key_hex: str, message: bytes, signature_hex) -> bool:
         return True
     except (InvalidSignature, ValueError, TypeError):
         return False
+
+
+def authorize_message(worker: str, challenge: str) -> bytes:
+    """Lo que firma el worker para autorizarse (A3-f, 26/11): el desafío que le mandó el gateway en esa conexión."""
+    return f"authorize:{worker}:{challenge}".encode()
+
+
+def shares_digest(shares) -> str:
+    """SHA-256 de las shares (ordenadas, separadas por coma): así la firma del resultado cubre las shares sin
+    meter cientos de números en el texto firmado."""
+    return hashlib.sha256(",".join(str(int(n)) for n in sorted(shares or [])).encode()).hexdigest()
+
+
+def result_message(task_id: str, found: bool, nonce, shares) -> bytes:
+    """Lo que firma el worker en cada resultado (A3-f): la tarea, si encontró, el nonce y sus shares."""
+    return f"result:{task_id}:{1 if found else 0}:{'' if nonce is None else int(nonce)}:{shares_digest(shares)}".encode()
 
 
 def worker_message(account: str, worker: str) -> bytes:
