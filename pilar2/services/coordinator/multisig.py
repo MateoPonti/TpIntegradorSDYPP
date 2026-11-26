@@ -60,7 +60,7 @@ def reject_message(account: str) -> bytes:
     return f"multisig:reject:{account}".encode()
 
 
-# KEYS: status, accepted, invites:<dueño>, of:<dueño>   ARGV: dueño, cantidad de dueños
+# KEYS: status, accepted, invites:<dueño>, of:<dueño>   ARGV: dueño, cantidad de dueños, cuenta
 # Anota la aceptación y, si ya aceptaron todos, la activa. Un solo Lua: dos aceptaciones a la vez no se pisan.
 ACCEPT_LUA = """
 local status = redis.call('GET', KEYS[1]) or 'activa'
@@ -73,6 +73,18 @@ if redis.call('SCARD', KEYS[2]) >= tonumber(ARGV[2]) then
   return 'activa'
 end
 return 'pendiente'
+"""
+
+# KEYS: status, invites:<dueño>...   ARGV: cuenta
+# La decisión y la limpieza son atómicas respecto de ACCEPT_LUA: una cuenta activa no se puede rechazar.
+REJECT_LUA = """
+local status = redis.call('GET', KEYS[1]) or 'activa'
+if status ~= 'pendiente' then return status end
+redis.call('SET', KEYS[1], 'rechazada')
+for i = 2, #KEYS do
+  redis.call('SREM', KEYS[i], ARGV[1])
+end
+return 'rechazada'
 """
 
 
