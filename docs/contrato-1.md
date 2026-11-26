@@ -159,8 +159,8 @@ se corrige el texto explicando por qué cambió. Cada fila se completa en el PR 
 
 | # | El contrato dice | Qué se hizo | Fecha / PR |
 |---|---|---|---|
-| a | Notifier con JSON-RPC 2.0 al estilo `eth_subscribe` | En curso (Task 13) | |
-| b | El frontend deja de hacer polling | En curso (Task 13) | |
+| a | Notifier con JSON-RPC 2.0 al estilo `eth_subscribe` | **Implementado.** `sdmer_subscribe` (`newBlocks`, `tx`, `account`), `sdmer_unsubscribe` y avisos `sdmer_subscription`; identificadores `0x` + 16 hex, foto inicial y códigos de error estándar. Reemplaza la API propia para cumplir el contrato. | 26/11, Task 13 |
+| b | El frontend deja de hacer polling | **Implementado.** Explorador y cuentas leen al recibir avisos o realizar acciones. Con WebSocket conectado no hay consultas periódicas; durante un corte hay un solo fallback de 15 s por página, eliminado al reconectar. Firmas e invitaciones ajenas se reflejan al siguiente aviso de cuenta/bloque o al recargar. | 26/11, Task 13 |
 | c | El gateway empuja el trabajo (`mining.notify`) | **Implementado.** Con el WebSocket autorizado, el gateway le manda cada tarea al worker con `mining.notify` (una a la vez por conexión; la siguiente apenas cierra el préstamo de la anterior). El agente ya no pide; si el WebSocket se corta, vuelve a pedir por HTTP. La entrega sigue por HTTP (`POST /results`), porque ya tiene préstamo, dueño y reintentos. | 26/11, Task 14 |
 | d | Vardiff (dificultad de shares por worker) | **Implementado.** El gateway le pone a cada tarea el largo de share del worker según su hashrate **medido con shares verificadas** (B1.2), para ~10 shares por segundo, con 8 a 256 shares por tarea. El peso de cada share (16^largo) compensa, así que el premio no cambia. Limitación: el prefijo es hex, así que cada paso es 16 veces más difícil y no es una dificultad continua como la de Stratum. | 26/11, Task 11 |
 | e | Recompensa PPLNS | En curso (Task 12) | |

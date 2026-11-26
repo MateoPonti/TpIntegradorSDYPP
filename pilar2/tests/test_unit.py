@@ -286,7 +286,8 @@ def test_notifier_routes_only_what_each_client_asked():
     ev = _solved()
     subs = {"s1": ("blocks", None), "s2": ("tx", "t1"), "s3": ("tx", "otra"), "s4": ("account", "mateo"),
             "s5": ("account", "user-9")}
-    msgs = {m["sub"]: m for m in notifier.route(ev, notifier.index_event(ev), subs)}
+    msgs = {m["params"]["subscription"]: m["params"]["result"]
+            for m in notifier.route(ev, notifier.index_event(ev), subs)}
     assert set(msgs) == {"s1", "s2", "s4"}
     assert msgs["s1"]["event"] == "block.solved" and msgs["s1"]["txs"] == 2
     assert msgs["s2"]["event"] == "tx.confirmed" and msgs["s2"]["index"] == 7
@@ -302,8 +303,8 @@ def test_notifier_origin_and_subscription_checks():
     assert notifier.origin_ok("https://x.sslip.io", "x.sslip.io", set())
     assert not notifier.origin_ok("https://malo.com", "x.sslip.io", set())
     assert notifier.origin_ok("http://127.0.0.1:18080", "127.0.0.1:18280", {"http://127.0.0.1:18080"})
-    assert notifier.parse_subscription({"topic": "tx", "tx_id": "t1"}) == ("tx", "t1")
-    for bad in ({"topic": "saldos"}, {"topic": "account"}, {"topic": "tx", "tx_id": "x" * 200}):
+    assert notifier.parse_subscription(["tx", "t1"]) == ("tx", "t1")
+    for bad in (["saldos"], ["account"], ["tx", "x" * 200]):
         with pytest.raises(ValueError):
             notifier.parse_subscription(bad)
 

@@ -132,10 +132,11 @@ let par = null, cuenta = "", ws = null, wsOpen = false, conectando = false, retr
 let subCuenta = null;  // suscripción a la cuenta abierta (una sola: si no, cada aviso llega repetido)
 const subsCompartidas = new Map();  // cuenta compartida -> sub del notifier (null mientras se suscribe)
 const pedidosCompartidas = new Map();  // id del pedido de suscripción -> cuenta compartida
-function suscribirCompartida(acc) {  // el aviso "subscribed" no trae la cuenta: se la reconoce por el id del pedido
+const pedidosCuenta = new Map();  // permite descartar respuestas de una cuenta que ya no está abierta
+function suscribirCompartida(acc) {
   if (!wsOpen || subsCompartidas.has(acc)) return;
   subsCompartidas.set(acc, null);
-  pedidosCompartidas.set(wsSend({ op: "subscribe", topic: "account", account: acc }), acc);
+  pedidosCompartidas.set(wsSend("sdmer_subscribe", ["account", acc]), acc);
 }
 const movs = [], vistos = new Set(), esperando = new Map();  // esperando: tx_id -> mensaje donde se avisa
 
@@ -176,12 +177,34 @@ async function completarHueco(tope) {
     } catch { /* se ve igual en el explorador */ }
   }
 }
-const wsSend = (m) => { if (wsOpen) ws.send(JSON.stringify({ id: ++reqId, ...m })); return reqId; };
-function onAviso(n) {
-  if (n.type === "subscribed" && n.topic === "account") {
-    if (pedidosCompartidas.has(n.id)) { subsCompartidas.set(pedidosCompartidas.get(n.id), n.sub); pedidosCompartidas.delete(n.id); }
-    else subCuenta = n.sub;
+const wsSend = (method, params) => {
+  if (!wsOpen) return null;
+  const id = ++reqId;
+  ws.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }));
+  return id;
+};
+function suscribirCuenta() {
+  if (wsOpen && cuenta) pedidosCuenta.set(wsSend("sdmer_subscribe", ["account", cuenta]), cuenta);
+}
+function onAviso(message) {
+  if (message.jsonrpc !== "2.0") return;
+  if (Object.hasOwn(message, "id")) {
+    const acc = pedidosCompartidas.get(message.id), propia = pedidosCuenta.get(message.id);
+    pedidosCompartidas.delete(message.id); pedidosCuenta.delete(message.id);
+    if (message.error) { if (acc) subsCompartidas.delete(acc); return; }
+    if (acc && subsCompartidas.has(acc)) subsCompartidas.set(acc, message.result);
+    else if (propia === cuenta) subCuenta = message.result;
+    else if (acc || propia) wsSend("sdmer_unsubscribe", [message.result]);
+    return;
   }
+  if (message.method !== "sdmer_subscription") return;
+  procesarAviso({ ...message.params.result, sub: message.params.subscription });
+}
+function procesarAviso(n) {
+  if (n.event === "block.solved" || (n.type === "snapshot" && n.tip !== undefined)) {
+    cargarCompartidas(); cargarColectas();
+  }
+  if (n.event === "account.changed" && n.account === cuenta) { cargarCompartidas(); cargarColectas(); }
   // Se movió una cuenta compartida tuya (entró plata o salió un pago): se recarga al instante.
   if (n.event === "account.changed" && subsCompartidas.has(n.account)) cargarCompartidas();
   if (n.type === "snapshot" && n.account === cuenta) completarHueco(n.height - 1);
@@ -197,8 +220,28 @@ function onAviso(n) {
   if (confirmada && esperando.has(n.tx_id)) {
     say(esperando.get(n.tx_id), `Confirmada en el bloque ${n.index ?? n.block}.`, true);
     esperando.delete(n.tx_id);
-    wsSend({ op: "unsubscribe", sub: n.sub });
+    if (n.sub) wsSend("sdmer_unsubscribe", [n.sub]);
   }
+}
+let fallback = null;
+async function refrescarSinWS() {
+  if (wsOpen) return;
+  await Promise.all([cargarCompartidas(), cargarColectas()]);
+  if (cuenta) {
+    try {
+      saldo = await (await fetch("/balances/" + encodeURIComponent(cuenta))).json();
+      dibujarSaldo();
+    } catch { /* reintentar en el próximo fallback */ }
+  }
+  for (const tx of esperando.keys()) {
+    try {
+      const n = await (await fetch("/transactions/" + encodeURIComponent(tx))).json();
+      procesarAviso({ ...n, type: "snapshot", tx_id: tx });
+    } catch { /* reintentar en el próximo fallback */ }
+  }
+}
+function iniciarFallback() {
+  if (fallback === null) fallback = setInterval(() => { if (!wsOpen) refrescarSinWS(); }, 15000);
 }
 async function conectar() {
   if (conectando) return;  // una sola conexión: dos sockets suscritos a la misma cuenta duplican los avisos
@@ -208,35 +251,40 @@ async function conectar() {
   ws.onopen = () => {
     subCuenta = null;
     const compartidas = [...subsCompartidas.keys()];  // conexión nueva: hay que volver a suscribirse
-    subsCompartidas.clear(); pedidosCompartidas.clear();
+    subsCompartidas.clear(); pedidosCompartidas.clear(); pedidosCuenta.clear();
     setTimeout(() => compartidas.forEach(suscribirCompartida));
     wsOpen = true; retry = 1000;
-    if (cuenta) wsSend({ op: "subscribe", topic: "account", account: cuenta });  // la foto trae el saldo
-    for (const tx of esperando.keys()) wsSend({ op: "subscribe", topic: "tx", tx_id: tx });
+    clearInterval(fallback); fallback = null;
+    wsSend("sdmer_subscribe", ["newBlocks"]);
+    suscribirCuenta();  // la foto trae el saldo
+    for (const tx of esperando.keys()) wsSend("sdmer_subscribe", ["tx", tx]);
     dibujarSaldo();
   };
   ws.onmessage = (m) => onAviso(JSON.parse(m.data));
-  ws.onclose = () => { wsOpen = false; dibujarSaldo(); setTimeout(conectar, retry); retry = Math.min(retry * 2, 30000); };
+  ws.onclose = () => {
+    wsOpen = false; iniciarFallback(); dibujarSaldo();
+    setTimeout(conectar, retry); retry = Math.min(retry * 2, 30000);
+  };
 }
 function seguir(txId, msgId) {
   esperando.set(txId, msgId);
-  wsSend({ op: "subscribe", topic: "tx", tx_id: txId });
+  wsSend("sdmer_subscribe", ["tx", txId]);
 }
 
 async function abrir(nombre, nuevoPar) {
-  if (subCuenta && nombre !== cuenta) wsSend({ op: "unsubscribe", sub: subCuenta });
+  if (subCuenta && nombre !== cuenta) { wsSend("sdmer_unsubscribe", [subCuenta]); subCuenta = null; }
   const otra = nombre !== cuenta;
   par = nuevoPar; cuenta = nombre;
   if (otra) {
     movs.length = 0; vistos.clear(); ultimoBloque = null;
-    for (const sub of subsCompartidas.values()) if (sub) wsSend({ op: "unsubscribe", sub });
+    for (const sub of subsCompartidas.values()) if (sub) wsSend("sdmer_unsubscribe", [sub]);
     subsCompartidas.clear(); pedidosCompartidas.clear();
   }
   $("titulo").textContent = `Cuenta ${nombre}`;
   $("panel").classList.remove("off");
   saldo = await (await fetch("/balances/" + encodeURIComponent(nombre))).json();
   dibujarSaldo(); dibujarMovs();
-  if (ws === null) conectar(); else if (otra || !subCuenta) wsSend({ op: "subscribe", topic: "account", account: cuenta });
+  if (ws === null) conectar(); else if (otra || !subCuenta) suscribirCuenta();
   $("compartidas").classList.remove("off");
   $("cfCrearRow").style.display = "";
   cargarCompartidas(); cargarColectas();
@@ -360,8 +408,7 @@ async function cargarCompartidas() {
     if (foco && document.getElementById(foco)) document.getElementById(foco).focus();
   } catch { /* se reintenta en la próxima vuelta */ }
 }
-// El saldo llega por el notifier; las firmas de los otros dueños no son bloques (no tienen aviso): cada 5 s.
-setInterval(cargarCompartidas, 5000);
+// Las acciones propias y los avisos account/newBlocks refrescan las compartidas.
 
 $("mCrear").onclick = async () => {
   try {
@@ -438,7 +485,8 @@ async function cargarColectas() {
   } catch { /* se reintenta en la próxima vuelta */ }
 }
 cargarColectas();
-setInterval(cargarColectas, 15000);
+conectar();
+iniciarFallback();
 
 $("cfCrear").onclick = async () => {
   try {

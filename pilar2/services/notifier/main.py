@@ -4,14 +4,14 @@ una cuenta, para que el navegador no tenga que preguntar cada pocos segundos.
 No decide nada: escucha block.solved en RabbitMQ (una cola por réplica, block.events.<pod>, así cada réplica
 recibe todos los eventos y avisa a los navegadores conectados a ella) y lee Redis solo para la foto del estado.
 
-Protocolo (JSON, API propia inspirada en eth_subscribe):
-  cliente -> {"op": "subscribe", "id": 1, "topic": "blocks"}
-             {"op": "subscribe", "id": 2, "topic": "tx", "tx_id": "..."}
-             {"op": "subscribe", "id": 3, "topic": "account", "account": "user-3"}
-             {"op": "unsubscribe", "sub": "s1"}
-  servidor -> {"type": "subscribed", "id": 1, "sub": "s1"}
-              {"type": "snapshot", "sub": "s1", "height": 21, ...}   foto del estado, justo después de suscribirse
-              {"type": "event", "sub": "s1", "event": "block.solved" | "tx.confirmed" | "account.changed", ...}
+Protocolo JSON-RPC 2.0 (https://www.jsonrpc.org/specification):
+  cliente -> {"jsonrpc":"2.0","id":1,"method":"sdmer_subscribe","params":["newBlocks"]}
+             params también puede ser ["tx", "id"] o ["account", "user-3"].
+  servidor -> {"jsonrpc":"2.0","id":1,"result":"0x0123456789abcdef"}
+              {"jsonrpc":"2.0","method":"sdmer_subscription",
+               "params":{"subscription":"0x...","result":{"type":"snapshot","height":21}}}
+  Baja: sdmer_unsubscribe, params ["0x..."] -> result true|false.
+  Cada result de un aviso es una foto o un evento block.solved / tx.confirmed / account.changed.
 Reconexión: primero se suscribe y después llega la foto (así no se pierde nada entre medio). Un evento con
 index < height de la foto ya está incluido en ella. WebSocket no guarda los avisos perdidos mientras el cliente
 estuvo desconectado: lo que se garantiza es recuperar el estado vigente.
@@ -20,6 +20,8 @@ import asyncio
 import collections
 import contextlib
 import json
+import math
+import secrets
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -39,7 +41,6 @@ SESSION_SECONDS = env_int("NOTIFIER_SESSION_SECONDS", 3600)  # después se corta
 # Páginas que pueden abrir el websocket además de la del mismo host (ej. el explorador local en otro puerto).
 ALLOWED_ORIGINS = {o.strip() for o in env_str("NOTIFIER_ALLOWED_ORIGINS", "").split(",") if o.strip()}
 MAX_KEY = 128
-TOPICS = {"blocks": None, "tx": "tx_id", "account": "account"}
 
 CONNECTIONS = Gauge("notifier_connections", "Websockets abiertos en esta réplica")
 SUBSCRIPTIONS = Gauge("notifier_subscriptions", "Suscripciones activas en esta réplica")
@@ -58,7 +59,6 @@ class Client:
         self.ws = ws
         self.subs: dict[str, tuple[str, str | None]] = {}
         self.queue: asyncio.Queue = asyncio.Queue(QUEUE_SIZE)
-        self.count = 0
 
     def push(self, msg) -> bool:
         """Encola un aviso. Si el cliente no da abasto se vacía su cola y se lo corta: al reconectarse recibe
@@ -82,16 +82,16 @@ def origin_ok(origin: str | None, host: str | None, allowed: set[str]) -> bool:
     return origin in allowed or urlparse(origin).netloc == (host or "")
 
 
-def parse_subscription(msg: dict) -> tuple[str, str | None]:
-    topic = msg.get("topic")
-    if topic not in TOPICS:
-        raise ValueError("topic: blocks, tx o account")
-    field = TOPICS[topic]
-    if field is None:
-        return topic, None
-    key = msg.get(field)
+def parse_subscription(params) -> tuple[str, str | None]:
+    if not isinstance(params, list) or not params or not isinstance(params[0], str):
+        raise ValueError('params: ["newBlocks"], ["tx", id] o ["account", cuenta]')
+    if params == ["newBlocks"]:
+        return "blocks", None
+    if len(params) != 2 or params[0] not in ("tx", "account"):
+        raise ValueError('params: ["newBlocks"], ["tx", id] o ["account", cuenta]')
+    topic, key = params
     if not isinstance(key, str) or not key or len(key) > MAX_KEY:
-        raise ValueError(f"falta {field}")
+        raise ValueError("identificador vacío o demasiado largo")
     return topic, key
 
 
@@ -122,7 +122,7 @@ def route(ev: dict, index: tuple[dict, dict], subs: dict) -> list[dict]:
         elif topic == "account" and key in by_account:
             out.append(base | {"sub": sid, "event": "account.changed", "account": key,
                                "movements": by_account[key]})
-    return out
+    return [subscription_notice(msg.pop("sub"), msg) for msg in out]
 
 
 async def balance(r, account: str) -> dict:
@@ -161,47 +161,97 @@ async def on_event(message) -> None:
         index, balances = index_event(ev), {}
         for client in list(clients):
             for msg in route(ev, index, client.subs):
-                if msg["event"] == "account.changed":
-                    account = msg["account"]
+                result = msg["params"]["result"]
+                if result["event"] == "account.changed":
+                    account = result["account"]
                     if account not in balances:
                         balances[account] = await balance(state["r"], account)
-                    msg |= balances[account]
+                    result.update(balances[account])
                 if not client.push(msg):
                     break
-                SENT.labels(msg["event"]).inc()
+                SENT.labels(result["event"]).inc()
+
+
+def rpc_error(req_id, code: int, message: str) -> dict:
+    return {"jsonrpc": "2.0", "id": req_id, "error": {"code": code, "message": message}}
+
+
+def subscription_notice(sid: str, result: dict) -> dict:
+    return {"jsonrpc": "2.0", "method": "sdmer_subscription",
+            "params": {"subscription": sid, "result": result}}
+
+
+async def rpc_request(client: Client, msg) -> tuple[dict | None, list[dict]]:
+    if not isinstance(msg, dict):
+        return rpc_error(None, -32600, "pedido inválido"), []
+    req_id = msg.get("id")
+    if (msg.get("jsonrpc") != "2.0" or not isinstance(msg.get("method"), str)
+            or isinstance(req_id, bool) or not isinstance(req_id, (str, int, float, type(None)))
+            or (isinstance(req_id, float) and not math.isfinite(req_id))):
+        return rpc_error(None, -32600, "pedido inválido"), []
+    notification = "id" not in msg
+
+    def error(code, message):
+        return (None if notification else rpc_error(req_id, code, message)), []
+
+    method, params = msg["method"], msg.get("params")
+    if method == "sdmer_subscribe":
+        try:
+            topic, key = parse_subscription(params)
+        except ValueError as exc:
+            return error(-32602, str(exc))
+        if len(client.subs) >= MAX_SUBS:
+            REJECTED.labels("demasiadas_suscripciones").inc()
+            return error(-32000, f"máximo {MAX_SUBS} suscripciones")
+        sid = "0x" + secrets.token_hex(8)
+        while sid in client.subs:
+            sid = "0x" + secrets.token_hex(8)
+        client.subs[sid] = (topic, key)  # suscribir antes de tomar la foto: no se pierden eventos
+        SUBSCRIPTIONS.inc()
+        try:
+            snap = await snapshot(state["r"], topic, key)
+        except Exception:
+            client.subs.pop(sid, None)
+            SUBSCRIPTIONS.dec()
+            logger.exception("falló la foto de la suscripción")
+            return error(-32603, "no se pudo obtener el estado")
+        response = None if notification else {"jsonrpc": "2.0", "id": req_id, "result": sid}
+        return response, [subscription_notice(sid, {"type": "snapshot"} | snap)]
+    if method == "sdmer_unsubscribe":
+        if not isinstance(params, list) or len(params) != 1 or not isinstance(params[0], str):
+            return error(-32602, "params: [identificador de suscripción]")
+        removed = client.subs.pop(params[0], None) is not None
+        if removed:
+            SUBSCRIPTIONS.dec()
+        return (None if notification else {"jsonrpc": "2.0", "id": req_id, "result": removed}), []
+    return error(-32601, "método inexistente")
+
+
+def invalid_constant(value):
+    raise ValueError(f"constante JSON inválida: {value}")
 
 
 async def handle(client: Client, text: str) -> None:
     try:
-        msg = json.loads(text)
-        if not isinstance(msg, dict):
-            raise ValueError
-    except ValueError:
-        client.push({"type": "error", "error": "JSON inválido"})
+        msg = json.loads(text, parse_constant=invalid_constant)
+    except (ValueError, RecursionError):
+        client.push(rpc_error(None, -32700, "JSON inválido"))
         return
-    op, req_id = msg.get("op"), msg.get("id")
-    if op == "subscribe":
-        if len(client.subs) >= MAX_SUBS:
-            REJECTED.labels("demasiadas_suscripciones").inc()
-            client.push({"type": "error", "id": req_id, "error": f"máximo {MAX_SUBS} suscripciones"})
-            return
-        try:
-            topic, key = parse_subscription(msg)
-        except ValueError as exc:
-            client.push({"type": "error", "id": req_id, "error": str(exc)})
-            return
-        client.count += 1
-        sid = f"s{client.count}"
-        client.subs[sid] = (topic, key)  # primero suscribir y después sacar la foto
-        SUBSCRIPTIONS.inc()
-        client.push({"type": "subscribed", "id": req_id, "sub": sid, "topic": topic})
-        client.push({"type": "snapshot", "sub": sid} | await snapshot(state["r"], topic, key))
-    elif op == "unsubscribe":
-        if client.subs.pop(msg.get("sub"), None) is not None:
-            SUBSCRIPTIONS.dec()
-        client.push({"type": "unsubscribed", "id": req_id, "sub": msg.get("sub")})
-    else:
-        client.push({"type": "error", "id": req_id, "error": "op: subscribe o unsubscribe"})
+    batch = isinstance(msg, list)
+    if batch and not msg:
+        client.push(rpc_error(None, -32600, "pedido inválido"))
+        return
+    responses, notices = [], []
+    for item in msg if batch else [msg]:
+        response, pending = await rpc_request(client, item)
+        if response is not None:
+            responses.append(response)
+        notices.extend(pending)
+    if responses and not client.push(responses if batch else responses[0]):
+        return
+    for notice in notices:
+        if notice["params"]["subscription"] in client.subs and not client.push(notice):
+            break
 
 
 async def send_loop(client: Client) -> None:
