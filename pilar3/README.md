@@ -95,9 +95,22 @@ instalación en `k8s/https/`. Ojo: si se mueve la IP, el primer desafío puede f
 `kubectl -n tpi delete certificate tpi-tls`.
 
 **Dashboard:** `k8s/observability/dashboard-tpi.yaml` es un ConfigMap con la etiqueta `grafana_dashboard`; el
-sidecar de Grafana lo carga solo. 14 paneles: altura, pendientes, prefijo, hashrate por tipo y por minero, tiempo
+sidecar de Grafana lo carga solo. 22 paneles: altura, pendientes, prefijo, hashrate por tipo y por minero, tiempo
 por bloque, tx/s, bloques rearmados, cola, vencidos, DLQ, canarios, cuarentena y tx por bloque. Solo lee el
 namespace `tpi`.
+
+Task 17 (26/11): cuatro paneles adicionales, **RabbitMQ → worker p50/p95**, **Validación del bloque**,
+**Éxito CPU vs GPU** y **Minado por prefijo**. `results_total` tiene etiquetas `status,kind` y
+`block_seconds` tiene `prefix_len`. Las consultas agregan réplicas preservando `le` en los histogramas.
+`task_queue_to_lease_seconds{kind}` mide desde la última publicación hasta el préstamo, sin canarios ni
+calibraciones. `published_at` queda en RabbitMQ/Redis y no se envía al minero para no revelar canarios.
+Se reinicia al republicar; tareas anteriores sin timestamp no generan muestras. Un reloj desfasado que dé
+duración negativa tampoco genera muestra. `block_validation_seconds` incluye PoW, shares y sellado Redis,
+antes de publicar el outbox. Ambos hosts deben sincronizar hora para medir espera de cola.
+
+Verificación local: pruebas de muestras Prometheus y sellado real con Redis. **Pendiente de despliegue:**
+comprobar series en Prometheus y adjuntar captura de los cuatro paneles con datos reales; no hay captura
+de producción todavía. No requiere cambios en `monitoring` ni en los node pools.
 
 **Prometheus persistente:** `k8s/observability/prometheus-persistencia.yaml` le agrega al Prometheus de `monitoring`
 un disco de 10 GB (`pd-standard`) y 30 días de retención, con `helm upgrade --reuse-values` (el comando está

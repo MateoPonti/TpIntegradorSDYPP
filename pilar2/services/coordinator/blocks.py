@@ -42,8 +42,11 @@ NONCE_LIMIT = 2**63 - 1  # INCRBY de Redis es int64 con signo
 
 BLOCKS_SEALED = Counter("blocks_sealed_total", "Bloques sellados")
 BLOCK_SECONDS = Histogram("block_seconds", "Tiempo desde que se arma el bloque hasta que se sella",
+                          ["prefix_len"],
                           buckets=(1, 2, 5, 10, 20, 30, 60, 120, 300, 600, 1800))
-RESULTS = Counter("results_total", "Resultados recibidos", ["status"])
+BLOCK_VALIDATION_SECONDS = Histogram("block_validation_seconds", "Validación del PoW, shares y sellado en Redis",
+                                     buckets=(.001, .005, .01, .025, .05, .1, .25, .5, 1, 2, 5))
+RESULTS = Counter("results_total", "Resultados recibidos", ["status", "kind"])
 TASKS_PUBLISHED = Counter("tasks_published_total", "Tareas publicadas en mining.tasks")
 EVENTS_PUBLISHED = Counter("outbox_events_published_total", "Eventos del outbox publicados en RabbitMQ")
 REARMED = Counter("blocks_rearmed_total", "Bloques rearmados con un prefijo más corto (cayó el hashrate)")
@@ -186,7 +189,8 @@ def new_task(cur: dict, start: int, end: int) -> dict:
     """Tarea del rango [start, end) del bloque en curso. Los canarios del gateway copian este formato (B1.1)."""
     return {"v": 1, "task_id": uuid.uuid4().hex, "block_id": cur["block_id"], "base": cur["base"],
             "prefix": cur["prefix"], "from": start, "to": min(end - 1, NONCE_LIMIT), "attempts": 0,
-            "share_prefix": pow.share_prefix(cur["prefix"], cur["range_size"], SHARES_PER_TASK)}
+            "share_prefix": pow.share_prefix(cur["prefix"], cur["range_size"], SHARES_PER_TASK),
+            "published_at": time.time()}
 
 
 def verified_range(worker: str, lo: int, hi: int, share_prefix: str, shares: list[int]) -> dict:
@@ -344,13 +348,14 @@ class Chain:
 
     async def on_result(self, message: aio_pika.abc.AbstractIncomingMessage) -> None:
         async with message.process(requeue=True):  # ack recién después de verificar
+            kind = {"result.cpu": "cpu", "result.gpu": "gpu"}.get(message.routing_key, "unknown")
             try:
                 res = json.loads(message.body)
             except ValueError:
-                RESULTS.labels("malformed").inc()
+                RESULTS.labels("malformed", kind).inc()
                 return
             status = await self._handle(res)
-            RESULTS.labels(status).inc()
+            RESULTS.labels(status, kind).inc()
 
     async def _handle(self, res: dict) -> str:
         cur = await self.current()
@@ -367,11 +372,13 @@ class Chain:
         if not res.get("found"):
             await self._add_shares(cur, res, lo, hi)
             return "empty"
+        validation_started = time.perf_counter()
         try:
             nonce = int(res.get("nonce"))
         except (TypeError, ValueError):
             nonce = -1  # "encontré" sin un nonce que sea un número: inválido
         if not (lo <= nonce <= hi) or not pow.verify(cur["base"], cur["prefix"], nonce, str(res.get("hash", ""))):
+            BLOCK_VALIDATION_SECONDS.observe(time.perf_counter() - validation_started)
             # Un "encontré" que no verifica es la prueba más clara de un motor roto (o de un tramposo):
             # cuarentena, no cobra el bloque, y su rango y sus "no encontré" los hace otro minero.
             worker = res.get("worker")
@@ -387,7 +394,7 @@ class Chain:
                     log(self.logger, "token revocado", miner_id=worker, motivo="resultado_invalido")
             return "invalid"
         await self._add_shares(cur, res, lo, hi)
-        return await self._seal_block(cur, res, nonce)
+        return await self._seal_block(cur, res, nonce, validation_started)
 
     async def _add_shares(self, cur: dict, res: dict, lo: int, hi: int) -> int:
         """Trabajo de cada minero en el bloque (shares, decidido el 20/11): cada share se verifica con MD5 acá y
@@ -414,7 +421,7 @@ class Chain:
         return await self._shares(keys=[keys.block_share_nonces(cur["index"]), keys.block_shares(cur["index"])],
                                   args=[worker, pow.share_weight(sp), *good])
 
-    async def _seal_block(self, cur: dict, res: dict, nonce: int) -> str:
+    async def _seal_block(self, cur: dict, res: dict, nonce: int, validation_started: float | None = None) -> str:
         index = cur["index"]
         txs = [json.loads(t) for t in await self.r.lrange(keys.tx_inflight(index), 0, -1)]
         subsidy = block_subsidy(index, BLOCK_REWARD_CENTS, HALVING_BLOCKS)
@@ -430,13 +437,15 @@ class Chain:
                   keys.block_shares(index - 1), keys.EVENTS_OUTBOX, keys.block_share_nonces(index - 1)],
             args=[cur["previous_hash"], cur["block_id"], pow.canonical_json(block), res["hash"], index,
                   json.dumps(solved_event(block, cur["block_id"]))])
+        if validation_started is not None:
+            BLOCK_VALIDATION_SECONDS.observe(time.perf_counter() - validation_started)
         if rc < 0:
             log(self.logger, "sellado rechazado", block_id=cur["block_id"], reason=SEAL_ERRORS.get(rc, rc))
             return "stale" if rc in (-1, -2) else "rejected"
         await self.flush_outbox()
         BLOCKS_SEALED.inc()
         seconds = time.time() - cur.get("assembled", cur["created"])
-        BLOCK_SECONDS.observe(seconds)
+        BLOCK_SECONDS.labels(str(len(cur["prefix"]))).observe(seconds)
         log(self.logger, "bloque sellado", block_id=cur["block_id"], txs=rc, nonce=nonce,
             block_hash=res["hash"], miner=res.get("worker"), seconds=round(seconds, 2), prefix=cur["prefix"])
         self.wake.set()

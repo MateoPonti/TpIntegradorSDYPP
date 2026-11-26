@@ -28,7 +28,8 @@ async def strike(r, miner_id: str, base: int, cap: int) -> tuple[int, int]:
 async def republish(exchange, cur: dict, lo: int, hi: int) -> None:
     task = {"v": 1, "task_id": uuid.uuid4().hex, "block_id": cur["block_id"], "base": cur["base"],
             "prefix": cur["prefix"], "from": int(lo), "to": int(hi), "attempts": 0,
-            "share_prefix": pow.share_prefix(cur["prefix"], int(cur.get("range_size") or hi - lo + 1))}
+            "share_prefix": pow.share_prefix(cur["prefix"], int(cur.get("range_size") or hi - lo + 1)),
+            "published_at": time.time()}
     await exchange.publish(rabbit.message(task), routing_key="task.any")
 
 
