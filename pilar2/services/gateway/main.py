@@ -201,23 +201,30 @@ async def give_back(lease: dict, why: str) -> None:
         log(logger, f"{why}, tarea devuelta", task_id=task["task_id"], attempts=task["attempts"])
 
 
+async def reap_once() -> int:
+    """Una pasada del reaper: devuelve a la cola los préstamos vencidos. Devuelve cuántos devolvió."""
+    r, n = state["r"], 0
+    if not await r.set(keys.REAPER_LOCK, POD_NAME, nx=True, ex=REAPER_PERIOD * 2):
+        return 0  # esta vuelta la hace otra réplica
+    for task_id in await r.zrangebyscore(keys.LEASE_DEADLINES, 0, time.time()):
+        if not await r.zrem(keys.LEASE_DEADLINES, task_id):
+            continue  # otro lo tomó
+        raw = await r.getdel(keys.lease(task_id))
+        if raw is None:
+            continue
+        lease = json.loads(raw)
+        EXPIRED.inc()
+        await count_expired(lease["miner_id"])
+        await give_back(lease, "préstamo vencido")
+        n += 1
+    return n
+
+
 async def reaper_loop() -> None:
-    r = state["r"]
     while True:
         await asyncio.sleep(REAPER_PERIOD)
         try:
-            if not await r.set(keys.REAPER_LOCK, POD_NAME, nx=True, ex=REAPER_PERIOD * 2):
-                continue
-            for task_id in await r.zrangebyscore(keys.LEASE_DEADLINES, 0, time.time()):
-                if not await r.zrem(keys.LEASE_DEADLINES, task_id):
-                    continue  # otro lo tomó
-                raw = await r.getdel(keys.lease(task_id))
-                if raw is None:
-                    continue
-                lease = json.loads(raw)
-                EXPIRED.inc()
-                await count_expired(lease["miner_id"])
-                await give_back(lease, "préstamo vencido")
+            await reap_once()
         except Exception:  # noqa: BLE001
             logger.exception("error en el reaper")
 
