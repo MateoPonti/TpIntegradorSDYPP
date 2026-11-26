@@ -49,6 +49,10 @@ canarios como cualquier worker de afuera y cobra en la cuenta del dueño. La ima
 
 ```bash
 python -m pytest -q pilar2/tests                                       # unitarios
+# Lua (reserva, firmas de compartidas, aceptar, liquidar colectas) y reaper del gateway, contra un Redis real.
+# Usan la base 15 y la borran; sin REDIS_URL se saltean. En el CI corren con un servicio Redis.
+docker run -d -p 6379:6379 redis:7.4-alpine
+REDIS_URL=redis://localhost:6379/15 python -m pytest -q pilar2/tests/test_lua.py
 TPI_E2E_URL=http://127.0.0.1:18080 python -m pytest -q pilar2/tests     # + integración y doble gasto (compose levantado)
 # Caídas en GKE (mata un pod de cada servicio y verifica la cadena). Necesita un minero conectado.
 # 13/11: 6/6 (doble gasto + coordinator, pool, gateway, RabbitMQ y Redis).
