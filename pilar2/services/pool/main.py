@@ -12,7 +12,7 @@ import time
 from fastapi import FastAPI
 from prometheus_client import Gauge
 
-from tpi_common import keys, rabbit, store
+from tpi_common import keys, rabbit, store, vardiff
 from tpi_common.config import DIFFICULTY_PREFIX, POD_NAME, env_float, env_int, env_str
 from tpi_common.logs import log, setup_logging
 from tpi_common.web import install_common_routes
@@ -62,7 +62,9 @@ async def measure(r, workers: list[dict], now: float) -> list[dict]:
         out.append({"miner_id": mid, "kind": w.get("type"), "account": w.get("account") or f"miner:{mid}",
                     "hashrate": rate, "source": source,
                     "motor": rates[0] if rates else None, "efectivo": rates[1] if rates else None,
-                    "calibrated": calib["hashrate"] if calib else None, "class": calib["class"] if calib else None,
+                    "calibrated": calib["hashrate"] if calib else None,
+                    # Clase con el hashrate medido por shares (B1.2); hasta tenerlo, la de la calibración.
+                    "class": vardiff.classify(rate) if source == "shares" else (calib["class"] if calib else None),
                     "declared": w.get("hashrate", 0), "quarantined": quarantined,
                     # 21/11: para que "Mis workers" no diga "minando" a uno conectado que no entrega nada
                     "trial": bool(await r.exists(keys.worker_trial(mid))),

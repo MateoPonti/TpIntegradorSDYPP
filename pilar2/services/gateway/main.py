@@ -50,8 +50,8 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, 
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import Counter, Gauge
 
-from tpi_common import firmas, keys, pow, quarantine, rabbit, ratelimit, store
-from tpi_common.config import POD_NAME, WORKER_TTL_SECONDS, env_int, env_str
+from tpi_common import firmas, keys, pow, quarantine, rabbit, ratelimit, store, vardiff
+from tpi_common.config import POD_NAME, WORKER_TTL_SECONDS, env_float, env_int, env_str
 from tpi_common.logs import log, setup_logging
 from tpi_common.web import install_common_routes
 
@@ -72,6 +72,7 @@ QUARANTINE_SECONDS = env_int("QUARANTINE_SECONDS", 300)
 QUARANTINE_MAX_SECONDS = env_int("QUARANTINE_MAX_SECONDS", 3600)  # tope de la cuarentena que crece
 REVOKE_AFTER_STRIKES = env_int("REVOKE_AFTER_STRIKES", 3)  # con token propio: a la 3.ª cuarentena en 1 h, sin token
 RESULTS_KEPT = 20
+MEASURE_WINDOW = env_float("HASHRATE_WINDOW_SECONDS", 300)  # la misma ventana que usa el pool
 TRIAL_CANARY_EVERY = env_int("TRIAL_CANARY_EVERY", 5)
 TRIAL_CANARIES = env_int("TRIAL_CANARIES", 3)
 MAX_WORKERS_PER_ACCOUNT = env_int("MAX_WORKERS_PER_ACCOUNT", 10)
@@ -139,15 +140,6 @@ async def auth(authorization: str = Header(default="")) -> dict | None:
     if authorization.startswith("Bearer ") and (raw := await state["r"].get(keys.worker_token(token_hash(authorization[7:])))):
         return json.loads(raw)
     raise HTTPException(401, "token inválido")
-
-
-def classify(hashrate: float) -> str:
-    """Clase del minero según la calibración (para /miners y Grafana)."""
-    if hashrate >= 100e6:
-        return "rapido"
-    if hashrate >= 5e6:
-        return "medio"
-    return "lento"
 
 
 async def current_block() -> dict | None:
@@ -299,7 +291,12 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["POST"], 
 install_common_routes(app)
 
 
-async def lend(task: dict, miner_id: str, kind: str, special: str | None = None, extra: dict | None = None) -> dict:
+async def lend(task: dict, miner_id: str, kind: str, special: str | None = None, extra: dict | None = None,
+               share_len: int | None = None) -> dict:
+    if share_len and task.get("share_prefix") and special is None:
+        # Vardiff (A3-d, 26/11): shares de la dificultad de este minero. El prefijo del bloque es el mismo; el peso
+        # de cada share (16^largo) compensa, así que el premio no cambia.
+        task["share_prefix"] = task["prefix"][:share_len]
     lease = {"task": task, "miner_id": miner_id, "kind": kind, "since": time.time(), "special": special,
              **(extra or {})}
     await state["r"].set(keys.lease(task["task_id"]), json.dumps(lease))
@@ -313,21 +310,34 @@ def calibration_task(kind: str) -> dict:
             "from": 0, "to": CALIB_RANGE.get(kind, CALIB_RANGE["cpu"]) - 1, "attempts": 0}
 
 
-def make_canary(cur: dict, ranges: list[dict], miner_id: str) -> tuple[dict, list[int]] | None:
+def make_canary(cur: dict, ranges: list[dict], miner_id: str,
+                share_len: int | None = None) -> tuple[dict, list[int]] | None:
     """Canario (B1.1, 26/11): un rango del bloque **actual** que otro minero ya resolvió y cuyas shares ya verificó
     el coordinator con MD5. Para el minero es una tarea más: mismo block_id, base, prefijo, share_prefix y tamaño
     (mismo formato que blocks.new_task). No sabe qué rangos les tocaron a otros, y la respuesta no es pública: las
     shares no salen en GET /blocks (antes el canario era un bloque ya sellado, con el nonce a la vista).
+    Con Vardiff (`share_len`), el canario lleva el largo de share de ese minero, como sus tareas: sirven los rangos
+    con shares más cortas o iguales (una share de largo 4 también es de largo 3) y se filtran a ese largo.
     Devuelve (tarea, shares conocidas) o None si no hay ningún rango que sirva."""
-    ok = [v for v in ranges if v.get("worker") != miner_id and v.get("shares")
-          and cur["prefix"].startswith(v.get("share_prefix") or "-")]
-    if not ok:
+    options = []
+    for v in ranges:
+        sp = v.get("share_prefix") or "-"
+        if v.get("worker") == miner_id or not v.get("shares") or not cur["prefix"].startswith(sp):
+            continue
+        if share_len is None:
+            options.append((v, sp, [int(n) for n in v["shares"]]))
+        elif len(sp) <= share_len:
+            mine = cur["prefix"][:share_len]
+            known = [int(n) for n in v["shares"] if pow.md5_hex(cur["base"], int(n)).startswith(mine)]
+            if known:
+                options.append((v, mine, known))
+    if not options:
         return None
-    v = random.choice(ok)
+    v, sp, known = random.choice(options)
     task = {"v": 1, "task_id": uuid.uuid4().hex, "block_id": cur["block_id"], "base": cur["base"],
             "prefix": cur["prefix"], "from": int(v["from"]), "to": int(v["to"]), "attempts": 0,
-            "share_prefix": v["share_prefix"]}
-    return task, [int(n) for n in v["shares"]]
+            "share_prefix": sp}
+    return task, known
 
 
 def canary_passed(known: list[int], got: list[int]) -> bool:
@@ -339,9 +349,19 @@ def canary_passed(known: list[int], got: list[int]) -> bool:
     return known_set <= got_set
 
 
-async def canary_task(cur: dict, miner_id: str) -> tuple[dict, list[int]] | None:
+async def canary_task(cur: dict, miner_id: str, share_len: int | None = None) -> tuple[dict, list[int]] | None:
     raws = await state["r"].lrange(keys.block_verified_ranges(cur["index"]), 0, -1)
-    return make_canary(cur, [json.loads(x) for x in raws], miner_id)
+    return make_canary(cur, [json.loads(x) for x in raws], miner_id, share_len)
+
+
+async def vardiff_len(miner_id: str, cur: dict) -> int | None:
+    """Largo de share de este minero (Vardiff), con su hashrate **medido** por shares (B1.2). None si todavía no hay
+    medición: queda el share_prefix que puso el coordinator (~32 shares por tarea)."""
+    results = [json.loads(x) for x in await state["r"].lrange(keys.miner_results(miner_id), 0, -1)]
+    rate = vardiff.shares_rate(results, time.time(), MEASURE_WINDOW)
+    if rate is None:
+        return None
+    return vardiff.share_len(rate, len(cur["prefix"]), int(cur["range_size"]))
 
 
 def lease_owner_ok(lease: dict, ident: dict | None, miner_id: str | None) -> bool:
@@ -384,8 +404,9 @@ async def pick_task(miner_id: str, kind: str) -> dict | Response:
         canary_due = await r.incr(keys.miner_tasks(miner_id)) % TRIAL_CANARY_EVERY == 0
     else:
         canary_due = CANARY_EVERY > 0 and await r.incr(keys.CANARY_COUNTER) % CANARY_EVERY == 0
+    share_len = await vardiff_len(miner_id, cur) if cur else None
     if cur and canary_due:
-        found = await canary_task(cur, miner_id)
+        found = await canary_task(cur, miner_id, share_len)
         if found:
             canary, known = found
             return await lend(canary, miner_id, kind, special="canary", extra={"canary_shares": known})
@@ -400,7 +421,7 @@ async def pick_task(miner_id: str, kind: str) -> dict | Response:
             await msg.ack()
             DROPPED.inc()
             continue
-        out = await lend(task, miner_id, kind)
+        out = await lend(task, miner_id, kind, share_len=share_len)
         await msg.ack()  # desde acá la tarea vive en el lease, no en RabbitMQ
         return out
     return Response(status_code=204)
@@ -456,7 +477,7 @@ async def finish_calibration(lease: dict, res: dict) -> None:
     hashes = int(res.get("hashes") or 0)
     seconds = float(res.get("engine_seconds") or res.get("seconds") or 0)
     rate = hashes / seconds if seconds > 0 else 0.0
-    value = {"hashrate": rate, "class": classify(rate), "kind": lease["kind"], "hashes": hashes,
+    value = {"hashrate": rate, "class": vardiff.classify(rate), "kind": lease["kind"], "hashes": hashes,
              "seconds": round(seconds, 3), "ts": time.time()}
     await state["r"].set(keys.miner_calibration(lease["miner_id"]), json.dumps(value), ex=86400)
     CALIBRATIONS.labels(lease["kind"], value["class"]).inc()
@@ -490,7 +511,12 @@ async def finish_canary(lease: dict, res: dict) -> None:
 async def record_result(lease: dict, res: dict) -> None:
     """Hashrate real: el motor informa sus segundos; el de punta a punta lo mide el gateway."""
     r, miner = state["r"], lease["miner_id"]
-    entry = {"hashes": int(res.get("hashes") or 0), "found": bool(res.get("found")),
+    task = lease["task"]
+    sp = task.get("share_prefix") or ""
+    # B1.2 (26/11): el trabajo que cuenta son las shares que verifica el gateway con MD5, no los hashes que informa.
+    valid = pow.valid_shares(task["base"], sp, int(task["from"]), int(task["to"]), res.get("shares")) if sp else []
+    entry = {"share_len": len(sp), "valid_shares": len(valid),
+             "hashes": int(res.get("hashes") or 0), "found": bool(res.get("found")),
              "engine_seconds": float(res.get("engine_seconds") or res.get("seconds") or 0),
              "seconds": round(time.time() - lease["since"], 3), "ts": time.time()}
     await r.lpush(keys.miner_results(miner), json.dumps(entry))

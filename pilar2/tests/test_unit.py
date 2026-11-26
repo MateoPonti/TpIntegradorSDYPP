@@ -92,12 +92,22 @@ def test_desired_cpu_miners_all_or_nothing():
     assert decision.desired_cpu_miners(0, False, 61, 8, 60) == 0
 
 
+def _work(now, ago=10, shares=32, share_len=4, seconds=1.0, **extra):
+    """Resultado como lo guarda el gateway desde el 26/11: shares verificadas con MD5 y segundos medidos por él."""
+    return {"hashes": 9e12, "engine_seconds": 1e-6, "seconds": seconds, "ts": now - ago,
+            "share_len": share_len, "valid_shares": shares, **extra}
+
+
 def test_miner_hashrate_uses_delivered_work():
     now = 1000.0
     results = [{"hashes": 2_000_000, "engine_seconds": 1.0, "seconds": 1.5, "ts": now - 10}]
     motor, efectivo = decision.miner_rates(results, now, 300)
-    assert motor == 2e6 and round(efectivo) == 1_333_333
-    assert decision.miner_hashrate(results, None, 9e9, None, False, now, 300) == (2e6, "motor")
+    assert motor == 2e6 and round(efectivo) == 1_333_333  # se siguen mostrando, pero ya no deciden nada
+    # B1.2 (26/11): lo que informa el motor no se cree. Sin shares verificadas, la calibración.
+    assert decision.miner_hashrate(results, {"hashrate": 5e5}, 9e9, None, False, now, 300) == (5e5, "calibracion")
+    # Con shares verificadas: 3 tareas × 32 shares de largo 4 (16^4 = 65536 hashes cada una) en 3 s.
+    worked = [_work(now, ago=i) for i in (5, 10, 15)]
+    assert decision.miner_hashrate(worked, {"hashrate": 5e5}, 9e9, None, False, now, 300) == (32 * 65536, "shares")
     # Sin resultados: la calibración; sin calibración: lo declarado.
     assert decision.miner_hashrate([], {"hashrate": 5e5}, 9e9, None, False, now, 300) == (5e5, "calibracion")
     assert decision.miner_hashrate([], None, 7.0, None, False, now, 300) == (7.0, "declarado")
@@ -105,7 +115,7 @@ def test_miner_hashrate_uses_delivered_work():
 
 def test_zombie_gpu_does_not_count_as_alive():
     # Si la GPU colgada contara como viva, el pool pediría 0 mineros CPU y nadie minaría.
-    assert decision.counts_as_alive({"quarantined": False, "source": "motor"})
+    assert decision.counts_as_alive({"quarantined": False, "source": "shares"})
     assert not decision.counts_as_alive({"quarantined": False, "source": "zombie"})
     assert not decision.counts_as_alive({"quarantined": True, "source": "cuarentena"})
     signal_cpu = decision.desired_cpu_miners(gpu_alive=0, has_work=True, idle_seconds=0, max_miners=8, idle_limit=60)
@@ -122,11 +132,11 @@ def test_found_early_results_do_not_measure_speed():
 
 def test_zombie_and_quarantined_miners_do_not_count():
     now = 1000.0
-    results = [{"hashes": 2_000_000, "engine_seconds": 1.0, "seconds": 1.5, "ts": now - 100}]
+    results = [_work(now, ago=100), _work(now, ago=101), _work(now, ago=102)]
     assert decision.miner_hashrate(results, None, 5e8, now - 5, False, now, 300) == (0.0, "zombie")
     assert decision.miner_hashrate(results, None, 5e8, None, True, now, 300) == (0.0, "cuarentena")
     # Un vencimiento viejo, anterior a su último resultado, no lo marca.
-    assert decision.miner_hashrate(results, None, 5e8, now - 200, False, now, 300)[1] == "motor"
+    assert decision.miner_hashrate(results, None, 5e8, now - 200, False, now, 300)[1] == "shares"
 
 
 # ---- Armado del bloque ----
@@ -496,3 +506,47 @@ def test_firma_vieja_sin_chain_id_no_vale():
 def test_mensaje_de_firma_invalida_explica_el_cambio():
     from tpi_common import firmas
     assert "chain id" in firmas.INVALID and "actualizá" in firmas.INVALID
+
+
+# ---- Hashrate medido con shares y Vardiff (B1.2 y A3-d, 26/11) ----
+
+def test_shares_rate_con_shares_verificadas():
+    from tpi_common import vardiff
+    now = 1000.0
+    entries = [_work(now, ago=5, shares=30, share_len=3, seconds=2.0), _work(now, ago=8, shares=10, share_len=4, seconds=2.0)]
+    entries.append(_work(now, ago=9, shares=0, share_len=4, seconds=1.0))
+    expected = (30 * 16**3 + 10 * 16**4) / 5.0
+    assert vardiff.shares_rate(entries, now, 300) == expected
+
+
+def test_shares_rate_necesita_suficientes_shares_y_recientes():
+    from tpi_common import vardiff
+    now = 1000.0
+    assert vardiff.shares_rate([_work(now, shares=5)], now, 300) is None  # pocas shares: puro ruido
+    assert vardiff.shares_rate([_work(now, ago=400) for _ in range(3)], now, 300) is None  # viejas
+    assert vardiff.shares_rate([_work(now, found=True) for _ in range(3)], now, 300) is None  # cortadas por el nonce
+    assert vardiff.shares_rate([{"hashes": 1e9, "seconds": 1, "ts": now}], now, 300) is None  # formato viejo
+
+
+def test_share_len_limites():
+    from tpi_common import vardiff
+    # Tarea de 2^32 nonces: entre 8 y 256 shares esperadas por tarea -> largos 6 (2^32/16^6 = 256) a 7 (16 por tarea).
+    assert vardiff.share_bounds(block_len=8, range_size=1 << 32) == (6, 7)
+    assert vardiff.share_bounds(block_len=6, range_size=2_000_000) == (4, 4)  # 30 por tarea: un solo largo sirve
+    assert vardiff.share_len(1.0, block_len=8, range_size=1 << 32) == 6  # lentísimo: el mínimo que no trunca
+    assert vardiff.share_len(1e12, block_len=8, range_size=1 << 32) == 7  # rapidísimo: el máximo con 8 por tarea
+    assert vardiff.share_len(1e12, block_len=2, range_size=2_000_000) == 2  # nunca más largo que el bloque
+
+
+def test_vardiff_minero_rapido_prefijo_mas_largo():
+    from tpi_common import vardiff
+    # El prefijo es hex: cada largo es 16 veces más difícil. Con 8 a 256 shares por tarea entran 1 o 2 largos por
+    # tamaño de tarea, así que Vardiff solo separa a los muy distintos (acá, un CPU de un GPU grande).
+    lento = vardiff.share_len(1e6, block_len=8, range_size=1 << 36)
+    rapido = vardiff.share_len(1e11, block_len=8, range_size=1 << 36)
+    assert (lento, rapido) == (7, 8)
+
+
+def test_clase_sale_del_hashrate():
+    from tpi_common import vardiff
+    assert vardiff.classify(2e8) == "rapido" and vardiff.classify(1e7) == "medio" and vardiff.classify(1e5) == "lento"

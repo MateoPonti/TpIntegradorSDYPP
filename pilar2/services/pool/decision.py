@@ -10,6 +10,7 @@ Decidido el 13/11 (decisiones.docx §7):
 """
 import math
 
+from tpi_common import vardiff
 from tpi_common.pow import expected_seconds
 
 MIN_RANGE_SIZE = 10_000
@@ -83,9 +84,11 @@ def miner_hashrate(results: list[dict], calibration: dict | None, declared: floa
     last_result = max((x["ts"] for x in results), default=None)
     if expired_ts is not None and (last_result is None or expired_ts > last_result):
         return 0.0, "zombie"
-    rates = miner_rates(results, now, window)
-    if rates is not None:
-        return rates[0], "motor"
+    measured = vardiff.shares_rate(results, now, window)
+    if measured is not None:
+        # B1.2 (26/11): el hashrate que cuenta sale de las shares que verificó el gateway, no de lo que informa el
+        # motor (hashes y engine_seconds se pueden inflar). miner_rates queda solo para mostrar.
+        return measured, "shares"
     if calibration:
         return float(calibration["hashrate"]), "calibracion"
     return float(declared or 0), "declarado"

@@ -10,6 +10,7 @@ Los que usan Redis necesitan REDIS_URL (ver test_lua.py).
 """
 import asyncio
 import json
+import time
 
 import pytest
 from fastapi import HTTPException
@@ -274,3 +275,64 @@ def test_client_ip_prefiere_cloudflare_y_despues_traefik():
     assert ratelimit.client_ip(Req({"x-forwarded-for": "2.2.2.2, 10.0.0.1"})) == "2.2.2.2"
     assert ratelimit.client_ip(Req({})) == "10.0.0.9"
 
+
+
+# ---- Hashrate medido y Vardiff en el gateway (B1.2 y A3-d, Task 11) ----
+
+def test_canario_con_vardiff_usa_el_largo_del_minero():
+    """Con Vardiff cada minero tiene su largo de share: el canario usa el del minero (si no, se distinguiría) y las
+    shares conocidas se filtran a ese largo (una share de largo 4 también es de largo 3)."""
+    gw = import_gateway()
+    sp = "00"
+    known = _shares(0, 65535, sp)
+    rng = {"from": 0, "to": 65535, "share_prefix": sp, "shares": known, "worker": "otro"}
+    canary, k = gw.make_canary(CUR, [rng], "yo", share_len=3)
+    assert canary["share_prefix"] == "000"
+    assert k == [n for n in known if pow.md5_hex(BASE, n).startswith("000")] and k
+    assert gw.make_canary(CUR, [rng], "yo", share_len=1) is None  # no se conocen las shares de largo 1
+
+
+def test_record_result_cuenta_solo_shares_verificadas(redis_db, monkeypatch):
+    gw = import_gateway()
+
+    async def go():
+        r = redis_db()
+        _state(gw, monkeypatch, r)
+        task = await _setup(r, gw)
+        sp = task["share_prefix"]
+        good = _shares(task["from"], task["to"], sp)
+        bad = [n for n in range(task["from"], task["to"]) if n not in good][:5]
+        await gw.post_result(FakeRequest({"task_id": "t1", "block_id": task["block_id"], "worker": "cpu-a",
+                                          "from": task["from"], "to": task["to"], "found": False,
+                                          "shares": good + bad, "hashes": 10**15, "engine_seconds": 1e-9}), None)
+        entry = json.loads((await r.lrange(keys.miner_results("cpu-a"), 0, 0))[0])
+        await r.aclose()
+        return entry, good, sp
+    entry, good, sp = asyncio.run(go())
+    assert entry["valid_shares"] == len(good) and entry["share_len"] == len(sp)  # las 5 inventadas no cuentan
+
+
+def test_lend_aplica_vardiff_con_hashrate_medido(redis_db, monkeypatch):
+    from tpi_common import vardiff
+    gw = import_gateway()
+
+    async def go():
+        r = redis_db()
+        _state(gw, monkeypatch, r)
+        cur = dict(CUR, prefix="00000000", range_size=1 << 36)
+        await r.set(keys.MINING_CURRENT, json.dumps(cur))
+        now = time.time()
+        for i in range(3):  # un CPU: 1e6 H/s medidos con shares de largo 4 (16^4 hashes cada una)
+            await r.lpush(keys.miner_results("cpu-1"), json.dumps(
+                {"ts": now - i, "seconds": 1.0, "share_len": 4, "valid_shares": round(1e6 / 16**4), "hashes": 0}))
+        slow = await gw.vardiff_len("cpu-1", cur)
+        nuevo = await gw.vardiff_len("nuevo", cur)  # sin medición: queda la del coordinator
+        task = blocks.new_task(cur, 0, 1 << 36)
+        lent = await gw.lend(dict(task), "cpu-1", "cpu", share_len=slow)
+        await r.aclose()
+        return slow, nuevo, lent, task
+    slow, nuevo, lent, task = asyncio.run(go())
+    assert slow == vardiff.share_len(round(1e6 / 16**4) * 16**4, 8, 1 << 36) == 7  # el más corto que no trunca
+    assert task["share_prefix"] == "0" * 8  # la del coordinator: ~32 shares por tarea
+    assert lent["share_prefix"] == "0" * 7  # Vardiff: más fáciles para el lento
+    assert nuevo is None

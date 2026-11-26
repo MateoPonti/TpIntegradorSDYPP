@@ -162,7 +162,7 @@ se corrige el texto explicando por qué cambió. Cada fila se completa en el PR 
 | a | Notifier con JSON-RPC 2.0 al estilo `eth_subscribe` | En curso (Task 13) | |
 | b | El frontend deja de hacer polling | En curso (Task 13) | |
 | c | El gateway empuja el trabajo (`mining.notify`) | En curso (Task 14) | |
-| d | Vardiff (dificultad de shares por worker) | En curso (Task 11) | |
+| d | Vardiff (dificultad de shares por worker) | **Implementado.** El gateway le pone a cada tarea el largo de share del worker según su hashrate **medido con shares verificadas** (B1.2), para ~10 shares por segundo, con 8 a 256 shares por tarea. El peso de cada share (16^largo) compensa, así que el premio no cambia. Limitación: el prefijo es hex, así que cada paso es 16 veces más difícil y no es una dificultad continua como la de Stratum. | 26/11, Task 11 |
 | e | Recompensa PPLNS | En curso (Task 12) | |
 | f | `authorize` firmado con desafío y resultados firmados | En curso (Task 14) | |
 | g | Nonce + id de cadena (EIP-155) | **Implementado.** Todo lo que se firma (registro, tx, alta de workers, cuentas compartidas, propuestas, colectas) lleva adelante `sdmer:<CHAIN_ID>:`, con `CHAIN_ID = 2026` (variable de entorno). El servidor lo agrega en un solo lugar (`firmas.verify`) y el navegador también (`firmar` en `claves.js`), así ningún mensaje queda sin él. El front y `tools/cuenta.py` lo leen de `GET /chain-id`. Una firma de otra red, o una de antes del cambio, da `400`. El nonce por cuenta ya estaba (`seq`). | 26/11, Task 2 |
