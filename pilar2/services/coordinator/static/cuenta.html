@@ -111,10 +111,13 @@
     <div class="body">
     <p class="hint"><code>user-0</code> a <code>user-96</code> arrancan con saldo y no firman (también pagan la
        comisión de <b class="fee">0,10</b>), porque las usa el
-       <code>bench.py</code> de la cátedra. Sirven para probar sin crear una cuenta.</p>
+       <code>bench.py</code> de la cátedra. Sirven para probar sin crear una cuenta.
+       Como no firman, <b>solo pueden mandarle a otra cuenta del génesis</b> (<code>user-0</code> a
+       <code>user-96</code>): si no, cualquiera se llevaría esa plata a una cuenta propia. La plata de las cuentas
+       propias sale del minado.</p>
     <div class="row">
       <input id="gDe" placeholder="de (ej. user-1)">
-      <input id="gPara" placeholder="para (ej. mateo)">
+      <input id="gPara" placeholder="para (ej. user-2)">
       <input id="gMonto" placeholder="monto" inputmode="decimal">
       <button id="gEnviar">Enviar</button>
     </div>

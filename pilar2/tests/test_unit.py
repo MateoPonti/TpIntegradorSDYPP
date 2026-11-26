@@ -239,6 +239,21 @@ def test_cuentas_con_clave():
     assert not accounts.reserved("mateo")
 
 
+def test_genesis_solo_dentro_del_genesis():
+    """A1 (pedido del profe, 26/11): las cuentas del génesis no firman, así que su plata no puede salir del génesis.
+    Si no, cualquiera se transfería los ~97M a una cuenta propia."""
+    from coordinator import accounts
+
+    assert accounts.genesis_transfer_ok("user-3", "user-4")
+    assert accounts.genesis_transfer_ok("user-3", "user-3")
+    assert not accounts.genesis_transfer_ok("user-3", "fede")
+    assert not accounts.genesis_transfer_ok("user-3", "colecta:viaje")
+    assert not accounts.genesis_transfer_ok("user-3", "miner:gpu-1")
+    assert not accounts.genesis_transfer_ok("user-3", "user-97")  # parece del génesis pero no lo es
+    assert accounts.genesis_transfer_ok("fede", "user-3")  # al génesis sí se le puede mandar
+    assert accounts.genesis_transfer_ok("fede", "ana")
+
+
 # ---- Notifier (punto 3 del contrato) ----
 
 def _solved():
