@@ -188,7 +188,8 @@ class FakeExchange:
 
 
 def _gateway_state(monkeypatch, r):
-    from gateway import main as gw
+    from conftest import import_gateway
+    gw = import_gateway()
     ex, dlx = FakeExchange(), FakeExchange()
     monkeypatch.setattr(gw, "state", {"r": r, "exchange": ex, "dlx": dlx, "solved": set(), "sockets": set()})
     return gw, ex, dlx

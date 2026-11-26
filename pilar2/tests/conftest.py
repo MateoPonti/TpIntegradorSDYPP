@@ -30,3 +30,28 @@ def redis_db():
     yield lambda: aredis.Redis.from_url(REDIS_URL, decode_responses=True)
     sync.flushdb()
     sync.close()
+
+
+def import_gateway():
+    """Importa gateway.main en el mismo proceso que el coordinator. Los dos definen la métrica `quarantined_total`
+    (en producción son procesos distintos, cada uno con su /metrics), y prometheus_client no deja registrar dos veces
+    el mismo nombre en un proceso. Se saca un momento la del coordinator, se importa el gateway y se vuelve a dejar la
+    del coordinator registrada (la del gateway funciona igual, solo no queda en el registro global)."""
+    import sys
+    if "gateway.main" in sys.modules:
+        return sys.modules["gateway.main"]
+    from prometheus_client import REGISTRY
+    clashing = {c for name, c in list(REGISTRY._names_to_collectors.items()) if name.startswith("quarantined")}
+    for c in clashing:
+        REGISTRY.unregister(c)
+    try:
+        from gateway import main as gw
+    finally:
+        if clashing:
+            gateway_side = {c for name, c in list(REGISTRY._names_to_collectors.items())
+                            if name.startswith("quarantined") and c not in clashing}
+            for c in gateway_side:
+                REGISTRY.unregister(c)
+            for c in clashing:
+                REGISTRY.register(c)
+    return gw
