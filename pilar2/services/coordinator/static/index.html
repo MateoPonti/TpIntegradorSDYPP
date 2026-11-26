@@ -135,7 +135,7 @@ async function refreshStatus() {
     ["Hashrate del pool", rate(plan.hashrate)],
     ["Mineros", `${s.miners.gpu} GPU · ${s.miners.cpu} CPU`],
     ["Premio por bloque", s.economy ? `${money(s.economy.next_subsidy_cents)} <span class="muted" style="font-size:13px">+ comisiones</span>` : "—"],
-    ["Avisos", wsOpen ? '<span class="dot ok"></span>en vivo' : '<span class="dot bad"></span>cada 3 s'],
+    ["Avisos", wsOpen ? '<span class="dot ok"></span>en vivo' : '<span class="dot bad"></span>cada 15 s'],
   ];
   $("stats").innerHTML = cells.map(([k, v]) => `<div class="stat"><span>${k}</span><b>${v}</b></div>`).join("");
   return s.chain_height;
@@ -324,12 +324,11 @@ async function search(q) {
 }
 $("search").onsubmit = (ev) => { ev.preventDefault(); search(new FormData(ev.target).get("q").trim()); };
 
-let busy = false, again = false, lastRefresh = 0;
+let busy = false, again = false;
 async function refresh() {
   if (busy) { again = true; return; }  // llegó un aviso a mitad de una actualización: otra vuelta al terminar
   busy = true;
   again = false;
-  lastRefresh = Date.now();
   try {
     height = await refreshStatus();
     await Promise.all([refreshLatest(), refreshMiners(), refreshBlocks(), refreshAccounts()]);
@@ -341,23 +340,31 @@ async function refresh() {
   }
 }
 
-// Avisos en vivo (notifier, punto 3 del contrato): con el websocket abierto la página se actualiza cuando se
-// sella un bloque y solo pregunta cada 15 s por lo que no tiene aviso (mineros, tx pendientes). Si se corta,
-// vuelve a preguntar cada 3 s y reintenta conectarse; al volver, la foto del estado la pone al día.
+// JSON-RPC 2.0: los avisos disparan las lecturas. Un único fallback de 15 s existe solo mientras falta el WS.
 let ws = null, wsOpen = false, wsUrl = null, retry = 1000, reqId = 0, watchTx = null;
-const wsSend = (m) => { if (wsOpen) ws.send(JSON.stringify({ id: ++reqId, ...m })); };
+const wsSend = (method, params) => {
+  if (wsOpen) ws.send(JSON.stringify({ jsonrpc: "2.0", id: ++reqId, method, params }));
+};
+let fallback = null;
+function iniciarFallback() {
+  if (fallback === null) fallback = setInterval(() => {
+    if (!wsOpen) { refresh(); if (watchTx) search(watchTx); }
+  }, 15000);
+}
 function watch(txId) {
   watchTx = txId;
-  wsSend({ op: "subscribe", topic: "tx", tx_id: txId });
+  wsSend("sdmer_subscribe", ["tx", txId]);
 }
-function onNotice(n) {
+function onNotice(message) {
+  if (message.jsonrpc !== "2.0" || message.method !== "sdmer_subscription") return;
+  const n = { ...message.params.result, sub: message.params.subscription };
   if (n.type === "snapshot" && n.height !== undefined && n.tip !== undefined && n.height !== height) refresh();
   if (n.type === "event" && n.event === "block.solved") refresh();
   if ((n.type === "snapshot" || n.type === "event") && n.tx_id && n.tx_id === watchTx) {
     if (n.status === "confirmed" || n.event === "tx.confirmed") {
       showResult("Transacción", [["tx_id", `<span class="mono">${esc(n.tx_id)}</span>`], ["Estado", txState(n)]]);
       watchTx = null;
-      wsSend({ op: "unsubscribe", sub: n.sub });
+      wsSend("sdmer_unsubscribe", [n.sub]);
     }
   }
 }
@@ -369,14 +376,15 @@ async function connect() {
   ws = new WebSocket(wsUrl);
   ws.onopen = () => {
     wsOpen = true; retry = 1000;
-    wsSend({ op: "subscribe", topic: "blocks" });  // primero suscribirse; la foto llega después
+    clearInterval(fallback); fallback = null;
+    wsSend("sdmer_subscribe", ["newBlocks"]);  // primero suscribirse; la foto llega después
     if (watchTx) watch(watchTx);
     refresh();
   };
   ws.onmessage = (m) => onNotice(JSON.parse(m.data));
   ws.onclose = () => {
-    if (wsOpen) refresh();
     wsOpen = false;
+    iniciarFallback();
     setTimeout(connect, retry);
     retry = Math.min(retry * 2, 30000);
   };
@@ -386,7 +394,7 @@ async function connect() {
 const pedido = new URLSearchParams(location.search).get("q");
 refresh().then(() => { if (pedido) { $("search").elements.q.value = pedido; search(pedido.trim()); } });
 connect();
-setInterval(() => { if (!wsOpen || Date.now() - lastRefresh > 15000) refresh(); }, 3000);
+iniciarFallback();
 </script>
 </body>
 </html>
