@@ -47,6 +47,14 @@ def http(method: str, url: str, body: dict | None = None) -> tuple[int, dict]:
             return exc.code, {"error": raw.decode(errors="replace")}
 
 
+def firmar(key: Ed25519PrivateKey, url: str, texto: str) -> str:
+    """Firma `sdmer:<chain_id>:<texto>` (desde el 26/11, A3-g). El chain id lo da el coordinator (GET /chain-id)."""
+    code, info = http("GET", f"{url}/chain-id")
+    if code != 200 or "chain_id" not in info:
+        raise SystemExit(f"no se pudo leer el chain id de {url}/chain-id ({code})")
+    return key.sign(f"sdmer:{info['chain_id']}:{texto}".encode()).hex()
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("accion", choices=["claves", "registrar", "enviar", "colecta"])
@@ -74,13 +82,13 @@ def main() -> int:
         p.error("falta --cuenta")
     if a.accion == "registrar":
         pub = publica(key)
-        firma = key.sign(f"register:{a.cuenta}:{pub}".encode()).hex()
+        firma = firmar(key, a.url, f"register:{a.cuenta}:{pub}")
         code, body = http("POST", f"{a.url}/accounts/register", {"account": a.cuenta, "public_key": pub, "signature": firma})
     elif a.accion == "colecta":
         if not a.id or not a.meta:
             p.error("faltan --id y --meta")
         para, goal, deadline = a.receiver or a.cuenta, int(Decimal(a.meta) * 100), int(time.time() + a.horas * 3600)
-        firma = key.sign(f"crowdfund:create:{a.id}:{para}:{goal}:{deadline}".encode()).hex()
+        firma = firmar(key, a.url, f"crowdfund:create:{a.id}:{para}:{goal}:{deadline}")
         code, body = http("POST", f"{a.url}/crowdfunds", {"id": a.id, "title": a.titulo, "creator": a.cuenta,
                                                           "beneficiary": para, "goal": a.meta, "deadline": deadline,
                                                           "signature": firma})
@@ -90,7 +98,7 @@ def main() -> int:
         _, info = http("GET", f"{a.url}/balances/{a.cuenta}")
         seq = (info.get("seq") or 0) + 1
         cents = int(Decimal(a.monto) * 100)  # mismo cálculo que el servidor (centavos enteros)
-        firma = key.sign(f"tx:{a.cuenta}:{a.receiver}:{cents}:{seq}".encode()).hex()
+        firma = firmar(key, a.url, f"tx:{a.cuenta}:{a.receiver}:{cents}:{seq}")
         code, body = http("POST", f"{a.url}/transactions", {"sender": a.cuenta, "receiver": a.receiver,
                                                             "amount": a.monto, "seq": seq, "signature": firma})
     print(code, json.dumps(body, ensure_ascii=False))

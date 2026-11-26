@@ -545,7 +545,7 @@ async def register_worker(request: Request):
     if pubkey is None:
         raise HTTPException(400, "cuenta no registrada: primero creá la cuenta")
     if not firmas.verify(pubkey, firmas.worker_message(account, worker), body.get("signature")):
-        raise HTTPException(400, "firma inválida")
+        raise HTTPException(400, firmas.INVALID)
     miner_id, token = f"{account}.{worker}", secrets.token_urlsafe(32)
     if await r.exists(keys.worker_token_of(miner_id)):
         raise HTTPException(409, "ese worker ya existe: elegí otro nombre")

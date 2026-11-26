@@ -71,21 +71,26 @@ def wait_confirmed(tx_id: str, limit: float = 240) -> dict:
     pytest.fail(f"la tx {tx_id} no se confirmó en {limit} s (¿hay algún minero conectado?)")
 
 
+def sig_text(texto: str) -> bytes:
+    """Lo que se firma desde el 26/11 (A3-g): el texto con el chain id del sistema adelante."""
+    return f"sdmer:{get('/chain-id')['chain_id']}:{texto}".encode()
+
+
 def new_user(tag: str) -> tuple[str, Ed25519PrivateKey]:
     """Cuenta registrada con su clave (17/11: sin registro no hay cuenta propia, y desde el 20/11 el destino de una
     tx tiene que existir)."""
     name, key = f"test-{tag}-{uuid.uuid4().hex[:6]}", Ed25519PrivateKey.generate()
     pub = key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw).hex()
     code, body = post("/accounts/register", {"account": name, "public_key": pub,
-                                             "signature": key.sign(f"register:{name}:{pub}".encode()).hex()})
+                                             "signature": key.sign(sig_text(f"register:{name}:{pub}")).hex()})
     assert code == 201, body
     return name, key
 
 
 def signed(sender: str, key: Ed25519PrivateKey, receiver: str, amount_cents: int, seq: int) -> dict:
-    """Tx de una cuenta registrada: firma sobre tx:<de>:<para>:<centavos>:<seq>."""
+    """Tx de una cuenta registrada: firma sobre sdmer:<chain_id>:tx:<de>:<para>:<centavos>:<seq>."""
     return {"sender": sender, "receiver": receiver, "amount": f"{amount_cents / 100:.2f}", "seq": seq,
-            "signature": key.sign(f"tx:{sender}:{receiver}:{amount_cents}:{seq}".encode()).hex()}
+            "signature": key.sign(sig_text(f"tx:{sender}:{receiver}:{amount_cents}:{seq}")).hex()}
 
 
 def fund(receiver: str, amount_cents: int) -> str:

@@ -276,6 +276,12 @@ prefijo y enlace) · `GET /chain` · `GET /status` (con Redis caído responde ig
   sobre `tx:<sender>:<receiver>:<centavos>:<seq>`, y `seq` tiene que ser el último + 1
   (`account:<nombre>:seq`). Sin firma, con firma mala o con `seq` repetido → `400`. El `seq` evita que alguien
   copie una tx firmada y la mande de nuevo (replay).
+- **Id de la cadena en todo lo que se firma** (26/11, A3-g del contrato, como EIP-155): lo que se firma de verdad es
+  `sdmer:<CHAIN_ID>:<mensaje>` (`CHAIN_ID=2026`), para todos los mensajes de esta sección y de las de abajo
+  (registro, tx, alta de workers, compartidas, propuestas y colectas). Una firma hecha para otra red (por ejemplo el
+  compose local con otro `CHAIN_ID`) no vale en esta. Se agrega en un solo lugar de cada lado: `firmas.verify` en el
+  servidor y `firmar()` en `claves.js`. Los clientes lo leen de `GET /chain-id` (también sale en `/status`). Una
+  firma sin chain id (un front o un `tools/cuenta.py` de antes) → `400` con un mensaje que dice que hay que actualizar.
 - **Excepción fija: las 97 cuentas de prueba del génesis (`user-0` a `user-96`)** no se registran y mandan tx
   sin firma, porque es lo que hace el `bench.py` de la cátedra (no se puede modificar). Son las únicas cuentas
   sin firma. No se pueden registrar esos nombres, ni `recompensa` ni los que empiezan con `miner:`.
