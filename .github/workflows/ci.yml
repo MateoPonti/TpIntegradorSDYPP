@@ -23,6 +23,15 @@ jobs:
 
   tests:
     runs-on: ubuntu-latest
+    # Redis real para los tests de los Lua y del reaper (pilar2/tests/test_lua.py). Usan la base 15 y la borran.
+    services:
+      redis:
+        image: redis:7.4-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 2s --health-timeout 2s --health-retries 15
+    env:
+      REDIS_URL: redis://localhost:6379/15
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
