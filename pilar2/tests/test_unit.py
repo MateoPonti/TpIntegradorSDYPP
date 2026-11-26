@@ -230,7 +230,8 @@ def test_cuentas_con_clave():
     key = Ed25519PrivateKey.generate()
     pub = key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw).hex()
     msg = accounts.tx_message("mateo", "user-3", 1050, 1)
-    sig = key.sign(msg).hex()
+    from tpi_common import firmas
+    sig = key.sign(firmas.domain(msg)).hex()  # desde el 26/11 se firma con el chain id adelante (A3-g)
     assert accounts.verify(pub, msg, sig)
     assert not accounts.verify(pub, accounts.tx_message("mateo", "user-3", 1050, 2), sig)  # otro seq: replay
     assert not accounts.verify(pub, msg, "00" * 64) and not accounts.verify(pub, msg, None)
@@ -455,3 +456,43 @@ def test_quarantine_grows_and_resets_after_an_hour():
     got = [asyncio.run(quarantine.strike(r, "m", 300, 3600)) for _ in range(6)]
     assert got == [(1, 300), (2, 600), (3, 1200), (4, 2400), (5, 3600), (6, 3600)]  # al doble, con tope de 1 h
     assert r.ttl == quarantine.STRIKES_WINDOW  # la cuenta vence sola a la hora de la primera
+
+
+# ---- Chain id en lo que se firma (A3-g, 26/11, como EIP-155) ----
+
+def _key():
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    k = Ed25519PrivateKey.generate()
+    return k, k.public_key().public_bytes_raw().hex()
+
+
+def test_domain_lleva_el_chain_id():
+    from tpi_common import config, firmas
+    assert config.CHAIN_ID == 2026
+    assert firmas.domain(b"tx:a:b:100:1") == b"sdmer:2026:tx:a:b:100:1"
+
+
+def test_firma_de_otra_cadena_no_vale():
+    from tpi_common import firmas
+    from coordinator import accounts
+    k, pub = _key()
+    msg = accounts.tx_message("a", "b", 100, 1)
+    assert firmas.verify(pub, msg, k.sign(b"sdmer:2026:" + msg).hex())
+    assert not firmas.verify(pub, msg, k.sign(b"sdmer:2027:" + msg).hex())  # otra red: no se puede reusar acá
+
+
+def test_firma_vieja_sin_chain_id_no_vale():
+    """Una firma de antes del 26/11 (sin chain id) se rechaza: el front y tools/cuenta.py viejos tienen que actualizarse."""
+    from tpi_common import firmas
+    from coordinator import accounts, multisig
+    k, pub = _key()
+    for msg in (accounts.tx_message("a", "b", 100, 1), accounts.register_message("a", pub),
+                firmas.worker_message("a", "w1"), multisig.reject_message("caja"),
+                multisig.create_message("caja", 2, ["a", "b"])):
+        assert not firmas.verify(pub, msg, k.sign(msg).hex())
+        assert firmas.verify(pub, msg, k.sign(firmas.domain(msg)).hex())
+
+
+def test_mensaje_de_firma_invalida_explica_el_cambio():
+    from tpi_common import firmas
+    assert "chain id" in firmas.INVALID and "actualizá" in firmas.INVALID
