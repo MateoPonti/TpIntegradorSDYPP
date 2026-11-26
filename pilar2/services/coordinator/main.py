@@ -189,7 +189,14 @@ async def post_bulk(request: Request):
     items = await _json(request)
     if not isinstance(items, list) or len(items) > MAX_BULK:
         raise HTTPException(400, f"se esperaba una lista de hasta {MAX_BULK} tx")
-    results = [await _submit(it) for it in items]
+    results = []
+    for index, item in enumerate(items):
+        try:
+            results.append(await _submit(item))
+        except Exception:
+            logger.exception("fallo al procesar tx del bulk", extra={"bulk_index": index})
+            TX_REJECTED.labels("error interno").inc()
+            results.append((400, {"error": "error interno con esta tx"}))
     accepted = sum(1 for code, _ in results if code == 202)
     return JSONResponse({"accepted": accepted, "rejected": len(results) - accepted,
                          "results": [b for _, b in results]}, status_code=202)
