@@ -110,6 +110,36 @@ y las dos IPs fijas (`tofu output static_ips`). Las IPs van a ser otras: hay que
 
 ## Mineros CPU en varias PCs
 
+### Comparación M frente a 2×M (Task 18, preparada para el 03/12)
+
+`loadtest/escalado.sh` compara 4 y 8 mineros CPU con igual carga, prefijo fijo y fragmentación. Sin argumentos
+solo muestra el plan. Con `--run`, pausa KEDA únicamente en el k3s elegido, espera mineros y cola vacía,
+llama al `matrix.sh` original y conserva las tres corridas de `bench.py` por punto. No modifica archivos de
+la cátedra ni el contexto global de kubectl. Al salir restaura dificultad, fragmentación, réplicas y pausa previa.
+
+```bash
+bash pilar3/loadtest/escalado.sh
+BASE_URL=https://DOMINIO K3S_CONTEXT=k3d-tpi-mineros \
+  OUT="$PWD/pilar3/loadtest/resultados/2026-12-03-escalado" \
+  bash pilar3/loadtest/escalado.sh --run
+python pilar3/loadtest/confirmado.py --api https://DOMINIO --desde 1796328000 --hasta 1796331600
+```
+
+Antes de ejecutar: código congelado, GPU desconectada, ninguna otra carga y relojes sincronizados. Usar
+el entorno de `requirements-dev.txt` para generar gráficos. `GKE_CONTEXT` identifica solo los servicios;
+`K3S_CONTEXT` es obligatorio y el script rechaza nodos GCE. Configurar `PREFIX`, `FRAGMENT` y `BULK`
+para elegir el experimento (por defecto, 7 ceros, 10 % y 1000 tx).
+
+`confirmado.py` pagina `/blocks` y obtiene transacciones desde `/blocks/{i}`. Cuenta solo tx de usuario en
+bloques sellados dentro del intervalo, sin génesis ni premios. Throughput confirmado = cantidad / (último
+sello − timestamp de primera tx), incluyendo espera de ventana. Sin datos devuelve 0 y timestamps `null`.
+`medir_corrida.py` envuelve `bench.run` sin alterar su código y guarda `confirmados.csv` y JSON por corrida;
+un conteo distinto al aceptado invalida la corrida. `resumen_escalado.py` produce CSV, PNG y README con
+mediana, mínimo, máximo y speedup contra 2× ideal. La atribución de cuellos de botella requiere métricas.
+
+**Estado:** herramientas y pruebas locales preparadas. Medición real, CSV/PNG de entrega y análisis del
+cluster pendientes para el 03/12; no se generaron resultados de carga ficticios.
+
 Cada PC con un k3s corre el mismo Deployment (`k3s-local/`) contra el mismo gateway y con el **mismo
 `MINER_TOKEN`** (es un solo token para todos los mineros: lo crea quien despliega y está en el secret
 `gateway-auth`). Lo único que cambia por PC es `MINER_CLUSTER` y `MINER_ACCOUNT` en `k3s-local/config.yaml`. El id de cada
