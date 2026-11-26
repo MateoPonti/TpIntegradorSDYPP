@@ -157,6 +157,12 @@ def should_rearm(prefix_len: int, planned_len: int, hashrate: float, target_seco
     return pow.expected_seconds(prefix_len, hashrate) > target_seconds * factor
 
 
+def is_rearm_of(res_block_id: str, cur: dict) -> bool:
+    """Un rearmado conserva índice y base; cambia el identificador y acorta el prefijo."""
+    return (isinstance(res_block_id, str) and res_block_id != cur["block_id"]
+            and res_block_id.startswith(f"{cur['index']}-"))
+
+
 def solved_event(block: dict, block_id: str) -> dict:
     """Evento block.solved: lo usan el gateway (descarta tareas de ese block_id) y el notifier (avisa a los
     navegadores). Lleva cada tx con origen y destino para que el notifier sepa a quién avisar sin leer el bloque."""
@@ -349,11 +355,15 @@ class Chain:
     async def _handle(self, res: dict) -> str:
         cur = await self.current()
         lo, hi = int(res["from"]), int(res["to"])
-        if cur is None or res.get("block_id") != cur["block_id"]:
-            # El bloque se rearmó (mismo índice y misma base, block_id viejo): sus shares cuentan igual.
-            if cur is not None and str(res.get("block_id", "")).startswith(f"{cur['index']}-") and not res.get("found"):
+        if cur is None:
+            return "stale"
+        if res.get("block_id") != cur["block_id"]:
+            if not is_rearm_of(res.get("block_id"), cur):
+                return "stale"
+            # Misma base: verificar un ganador tardío contra el prefijo vigente antes de sellar.
+            if not res.get("found"):
                 await self._add_shares(cur, res, lo, hi)
-            return "stale"  # bloque ya sellado o resultado duplicado/tardío
+                return "stale"
         if not res.get("found"):
             await self._add_shares(cur, res, lo, hi)
             return "empty"
@@ -385,7 +395,8 @@ class Chain:
         minado no tiene shares y no cobra. Un worker en prueba todavía no cobra. Se suma por índice, así cuenta
         aunque el bloque se rearme (la base es la misma)."""
         worker, sp = res.get("worker"), res.get("share_prefix") or ""
-        if not worker or not sp or not cur["prefix"].startswith(sp):
+        # Las shares del prefijo anterior (más difícil) siguen siendo trabajo verificable tras rearmar.
+        if not worker or not sp or not (cur["prefix"].startswith(sp) or sp.startswith(cur["prefix"])):
             return 0
         good = pow.valid_shares(cur["base"], sp, lo, hi, res.get("shares"))
         sent = len(res.get("shares") or [])
@@ -421,7 +432,7 @@ class Chain:
                   json.dumps(solved_event(block, cur["block_id"]))])
         if rc < 0:
             log(self.logger, "sellado rechazado", block_id=cur["block_id"], reason=SEAL_ERRORS.get(rc, rc))
-            return "rejected"
+            return "stale" if rc in (-1, -2) else "rejected"
         await self.flush_outbox()
         BLOCKS_SEALED.inc()
         seconds = time.time() - cur.get("assembled", cur["created"])
