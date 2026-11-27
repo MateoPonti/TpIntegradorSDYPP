@@ -20,7 +20,11 @@ spec:
     spec:
       # A miner can die mid task: the gateway lease expires and the task
       # goes back to the queue (TASK_LEASE_SECONDS in GKE).
-      terminationGracePeriodSeconds: 10
+      #
+      # C5 (27/11): con SIGTERM el agente ya no muere de golpe. Termina el tramo que está minando
+      # (MINER_CHUNK), devuelve lo prestado con release?reason=shutdown y sale con 0. Los 20 s le
+      # tienen que alcanzar para cerrar el tramo más largo; si se sube MINER_CHUNK, subir esto.
+      terminationGracePeriodSeconds: 20
       containers:
         - name: miner
           image: MINER_IMAGE
