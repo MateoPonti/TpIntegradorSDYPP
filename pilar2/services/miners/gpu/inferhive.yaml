@@ -30,7 +30,7 @@ spec:
           image: ghcr.io/mateoponti/tpi-miner-gpu:latest
           env:
             - name: GATEWAY_URL
-              value: https://gateway.35-223-237-60.sslip.io
+              value: https://gateway.sdmer.dpdns.org
             - name: MINER_TOKEN
               valueFrom:
                 secretKeyRef: { name: minero-gpu, key: miner-token }

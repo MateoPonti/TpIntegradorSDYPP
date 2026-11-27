@@ -41,6 +41,20 @@ spec:
       labels:
         app: rabbitmq
     spec:
+      serviceAccountName: rabbitmq
+      automountServiceAccountToken: false
+      # B2 (27/11): corre como el usuario `rabbitmq` de la imagen (uid 999, gid 999; verificado con
+      # `docker run --rm --entrypoint sh rabbitmq:4.4-management -c 'id rabbitmq'`). Antes arrancaba como root y
+      # el entrypoint bajaba a `rabbitmq` con gosu después de hacer el chown; ahora arranca directamente como
+      # 999 y ese tramo del entrypoint no se ejecuta. El `install` de la cookie de Erlang y el $HOME de Erlang
+      # son los dos /var/lib/rabbitmq, que es el PVC: fsGroup lo deja escribible para el grupo 999.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
       nodeSelector:
         pool: infra
       tolerations:
@@ -62,6 +76,18 @@ spec:
       containers:
         - name: rabbitmq
           image: rabbitmq:4.4-management
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            # Única excepción del endurecimiento (la lista está en pilar3/tests/test_manifiestos.py):
+            # estas imágenes escriben fuera de su PVC durante el arranque —RabbitMQ instala la cookie de
+            # Erlang y arma su config, Sentinel reescribe la suya— y no las escribimos nosotros, así que no
+            # sabemos todo lo que tocan. Probar la raíz de solo lectura acá significa probarlo en el cluster
+            # que tiene la cadena, y a 5 días de la entrega no es el momento. Queda en "Limitaciones" del
+            # README del Pilar 3 con el riesgo real: es el contenedor con más superficie, pero igual no
+            # corre como root, no puede escalar privilegios y no tiene ninguna capability.
+            readOnlyRootFilesystem: false
           # La cookie tiene que ser igual en los 3 nodos. El entrypoint le pasa el dueño a rabbitmq.
           command:
             - sh
@@ -108,6 +134,7 @@ spec:
               cpu: 200m
               memory: 512Mi
             limits:
+              cpu: "2"
               memory: 1Gi
           volumeMounts:
             - name: data

@@ -18,8 +18,10 @@ HERE=$REPO/pilar3/loadtest/completa
 OUT=${OUT:-$REPO/pilar3/loadtest/resultados/$(date +%F)-completa}
 mkdir -p "$OUT"
 CTX=${GKE_CONTEXT:-gke_tp3distribuidos_us-central1-a_tp3}
-API=${API:-https://35-223-237-60.sslip.io}
-GATEWAY=${GATEWAY:-https://gateway.35-223-237-60.sslip.io}
+# A2 (27/11): por el dominio, que es el único camino de afuera. Si Cloudflare corta los bulks grandes (524 o
+# 413), se corre con IN= desde un pod del cluster; ver pilar3/README.md.
+API=${API:-https://sdmer.dpdns.org}
+GATEWAY=${GATEWAY:-https://gateway.sdmer.dpdns.org}
 IN=http://coordinator.tpi.svc.cluster.local
 GPU_PID=""
 

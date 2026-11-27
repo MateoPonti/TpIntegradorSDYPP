@@ -28,7 +28,7 @@ spec:
   triggers:
     - type: metrics-api
       metadata:
-        url: https://gateway.35-223-237-60.sslip.io/scaling
+        url: https://gateway.sdmer.dpdns.org/scaling
         valueLocation: desired_cpu_miners
         targetValue: "1"
         authMode: bearer

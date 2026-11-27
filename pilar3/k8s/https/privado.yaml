@@ -1,0 +1,75 @@
+# B2.6 (27/11/2026): /logs y /metrics no se sirven desde Internet.
+#
+#   kubectl apply -f pilar3/k8s/https/privado.yaml
+#
+# El Ingress del front manda `/` al coordinator, así que hoy https://<dominio>/logs y /metrics se contestan a
+# cualquiera: los logs tienen nombres de cuentas y tx, y /metrics es un mapa de cómo está armado el sistema.
+# Este IngressRoute los agarra antes y los corta con 403.
+#
+# POR QUÉ LA LISTA ES SOLO LOOPBACK Y NO LOS RANGOS DEL CLUSTER
+# El Service de Traefik es LoadBalancer con `externalTrafficPolicy: Cluster` (el que pone GKE por defecto). Con
+# eso kube-proxy hace SNAT y Traefik ve como origen la **IP del nodo**, no la del cliente. Si la lista dejara
+# pasar los rangos internos (10.x), todo el tráfico de Internet entraría, porque llega con una IP interna: la
+# política parecería estar y no filtraría nada. Así que por el Ingress no pasa nadie, y adentro se llega como
+# corresponde:
+#   * Prometheus no se entera: scrapea los pods directo (PodMonitor, pod:8080/metrics), no por el Ingress.
+#   * Para leer los logs: kubectl -n tpi port-forward deploy/coordinator 8080:8080 y después
+#     curl localhost:8080/logs
+#
+# Verificación (es la que va a correr el profe):
+#   curl -s -o /dev/null -w "%{http_code}\n" https://<dominio>/logs      -> 403
+#   curl -s -o /dev/null -w "%{http_code}\n" https://<dominio>/metrics   -> 403
+#   curl -s -o /dev/null -w "%{http_code}\n" https://<dominio>/status    -> 200 (no se rompió lo público)
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: solo-interno
+  namespace: tpi
+spec:
+  ipAllowList:
+    # Traefik no tiene un middleware "denegar todo": la forma de hacerlo es una lista que nadie cumple.
+    # Lo que no está en la lista se contesta con 403.
+    sourceRange:
+      - 127.0.0.1/32
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: privado
+  namespace: tpi
+spec:
+  # Los dos entrypoints: por http no alcanza con que redirija a https, porque la respuesta del redirect ya
+  # confirmaría que la ruta existe, y el objetivo es que no se llegue ni por una ni por la otra.
+  entryPoints: [websecure]
+  routes:
+    # Sin Host: vale para el dominio, para el host del gateway y para la IP pelada, que es justo por donde se
+    # intentaría entrar. `priority` alta para ganarle a la regla `/` del Ingress del front: Traefik, cuando no
+    # se le dice nada, prioriza por el largo de la regla, y no hay que dejar una cosa así atada a eso.
+    - match: PathPrefix(`/logs`) || PathPrefix(`/metrics`)
+      priority: 1000
+      middlewares:
+        - name: solo-interno
+      services:
+        - name: coordinator
+          port: http
+  # Sin `secretName`: usa el certificado que ya tiene Traefik para ese nombre (el de cert-manager). Si no
+  # estuviera este bloque, por websecure no entraría en el router TLS y la regla no se evaluaría.
+  tls: {}
+---
+# Lo mismo por http (entrypoint web). La regla de arriba tiene `tls: {}`, y con eso Traefik la arma como router
+# TLS: solo la evalúa en los pedidos https, así que por http://<ip>/logs se seguía contestando 200 (27/11).
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: privado-http
+  namespace: tpi
+spec:
+  entryPoints: [web]
+  routes:
+    - match: PathPrefix(`/logs`) || PathPrefix(`/metrics`)
+      priority: 1000
+      middlewares:
+        - name: solo-interno
+      services:
+        - name: coordinator
+          port: http

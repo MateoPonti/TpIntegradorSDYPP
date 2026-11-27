@@ -11,8 +11,9 @@ data:
   REDIS_MASTER_NAME: tpi
   # Id de la cadena (A3-g, como EIP-155): va en todo lo que se firma. Cambiarlo invalida todas las firmas.
   CHAIN_ID: "2026"
-  # Página /unirse: a dónde da de alta los workers el navegador y a dónde se conectan (HTTPS por Traefik).
-  GATEWAY_PUBLIC_URL: https://gateway.35-223-237-60.sslip.io
+  # Página /unirse: a dónde da de alta los workers el navegador y a dónde se conectan (A2: dominio propio
+  # detrás de Cloudflare, pilar3/k8s/https/dominio.yaml).
+  GATEWAY_PUBLIC_URL: https://gateway.sdmer.dpdns.org
   # --- Prefijo (decidido el 13/11): automático por hashrate real, para que un bloque tarde < BLOCK_TARGET_SECONDS.
   # Para las pruebas de carga de prefijos 1 a 8: DIFFICULTY_MODE=fixed y DIFFICULTY_PREFIX con los ceros.
   DIFFICULTY_MODE: auto
