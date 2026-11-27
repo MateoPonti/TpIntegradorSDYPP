@@ -2,7 +2,7 @@
 # tpi-coordinator y reparte por nombre al coordinator y al gateway. Se usa Traefik y no ingress-nginx porque
 # ingress-nginx dejó de mantenerse (retirado por la comunidad de Kubernetes en 2026).
 #   helm repo add traefik https://traefik.github.io/charts
-#   helm upgrade --install traefik traefik/traefik -n traefik --create-namespace -f pilar3/k8s/https/traefik-values.yaml
+#   helm upgrade --install traefik traefik/traefik -n traefik --create-namespace -f pilar3/k8s/platform/traefik-values.yaml
 service:
   spec:
     loadBalancerIP: 35.223.237.60   # IP estática tpi-coordinator (antes la tenía el Service del coordinator)
