@@ -16,6 +16,11 @@ POOL_MINERS = "pool:miners"        # STRING JSON: hashrate de cada minero vivo (
 POOL_LAST_WORK = "pool:last_work"  # STRING: última vez que hubo trabajo (mineros CPU: 60 s sin trabajo -> 0)
 CANARY_COUNTER = "gateway:canary:counter"  # INCR: 1 de cada CANARY_EVERY tareas es un canario
 EVENTS_OUTBOX = "events:outbox"    # LIST de eventos (JSON) que se guardan al sellar y todavía no se publicaron
+# PPLNS (A3-e, 27/11): el premio no se reparte entre los que trabajaron en ese bloque, sino entre las últimas
+# N veces el trabajo de un bloque, sin importar en qué bloque se hizo. La ventana es una LIST con la entrada
+# más nueva primero, "<cuenta>|<peso>|<minero>" (el minero va para poder saltear a los que están en cuarentena).
+PPLNS_WINDOW = "pplns:window"
+REWARD_CARRY = "reward:carry"      # STRING: centavos de premio que todavía no se le pudo pagar a nadie (C4)
 
 
 def block(index: int) -> str:

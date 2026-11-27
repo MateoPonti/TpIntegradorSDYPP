@@ -179,9 +179,10 @@ def test_reward_transactions_and_verify_chain():
     txs = reward.reward_transactions(3, {"miner:pc": 10, "miner:pod-1": 30}, 5000, "miner:pod-1", ts=1.0)
     assert [t["receiver"] for t in txs] == ["miner:pc", "miner:pod-1"]
     prev = {"index": 3, "reward_cents": 5000}
-    assert verify_chain.check_rewards({"transactions": txs}, prev) == []
+    # check_rewards devuelve (errores, carry que queda) desde que existe el carry (C4, Task 12).
+    assert verify_chain.check_rewards({"transactions": txs}, prev) == ([], 0)
     txs[0]["amount"] += 1
-    assert verify_chain.check_rewards({"transactions": txs}, prev)
+    assert verify_chain.check_rewards({"transactions": txs}, prev)[0]
 
 
 def test_reward_sender_is_reserved():
@@ -194,13 +195,13 @@ def test_reward_sender_is_reserved():
 def test_genesis_is_valid_for_verify_chain():
     g = genesis_block()
     assert len(g["transactions"]) == 97
-    assert verify_chain.check_block(g, "0" * 32) == []
+    assert verify_chain.check_block(g, "0" * 32) == ([], 0)
 
 
 def test_verify_chain_detects_tampering():
     g = genesis_block()
     g["transactions"][0]["amount"] += 1
-    assert verify_chain.check_block(g, "0" * 32)
+    assert verify_chain.check_block(g, "0" * 32)[0]
 
 
 # ---- Motor CPU (mismo contrato que miner_gpu) ----
@@ -550,6 +551,67 @@ def test_vardiff_minero_rapido_prefijo_mas_largo():
 def test_clase_sale_del_hashrate():
     from tpi_common import vardiff
     assert vardiff.classify(2e8) == "rapido" and vardiff.classify(1e7) == "medio" and vardiff.classify(1e5) == "lento"
+
+
+# ---- A3-e: PPLNS (Task 12) ----
+
+def test_pplns_cuenta_shares_de_bloques_anteriores():
+    # La ventana no se corta en el bloque: la tercera entrada es de un bloque anterior y entra igual
+    # (acá no, porque con las dos primeras ya se juntó el peso de la ventana).
+    entries = [("a", 16), ("b", 16), ("a", 16)]  # la más nueva primero
+    assert reward.pplns_split(entries, 32, 100, "a") == {"a": 50, "b": 50}
+
+
+def test_pplns_ultima_entry_parcial():
+    # De la entrada de b solo entran los 16 que faltan para llenar la ventana, no sus 32: si no, una
+    # entrada grande justo en el borde cobraría de más y el reparto dependería de dónde cae el corte.
+    assert reward.pplns_split([("a", 16), ("b", 32)], 32, 100, "a") == {"a": 50, "b": 50}
+
+
+def test_pplns_ventana_vacia_devuelve_vacio():
+    assert reward.pplns_split([], 32, 100, None) == {}
+
+
+def test_pplns_ventana_mas_corta_que_el_trabajo_hecho():
+    # Más trabajo que ventana: solo cobran los más nuevos. El que trabajó hace mucho ya quedó afuera.
+    entries = [("nuevo", 32), ("viejo", 32)]
+    assert reward.pplns_split(entries, 32, 100, None) == {"nuevo": 100}
+
+
+def test_pplns_ventana_sin_llenarse_reparte_todo_igual():
+    # Arrancando la cadena la ventana no se llena, pero el premio se reparte entero entre los que hay.
+    split = reward.pplns_split([("a", 10), ("b", 30)], 1000, 100, "a")
+    assert split == {"a": 25, "b": 75} and sum(split.values()) == 100
+
+
+def test_pplns_window_weight_usa_el_prefijo_del_bloque_pagado():
+    assert reward.pplns_window_weight(4, 2) == 2 * 16**4
+    assert reward.pplns_window_weight(0, 2) == 2       # prefijo vacío: ventana mínima, no 0
+    assert reward.pplns_window_weight(2, 1) == 256
+
+
+def test_reward_txs_desde_un_reparto_hecho():
+    txs = reward.reward_txs(7, {"b": 10, "a": 90}, ts=1.0)
+    assert [(t["receiver"], t["amount"]) for t in txs] == [("a", 90), ("b", 10)]  # ordenadas por cuenta
+    assert all(t["sender"] == reward.REWARD_SENDER and t["reward_for"] == 7 for t in txs)
+    assert [t["tx_id"] for t in txs] == ["reward-7-a", "reward-7-b"]
+
+
+def test_verify_chain_acepta_el_premio_acumulado():
+    """Un bloque sin premio acumula, y el siguiente paga lo suyo más lo acumulado. El verificador tiene que
+    aceptar esa cadena: si comparara contra el reward_cents pelado, daría inválida una cadena válida."""
+    prev1 = {"index": 1, "reward_cents": 5010}
+    errores, carry = verify_chain.check_rewards({"transactions": []}, prev1)
+    assert errores == [] and carry == 5010          # el bloque 2 no pagó: queda acumulado
+
+    prev2 = {"index": 2, "reward_cents": 5020}
+    pago = reward.reward_txs(2, {"mateo": 5020 + 5010}, ts=1.0)
+    errores, carry = verify_chain.check_rewards({"transactions": pago}, prev2, carry)
+    assert errores == [] and carry == 0             # el bloque 3 pagó los dos premios
+
+    de_menos = reward.reward_txs(2, {"mateo": 5020}, ts=1.0)   # se "olvida" lo acumulado
+    errores, _ = verify_chain.check_rewards({"transactions": de_menos}, prev2, 5010)
+    assert errores and "acumulado" in errores[0]
 
 
 # ---- C5: SIGTERM del minero (Task 7) ----
