@@ -21,4 +21,4 @@ providers:
   kubernetesIngress:
     enabled: true
   kubernetesCRD:
-    enabled: true   # 20/11: para el Middleware que redirige http://sdmer.duckdns.org a https (sdmer.yaml)
+    enabled: true   # Middlewares de Traefik (redirect http→https del dominio de Cloudflare, Task 9)

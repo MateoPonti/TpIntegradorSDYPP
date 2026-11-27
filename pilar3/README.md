@@ -24,9 +24,9 @@ en su propio namespace **`tpi`**. El 17/11/2026 se sacó el TP3 del cluster (nam
 
 | Qué | Dónde |
 |---|---|
-| Frontend, API y `/status` | **`https://sdmer.duckdns.org`** (dominio de DuckDNS, gratis; `http://` redirige a `https://`). También `https://35-223-237-60.sslip.io` y `http://35.223.237.60` (IP fija `tpi-coordinator`, en Traefik; sin redirect, lo usa `bench.py`) |
-| Portal para unirse al pool | `https://sdmer.duckdns.org/unirse` |
-| Avisos por websocket (notifier) | `wss://sdmer.duckdns.org/ws` (Traefik manda `/ws` al notifier) |
+| Frontend, API y `/status` | **`https://35-223-237-60.sslip.io`** y `http://35.223.237.60` (IP fija `tpi-coordinator`, en Traefik; sin redirect, lo usa `bench.py`) |
+| Portal para unirse al pool | `https://35-223-237-60.sslip.io/unirse` |
+| Avisos por websocket (notifier) | `wss://35-223-237-60.sslip.io/ws` (Traefik manda `/ws` al notifier) |
 | Gateway de los mineros | **`https://gateway.35-223-237-60.sslip.io`** (por Traefik) y `http://34.63.209.225` (IP fija `tpi-gateway`, para los pods del k3s) |
 | Imágenes | `us-central1-docker.pkg.dev/tp3distribuidos/tp3/tpi-{coordinator,pool,gateway,notifier}:<sha>` |
 | Prometheus, Grafana y Loki | Los que instaló el TP3 (namespace `monitoring`, siguen ahí). Leen nuestros pods con `k8s/observability/` |
@@ -87,7 +87,7 @@ todo (para eso hay que sumar nodos al pool `infra`; los manifiestos ya reparten 
 
 **HTTPS** (17/11/2026, opción A: gratis, dentro del cluster). Traefik (namespace `traefik`, helm chart 42.4.0)
 tiene la IP fija `tpi-coordinator` y reparte por nombre: `35-223-237-60.sslip.io` → coordinator (y `/ws` →
-notifier, el websocket pasa sin configuración extra) y `gateway.35-223-237-60.sslip.io` → gateway. `sdmer.duckdns.org` (20/11, `pilar3/k8s/https/sdmer.yaml`) va igual que el primero, con su certificado y un Middleware de Traefik que redirige su HTTP a HTTPS (por eso Traefik tiene `kubernetesCRD` activado). El registro A está en duckdns.org: si cambia la IP, se cambia ahí a mano; si se apaga el cluster, se borra el dominio para que no quede apuntando a una IP que Google le puede dar a otro. cert-manager (namespace `cert-manager`, v1.21.2) saca y renueva solo
+notifier, el websocket pasa sin configuración extra) y `gateway.35-223-237-60.sslip.io` → gateway. El dominio de DuckDNS (`sdmer.duckdns.org`, del 20/11) se sacó el 27/11 a pedido del profe: se reemplaza por un dominio propio en Cloudflare (Task 9). cert-manager (namespace `cert-manager`, v1.21.2) saca y renueva solo
 el certificado de Let's Encrypt (desafío HTTP-01). `sslip.io` resuelve esos nombres a la IP, así no hace falta
 comprar un dominio (Let's Encrypt no firma una IP sola). HTTP sigue abierto para `bench.py` y los mineros ya
 configurados. Se eligió Traefik y no ingress-nginx porque ingress-nginx ya no se mantiene. Manifiestos e
