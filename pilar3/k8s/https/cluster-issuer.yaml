@@ -2,7 +2,7 @@
 #
 # POR QUÉ DNS-01 Y NO HTTP-01 (que es lo que usábamos con sslip.io)
 # El dominio entra por Cloudflare en modo "proxied", y el LoadBalancer de Traefik solo acepta los rangos de
-# Cloudflare (pilar3/k8s/https/traefik-values.yaml). Con HTTP-01, Let's Encrypt pide
+# Cloudflare (pilar3/k8s/platform/traefik-values.yaml). Con HTTP-01, Let's Encrypt pide
 # http://<dominio>/.well-known/acme-challenge/<token>: ese pedido pasa por el proxy de Cloudflare, que con
 # "Always Use HTTPS" lo redirige, y encima el token viaja por una ruta que el redirect global web->websecure
 # también agarra. DNS-01 no depende de nada de eso: cert-manager escribe un registro TXT _acme-challenge con el

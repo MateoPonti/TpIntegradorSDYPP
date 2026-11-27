@@ -35,7 +35,9 @@ jobs:
           service_account: ${{ vars.GCP_INFRA_SA }}
       - uses: opentofu/setup-opentofu@v2
       - run: tofu fmt -check -recursive
-      - run: tofu init -input=false
+      # B3: el estado vive en GCS, no en el disco del runner (que se tira al terminar el job). El nombre del
+      # bucket entra por acá porque en provider.tf la configuración del backend es parcial.
+      - run: tofu init -input=false -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}"
       - run: tofu validate
       - run: tofu plan -input=false -out=tfplan
       - uses: actions/upload-artifact@v4
@@ -62,5 +64,7 @@ jobs:
         with:
           name: tfplan
           path: pilar3/infra/terraform
-      - run: tofu init -input=false
+      # B3: el estado vive en GCS, no en el disco del runner (que se tira al terminar el job). El nombre del
+      # bucket entra por acá porque en provider.tf la configuración del backend es parcial.
+      - run: tofu init -input=false -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}"
       - run: tofu apply -input=false tfplan

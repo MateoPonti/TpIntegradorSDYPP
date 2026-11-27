@@ -1,0 +1,17 @@
+# Values de `kube-prometheus-stack` (namespace monitoring).
+#
+# ESTE RELEASE NO ES DEL TPI: lo instaló el TP3 y lo compartimos. Está acá para poder reproducir el cluster,
+# no para hacerle `helm upgrade` desde este trabajo (ver el README de este directorio).
+#
+# PENDIENTE DE EXPORTAR DEL CLUSTER: correr `sh pilar3/k8s/platform/exportar-values.sh` con el kubeconfig de
+# GKE y commitear lo que quede. Lo que sabemos por el repo:
+#
+#   helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+#   helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack -n monitoring
+#
+# * Prometheus con disco de 10 GB y 30 días de retención, para no perder las mediciones de las pruebas de
+#   carga (decisión del grupo; está aplicado con pilar3/k8s/observability/prometheus-persistencia.yaml).
+# * El Prometheus del cluster solo toma PodMonitors con la etiqueta `release=kube-prometheus-stack`, que es
+#   la que usan nuestros PodMonitor de pilar3/k8s/observability/monitores.yaml.
+# * El sidecar de Grafana carga los dashboards desde ConfigMaps con la etiqueta `grafana_dashboard`.
+# * La clave de Grafana está en el Secret `grafana-admin` del namespace monitoring, nunca acá.

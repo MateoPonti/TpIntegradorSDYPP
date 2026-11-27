@@ -15,7 +15,11 @@ permissions:
   id-token: write
 
 env:
-  REGISTRY: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/tpi
+  # B3 (27/11): el repositorio es `tp3`, no `tpi`, y las imagenes llevan el prefijo `tpi-`. Es donde estan
+  # las que **corren hoy**: el Artifact Registry lo heredamos del TP3 junto con el cluster. Antes el pipeline
+  # publicaba en `tpi/<servicio>`, un repositorio distinto, asi que desplegaba imagenes que no eran las que
+  # estaban andando. El `tpi` que crea OpenTofu quedo sin usar (ver pilar3/README.md).
+  REGISTRY: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/tp3
 
 jobs:
   build:
@@ -35,8 +39,8 @@ jobs:
       - run: gcloud auth configure-docker ${{ vars.GCP_REGION }}-docker.pkg.dev --quiet
       - run: |
           docker build -f pilar2/services/Dockerfile --build-arg SERVICE=${{ matrix.service }} \
-            -t "$REGISTRY/${{ matrix.service }}:${{ github.sha }}" .
-          docker push "$REGISTRY/${{ matrix.service }}:${{ github.sha }}"
+            -t "$REGISTRY/tpi-${{ matrix.service }}:${{ github.sha }}" .
+          docker push "$REGISTRY/tpi-${{ matrix.service }}:${{ github.sha }}"
 
   deploy:
     needs: build

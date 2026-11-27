@@ -1,0 +1,14 @@
+# Values de `cert-manager` (chart jetstack/cert-manager, namespace cert-manager).
+#
+# PENDIENTE DE EXPORTAR DEL CLUSTER: correr `sh pilar3/k8s/platform/exportar-values.sh` con el kubeconfig de
+# GKE y commitear lo que quede. Este archivo tiene lo único que está registrado en el repo del comando con el
+# que se instaló (el encabezado de pilar3/k8s/https/ingress.yaml) y la versión que figura en pilar3/README.md,
+# así que puede faltarle algo que se haya pasado por --set después.
+#
+#   helm repo add jetstack https://charts.jetstack.io
+#   helm upgrade --install cert-manager jetstack/cert-manager -n cert-manager --create-namespace \
+#     --set crds.enabled=true
+#
+# Versión instalada según pilar3/README.md: v1.21.2
+crds:
+  enabled: true   # los CRD (Certificate, ClusterIssuer, Order, Challenge) los maneja el propio chart
