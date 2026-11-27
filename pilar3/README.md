@@ -108,6 +108,128 @@ en el archivo).
 y las dos IPs fijas (`tofu output static_ips`). Las IPs van a ser otras: hay que ponerlas en
 `loadBalancerIP` de `k8s/apps/coordinator.yaml` y `gateway.yaml`, y en `k3s-local/`.
 
+## Endurecimiento de Kubernetes (B2, 27/11/2026)
+
+Lo que el profe marcó en B2 era que los manifiestos corrían con los valores por defecto de Kubernetes, que son
+los permisivos: root, sin límite de CPU, con la ServiceAccount `default` y con Redis y RabbitMQ accesibles
+desde cualquier pod del cluster.
+
+| Qué | Dónde | Por qué |
+|---|---|---|
+| `runAsNonRoot` + `runAsUser` explícito | todos los pods | Un proceso que se escapa del contenedor sin ser root no es root en el nodo. Las apps y el minero corren como **10001** (el mismo uid del `USER` de sus Dockerfile); Redis como **999:1000** y RabbitMQ como **999:999**, que son los usuarios que ya traen esas imágenes |
+| `allowPrivilegeEscalation: false` | todos los contenedores | Ni con un binario setuid adentro de la imagen se recupera root |
+| `capabilities.drop: [ALL]` | todos los contenedores | Ninguno necesita capabilities del kernel: no abren puertos bajo 1024 ni tocan la red |
+| `readOnlyRootFilesystem: true` | apps y minero | No se puede escribir un binario ni un `.py` adentro del contenedor. Donde hace falta escribir hay un `emptyDir` en `/tmp` (los logs rotativos van a `LOG_DIR=/tmp/logs`, y el minero guarda ahí la clave Ed25519 de su worker) |
+| `seccompProfile: RuntimeDefault` | todos los pods | Filtra las syscalls que ningún proceso normal usa |
+| `resources.limits.cpu` | todos los contenedores | Sin límite, un pod que se vuelve loco se come el nodo y se lleva puestos a los demás |
+| ServiceAccount propia + `automountServiceAccountToken: false` | todos | Ninguno de nuestros servicios le habla a la API de Kubernetes (se coordinan con Redis, `coord:leader` y `pool:leader`), así que no hay ningún token de la API para robar. Y en los logs de auditoría se ve quién hizo qué, en vez de `...:tpi:default` para todo |
+| NetworkPolicy | Redis y RabbitMQ | `ClusterIP` quiere decir "no publicado", no "protegido": cualquier pod del cluster les hablaba igual |
+| `/logs` y `/metrics` con 403 desde Internet | `k8s/https/privado.yaml` | Los logs tienen nombres de cuentas y de transacciones, y `/metrics` es un mapa de cómo está armado el sistema |
+
+`pilar3/tests/test_manifiestos.py` revisa todo eso parseando los YAML, así que si alguien saca un
+`securityContext` o se olvida el límite de CPU en un manifiesto nuevo, el CI lo marca.
+
+### Cómo aplicarlo
+
+Cada paso reinicia pods, así que conviene de a uno y mirando que vuelva a `Running`. Los StatefulSets van
+primero porque las apps no arrancan sin Redis ni RabbitMQ.
+
+```bash
+# 1. Las ServiceAccounts y las políticas, que no reinician nada
+kubectl apply -f pilar3/k8s/infra/serviceaccounts.yaml -f pilar3/k8s/apps/serviceaccounts.yaml
+kubectl apply -f pilar3/k8s/infra/networkpolicies.yaml
+
+# 2. Redis: rollout de a un pod. Es el que tiene la cadena, así que se mira pod por pod.
+#    Al cambiar el uid, Kubernetes le pone el grupo 1000 y g+rwX al PVC (fsGroup), también a los AOF que ya
+#    están, así que no se pierde nada; pero un rollout de Redis es un failover de Sentinel: hay unos segundos
+#    sin principal.
+kubectl apply -f pilar3/k8s/infra/redis.yaml
+kubectl -n tpi rollout status statefulset/redis --timeout=300s
+
+# 3. RabbitMQ, igual (pause_minority: con 2 de 3 nodos arriba sigue atendiendo)
+kubectl apply -f pilar3/k8s/infra/rabbitmq.yaml
+kubectl -n tpi rollout status statefulset/rabbitmq --timeout=300s
+
+# 4. Las apps. Necesitan la imagen nueva (USER 10001): primero el Pipeline 3, o build y push a mano.
+kubectl apply -k pilar3/k8s/apps
+kubectl -n tpi rollout status deploy/coordinator deploy/gateway deploy/pool deploy/notifier --timeout=300s
+
+# 5. El corte de /logs y /metrics
+kubectl apply -f pilar3/k8s/https/privado.yaml
+```
+
+Si algo no vuelve a `Running`, el motivo está en `kubectl -n tpi describe pod <pod>` y en los logs del
+contenedor. Para volver atrás alcanza con `kubectl apply` del archivo de la rama anterior: no hay migración de
+datos en el medio, solo cambia cómo arranca el pod.
+
+**Antes de confiar en las NetworkPolicy**, hay que ver si el cluster las aplica. En GKE solo filtran si está
+Dataplane V2 o el add-on de NetworkPolicy; si no, la API las guarda y no hacen nada:
+
+```bash
+gcloud container clusters describe tp3 --zone us-central1-a \
+  --format="value(networkPolicy.enabled,networkConfig.datapathProvider)"
+```
+
+Habilitarlo reinicia los pods del cluster (y el `monitoring` que compartimos no es nuestro), así que si no
+está habilitado **no se toca a esta altura**: queda en "Limitaciones" de acá abajo.
+
+### Verificación (es la que va a correr el profe)
+
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" https://<dominio>/logs      # 403
+curl -s -o /dev/null -w "%{http_code}\n" https://<dominio>/metrics   # 403
+curl -s -o /dev/null -w "%{http_code}\n" https://<dominio>/status     # 200: lo público sigue andando
+kubectl -n tpi port-forward deploy/coordinator 8080:8080             # así sí se leen los logs
+curl -s localhost:8080/logs | tail -5
+```
+
+Que Prometheus siga teniendo datos se ve en Grafana: scrapea los pods directo (`PodMonitor`, `pod:8080/metrics`),
+no por el Ingress, así que el 403 de afuera no lo afecta.
+
+### Relojes (B2.7)
+
+El profe preguntó de qué reloj dependen las ventanas de 10 s con las que se arman los bloques.
+
+- **Los nodos de GKE sincronizan contra el NTP interno de Google** (`metadata.google.internal`, con `chrony`).
+  Google usa *leap smear*: en vez de un segundo intercalar de golpe, reparte la corrección a lo largo del día,
+  así que el reloj nunca salta para atrás.
+- **La ventana la calcula una sola réplica**: solo el líder del coordinator (`coord:leader`) arma bloques, y
+  usa su propio reloj. O sea que un desfase entre réplicas **no** parte una ventana en dos: a lo sumo mueve el
+  borde de la ventana cuando cambia el líder, y el bloque siguiente vuelve a la grilla fija
+  (`window_end` redondea a múltiplos de `BLOCK_WINDOW_SECONDS`).
+- **Las transacciones se ordenan por el `ts` que les pone el coordinator** al aceptarlas, no por la hora del
+  cliente: un navegador con la hora mal no puede meter una tx en otra ventana.
+- **Los mineros no usan la hora para nada**: el préstamo lo vence el reaper con el reloj del gateway, y el
+  minero solo mide duraciones (`time.perf_counter`), que no dependen de la hora del día.
+
+Evidencia del nodo (pegar la salida cuando se corra, para el informe):
+
+```bash
+# El nodo no tiene shell: se entra con un pod privilegiado en su namespace de host, o directo por SSH
+gcloud compute ssh <nodo> --zone us-central1-a --command "chronyc tracking"
+```
+
+```
+(completar con la salida de chronyc tracking: interesa "System time" y "Last offset", que tienen que estar
+en microsegundos o pocos milisegundos)
+```
+
+### Limitaciones que quedan
+
+- **AMQP y Redis van sin TLS dentro del cluster (B2.5).** El tráfico no sale de la VPC y las credenciales van
+  en Secrets, pero cualquier cosa que logre ponerse en el medio dentro del cluster ve las contraseñas y los
+  mensajes. Se haría con un `Issuer` CA de cert-manager, un certificado por StatefulSet y `rabbitmq.conf` +
+  `redis.conf` escuchando TLS; no entró en el tiempo que quedaba y cambiar el transporte de Redis a cinco días
+  de la entrega era más riesgo que beneficio.
+- **Redis, Sentinel y RabbitMQ corren con la raíz escribible.** Son las tres únicas excepciones y están en la
+  lista del test. Esas imágenes escriben fuera de su PVC al arrancar (RabbitMQ instala la cookie de Erlang y
+  arma su config; Sentinel reescribe la suya) y no son nuestras, así que no sabemos todo lo que tocan;
+  probarlo significaba probarlo en el cluster que tiene la cadena. Igual no corren como root, no pueden
+  escalar privilegios y no tienen ninguna capability.
+- **Si el cluster no tiene Dataplane V2**, las NetworkPolicy están escritas y aplicadas pero no filtran. En ese
+  caso lo que protege a Redis y RabbitMQ sigue siendo que son `ClusterIP` (no se llega de Internet) más la
+  contraseña de cada uno. Hay que decirlo en el informe en lugar de dar por hecho que filtran.
+
 ## Mineros CPU en varias PCs
 
 Cada PC con un k3s corre el mismo Deployment (`k3s-local/`) contra el mismo gateway y con el **mismo

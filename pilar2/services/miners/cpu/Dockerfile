@@ -9,5 +9,7 @@ COPY pilar2/services/miners/agent.py .
 COPY pilar1/cpu/miner_cpu.py ./engine/miner_cpu.py
 ENV PYTHONUNBUFFERED=1 LOG_DIR=/tmp/logs MINER_KIND=cpu CPU_WORKERS=1 \
     MINER_CMD="python /app/engine/miner_cpu.py" MINER_CHUNK=2000000
-USER 1000
+# B2 (27/11): 10001, el mismo uid que el securityContext de los manifiestos. Por encima de
+# 10000 para no pisar un usuario del host si alguna vez se monta un volumen compartido.
+USER 10001
 CMD ["python", "agent.py"]

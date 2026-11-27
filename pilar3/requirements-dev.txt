@@ -1,2 +1,3 @@
 pytest>=8
 matplotlib>=3.8
+PyYAML>=6   # test_manifiestos.py parsea los YAML de k8s

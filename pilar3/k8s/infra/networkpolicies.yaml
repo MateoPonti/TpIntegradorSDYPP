@@ -1,0 +1,73 @@
+# B2 (27/11/2026): Redis y RabbitMQ solo aceptan conexiones de los servicios del TPI.
+#
+# Ya son ClusterIP, o sea que no se llega a ellos desde Internet, pero **cualquier pod del cluster** les puede
+# hablar: ClusterIP es "no publicado", no "protegido". Con estas políticas, el único tráfico que entra es el de
+# los cuatro servicios, el de los otros nodos del mismo cluster (Redis replica y Sentinel; RabbitMQ usa epmd y
+# Raft entre sus 3 nodos) y el de Prometheus.
+#
+# ANTES DE APLICARLAS: en GKE las NetworkPolicy solo se **aplican** si el cluster tiene habilitado Dataplane V2
+# o el add-on de NetworkPolicy. Si no, la API las acepta y las guarda, pero no filtran nada: parece que protegen
+# y no protegen. Cómo saber en qué está el cluster:
+#
+#   gcloud container clusters describe tp3 --region <region> \
+#     --format="value(networkPolicy.enabled,networkConfig.datapathProvider)"
+#
+# Si da `False` y no dice `ADVANCED_DATAPATH`, hay que habilitarlo (reinicia los pods del cluster, así que no se
+# hace a último momento) o dejarlo documentado en "Limitaciones" del README del Pilar 3.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: redis-solo-apps
+  namespace: tpi
+spec:
+  podSelector:
+    matchLabels:
+      app: redis
+  policyTypes: [Ingress]
+  ingress:
+    # Los cuatro servicios: Redis (6379) y Sentinel (26379), porque le preguntan a Sentinel quién es el principal.
+    - from:
+        - podSelector:
+            matchExpressions:
+              - { key: app, operator: In, values: [coordinator, pool, gateway, notifier] }
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - { protocol: TCP, port: 6379 }
+        - { protocol: TCP, port: 26379 }
+    # Entre los pods de Redis, sin restringir puertos: la réplica se sincroniza con el principal y los 3
+    # Sentinel se descubren y votan entre ellos.
+    - from:
+        - podSelector:
+            matchLabels:
+              app: redis
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: rabbitmq-solo-apps
+  namespace: tpi
+spec:
+  podSelector:
+    matchLabels:
+      app: rabbitmq
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - { key: app, operator: In, values: [coordinator, pool, gateway, notifier] }
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - { protocol: TCP, port: 5672 }    # AMQP: es lo único que usan los servicios
+        - { protocol: TCP, port: 15672 }   # management (solo por port-forward; no hay Ingress que lo publique)
+        - { protocol: TCP, port: 15692 }   # /metrics del plugin rabbitmq_prometheus (lo scrapea el PodMonitor)
+    # Entre los 3 nodos del cluster de RabbitMQ, sin restringir puertos: epmd (4369), distribución de Erlang
+    # (25672) y los puertos efímeros que negocia Erlang por arriba de eso, que no son fijos.
+    - from:
+        - podSelector:
+            matchLabels:
+              app: rabbitmq
