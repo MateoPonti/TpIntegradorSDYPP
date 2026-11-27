@@ -1,0 +1,41 @@
+# A2 (27/11/2026): certificados de Let's Encrypt para el dominio propio, con el desafío DNS-01 de Cloudflare.
+#
+# POR QUÉ DNS-01 Y NO HTTP-01 (que es lo que usábamos con sslip.io)
+# El dominio entra por Cloudflare en modo "proxied", y el LoadBalancer de Traefik solo acepta los rangos de
+# Cloudflare (pilar3/k8s/https/traefik-values.yaml). Con HTTP-01, Let's Encrypt pide
+# http://<dominio>/.well-known/acme-challenge/<token>: ese pedido pasa por el proxy de Cloudflare, que con
+# "Always Use HTTPS" lo redirige, y encima el token viaja por una ruta que el redirect global web->websecure
+# también agarra. DNS-01 no depende de nada de eso: cert-manager escribe un registro TXT _acme-challenge con el
+# API token y Let's Encrypt lo lee del DNS. Además es el único camino si algún día queremos un certificado
+# comodín (*.sdmer.dpdns.org).
+#
+# EL TOKEN NO SE COMMITEA. Se crea en Cloudflare con permiso Zone:DNS:Edit **solo** sobre esta zona y se carga
+# a mano una vez:
+#   kubectl -n cert-manager create secret generic cloudflare-api-token --from-literal=api-token=XXXXXXXX
+# El secret va en el namespace de cert-manager (no en tpi) porque un ClusterIssuer siempre busca sus secrets
+# ahí, sin importar de qué namespace sea el Certificate.
+#
+#   kubectl apply -f pilar3/k8s/https/cluster-issuer.yaml
+#   kubectl -n tpi get certificate tpi-tls -w        # READY=True en ~1-2 min
+#   kubectl -n tpi describe challenge                # si tarda, acá se ve si el TXT no se publicó
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-dns
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    # La cuenta ACME se guarda acá. Es otra cuenta que la del issuer `letsencrypt` que usábamos con HTTP-01:
+    # así, si hay que volver atrás, no se pisan las claves.
+    privateKeySecretRef:
+      name: letsencrypt-dns-cuenta
+    solvers:
+      - dns01:
+          cloudflare:
+            apiTokenSecretRef:
+              name: cloudflare-api-token
+              key: api-token
+        # Solo para esta zona: si mañana aparece otro dominio, no se usa este token por error.
+        selector:
+          dnsZones:
+            - sdmer.dpdns.org
