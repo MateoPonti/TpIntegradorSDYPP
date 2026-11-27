@@ -305,7 +305,11 @@ body es de unos 80 bytes y cada respuesta tarda ~250 ms. Los 100 MB y los 100 s 
 `POST /transactions/bulk`, que `bench.py` no usa. Los 28 errores **no** los rechazó el coordinator
 (`tx_rejected_total` no subió en ninguna réplica), así que se cortaron antes de llegar; coinciden con el HPA
 subiendo el coordinator de 2 a 5 réplicas y no se pudo saber más porque `bench.py` no guarda el motivo.
-La ingesta es la misma que en la carga del 20/11 por la IP directa, así que Cloudflare no agrega un cuello.
+**Cloudflare sí baja la ingesta a la mitad:** el 20/11, por la IP directa, el mismo bulk daba ~240 tx/s con p50
+de ~110 ms (`resultados/2026-11-20-completa/bulks_cpu.csv`); ahora da ~124 tx/s con p50 de ~250 ms. Con 32
+pedidos en paralelo la ingesta es más o menos 32 ÷ latencia, así que los ~140 ms que agrega el ida y vuelta por
+el proxy se notan enteros. No es un límite del sistema: subir `--concurrency` o medir desde un pod del cluster
+(`loadtest/completa/correr.sh`) lo esquiva. Para comparar con el 20/11 hay que medir igual que entonces.
 
 ### Limitaciones que quedan
 
