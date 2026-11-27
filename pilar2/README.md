@@ -56,7 +56,7 @@ REDIS_URL=redis://localhost:6379/15 python -m pytest -q pilar2/tests/test_lua.py
 TPI_E2E_URL=http://127.0.0.1:18080 python -m pytest -q pilar2/tests     # + integración y doble gasto (compose levantado)
 # Caídas en GKE (mata un pod de cada servicio y verifica la cadena). Necesita un minero conectado.
 # 13/11: 6/6 (doble gasto + coordinator, pool, gateway, RabbitMQ y Redis).
-TPI_E2E_URL=http://35.223.237.60 TPI_K8S_CONTEXT=gke_tp3distribuidos_us-central1-a_tp3 \
+TPI_E2E_URL=https://sdmer.dpdns.org TPI_K8S_CONTEXT=gke_tp3distribuidos_us-central1-a_tp3 \
   python -m pytest -v pilar2/tests/test_sistema.py
 ```
 
@@ -103,7 +103,7 @@ GKE no se volvieron a correr después de este cambio (la última, 6/6, es del 13
   completa los movimientos.
 - **Grafana.** El panel "Altura de la cadena" sumaba `blocks_sealed_total`, que vuelve a 0 al reemplazar un pod.
   Ahora usa `chain_height`, la altura que guarda Redis.
-- **Mineros del k3s.** Van por HTTPS (`https://gateway.35-223-237-60.sslip.io`), KEDA usa un `scaling-token` propio
+- **Mineros del k3s.** Van por HTTPS (`https://gateway.sdmer.dpdns.org`, A2 del 27/11), KEDA usa un `scaling-token` propio
   en vez del token de los mineros, y el pipeline 4 reemplaza la URL que haya (antes buscaba un marcador que ya no
   estaba).
 
@@ -398,7 +398,7 @@ propio**; (3) copiar el comando para minar con CPU o GPU.
 ### Notificaciones por websocket (punto 3 del Contrato SDMER, 20/11/2026)
 
 Como dice el Word ampliado del contrato: un servicio **notifier** (2 réplicas) atiende los websockets de los
-navegadores en `/ws` (Traefik lo pasa por HTTPS: `wss://35-223-237-60.sslip.io/ws`). No decide nada: escucha
+navegadores en `/ws` (Traefik lo pasa por HTTPS: `wss://sdmer.dpdns.org/ws`). No decide nada: escucha
 `block.solved` y avisa. El explorador deja de preguntar cada 3 s: con el websocket abierto se actualiza al llegar
 un bloque y pregunta cada 15 s solo lo que no tiene aviso (mineros, tx pendientes); si se corta, vuelve a 3 s.
 

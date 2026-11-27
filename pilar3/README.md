@@ -24,10 +24,11 @@ en su propio namespace **`tpi`**. El 17/11/2026 se sacó el TP3 del cluster (nam
 
 | Qué | Dónde |
 |---|---|
-| Frontend, API y `/status` | **`https://35-223-237-60.sslip.io`** y `http://35.223.237.60` (IP fija `tpi-coordinator`, en Traefik; sin redirect, lo usa `bench.py`) |
-| Portal para unirse al pool | `https://35-223-237-60.sslip.io/unirse` |
-| Avisos por websocket (notifier) | `wss://35-223-237-60.sslip.io/ws` (Traefik manda `/ws` al notifier) |
-| Gateway de los mineros | **`https://gateway.35-223-237-60.sslip.io`** (por Traefik) y `http://34.63.209.225` (IP fija `tpi-gateway`, para los pods del k3s) |
+| Frontend, API y `/status` | **`https://sdmer.dpdns.org`** (dominio propio detrás de Cloudflare; por http contesta 301) |
+| Portal para unirse al pool | `https://sdmer.dpdns.org/unirse` |
+| Avisos por websocket (notifier) | `wss://sdmer.dpdns.org/ws` (Traefik manda `/ws` al notifier) |
+| Gateway de los mineros | **`https://gateway.sdmer.dpdns.org`** (única puerta: el Service dejó de tener IP pública propia) |
+| IP del cluster (35.223.237.60) | No contesta desde Internet: el LoadBalancer solo acepta los rangos de Cloudflare |
 | Imágenes | `us-central1-docker.pkg.dev/tp3distribuidos/tp3/tpi-{coordinator,pool,gateway,notifier}:<sha>` |
 | Prometheus, Grafana y Loki | Los que instaló el TP3 (namespace `monitoring`, siguen ahí). Leen nuestros pods con `k8s/observability/` |
 | Grafana | `http://136.80.214.178`, dashboard **TPI Blockchain** (usuario y clave en el secret `grafana-admin` de `monitoring`) |
@@ -86,13 +87,16 @@ todo (para eso hay que sumar nodos al pool `infra`; los manifiestos ya reparten 
   los PVC quedan) y el Service `redis` viejo: `$K -n tpi delete sts rabbitmq redis; $K -n tpi delete svc redis`.
 
 **HTTPS** (17/11/2026, opción A: gratis, dentro del cluster). Traefik (namespace `traefik`, helm chart 42.4.0)
-tiene la IP fija `tpi-coordinator` y reparte por nombre: `35-223-237-60.sslip.io` → coordinator (y `/ws` →
-notifier, el websocket pasa sin configuración extra) y `gateway.35-223-237-60.sslip.io` → gateway. El dominio de DuckDNS (`sdmer.duckdns.org`, del 20/11) se sacó el 27/11 a pedido del profe: se reemplaza por un dominio propio en Cloudflare (Task 9). cert-manager (namespace `cert-manager`, v1.21.2) saca y renueva solo
-el certificado de Let's Encrypt (desafío HTTP-01). `sslip.io` resuelve esos nombres a la IP, así no hace falta
-comprar un dominio (Let's Encrypt no firma una IP sola). HTTP sigue abierto para `bench.py` y los mineros ya
-configurados. Se eligió Traefik y no ingress-nginx porque ingress-nginx ya no se mantiene. Manifiestos e
-instalación en `k8s/https/`. Ojo: si se mueve la IP, el primer desafío puede fallar por timeout; se reintenta con
-`kubectl -n tpi delete certificate tpi-tls`.
+tiene la IP fija `tpi-coordinator` y reparte por nombre: `sdmer.dpdns.org` → coordinator (y `/ws` → notifier, el
+websocket pasa sin configuración extra) y `gateway.sdmer.dpdns.org` → gateway. cert-manager (namespace
+`cert-manager`, v1.21.2) saca y renueva solo el certificado de Let's Encrypt. Se eligió Traefik y no
+ingress-nginx porque ingress-nginx ya no se mantiene. Manifiestos e instalación en `k8s/https/`. Ojo: si se mueve
+la IP, el primer desafío puede fallar por timeout; se reintenta con `kubectl -n tpi delete certificate tpi-tls`.
+
+Los nombres pasaron por tres etapas: DuckDNS (`sdmer.duckdns.org`, 20/11), `sslip.io` sobre la IP
+(`35-223-237-60.sslip.io`, que es DuckDNS afuera y no necesita cuenta) y, desde el 27/11, el dominio propio
+detrás de Cloudflare que pidió el profe (abajo). El desafío de Let's Encrypt pasó de HTTP-01 a DNS-01 en el
+mismo cambio.
 
 **Dashboard:** `k8s/observability/dashboard-tpi.yaml` es un ConfigMap con la etiqueta `grafana_dashboard`; el
 sidecar de Grafana lo carga solo. 14 paneles: altura, pendientes, prefijo, hashrate por tipo y por minero, tiempo
@@ -105,8 +109,122 @@ en el archivo).
 
 **Otra cuenta de GCP:** `infra/terraform` crea un cluster propio con los mismos node pools, discos de 30 GB
 `pd-standard` (para que la cuota de SSD no frene al autoscaler), el registry `tpi`, la identidad de GitHub
-y las dos IPs fijas (`tofu output static_ips`). Las IPs van a ser otras: hay que ponerlas en
-`loadBalancerIP` de `k8s/apps/coordinator.yaml` y `gateway.yaml`, y en `k3s-local/`.
+y las dos IPs fijas (`tofu output static_ips`). La IP va a ser otra: hay que ponerla en
+`loadBalancerIP` de `k8s/https/traefik-values.yaml` y en los registros A de Cloudflare (desde el 27/11 los
+Services de las apps no piden IP pública, así que no hay nada que cambiar en `k8s/apps/`). La IP de
+`tpi-gateway` quedó sin uso.
+
+## Dominio propio detrás de Cloudflare (A2, 27/11/2026)
+
+Lo que el profe marcó en A2: el sistema se servía en `35-223-237-60.sslip.io` y, además, por dos IPs públicas
+peladas (`http://35.223.237.60` el front y `http://34.63.209.225` el gateway). Un nombre de `sslip.io` es la IP
+escrita con guiones, así que no es un dominio: es la IP con otro traje. Y mientras las IPs contestaran, cualquier
+cosa que se ponga adelante (TLS, WAF, rate limit) se saltea pidiéndole directo a la IP.
+
+**Corrección de lo que decía este README el 21/11.** El commit `e38619c` dice "sacar el pendiente de Cloudflare
+(el profe aclaró que no hace falta)". Lo que había aclarado era que no hacía falta **comprar** un dominio, y de
+ahí sacamos que tampoco hacía falta Cloudflare. En la revisión del 27/11 lo pidió explícito. El historial no se
+reescribe: el commit queda como está y este párrafo es la corrección.
+
+| Qué | Dónde | Por qué |
+|---|---|---|
+| Dominio `sdmer.dpdns.org` | DigitalPlat FreeDomain, con los nameservers de Cloudflare | Gratis y es un dominio de verdad: Let's Encrypt lo firma y Cloudflare lo puede proxear. No se compró ninguno |
+| Ingress de los dos nombres | `k8s/https/dominio.yaml` (reemplaza a `ingress.yaml`) | `sdmer.dpdns.org` → coordinator, `/ws` → notifier, `gateway.sdmer.dpdns.org` → gateway. **Sin regla sin host**: la que había servía la IP pelada a cualquiera |
+| Certificado por DNS-01 | `k8s/https/cluster-issuer.yaml` (`letsencrypt-dns`) | Con el proxy de Cloudflare adelante y el redirect global a https, el desafío HTTP-01 depende de demasiadas cosas. DNS-01 solo necesita escribir un TXT |
+| Solo Cloudflare entra al LB | `k8s/https/traefik-values.yaml` (`loadBalancerSourceRanges`, 15 rangos) | Es lo que convierte al dominio en el único camino. Sin esto el resto es decoración |
+| Todo http redirige a https | `k8s/https/traefik-values.yaml` (`ports.web.redirections`) | 301 para cualquier nombre y cualquier ruta, así que el redirect no delata qué rutas existen |
+| El gateway sin IP propia | `k8s/apps/gateway.yaml` (`type: ClusterIP`) | Tenía dos puertas: una con TLS y rate limit, y otra en claro que las salteaba |
+
+Lo revisa `pilar3/tests/test_dominio.py` (sin cluster): que no quede ninguna URL vieja en el repo, que el
+Ingress tenga solo los dos nombres, que el issuer sea de DNS-01 y no tenga el token adentro, que los 15 rangos
+estén y ninguno sea `0.0.0.0/0`, y que ningún Service nuestro vuelva a pedir una IP pública.
+
+### Lo que hay que hacer a mano (no está en el repo, y no puede estar)
+
+1. **Cloudflare, DNS:** dos registros `A` **proxied** (la nubecita naranja) a `35.223.237.60`, uno en `@` y otro
+   en `gateway`. Si quedan en "DNS only", el tráfico no pasa por Cloudflare y el LoadBalancer lo descarta.
+2. **Cloudflare, SSL/TLS:** modo **Full (strict)**, "Always Use HTTPS" activado y WebSockets activados (vienen
+   así; son los que hacen andar `/ws`). En Flexible, Cloudflare hablaría http con Traefik y el redirect global
+   lo manda de vuelta a https: bucle de redirecciones.
+3. **El token de la API** con permiso `Zone:DNS:Edit` **solo** sobre esta zona, cargado a mano una vez. **No se
+   commitea** (regla 5 de `AGENTS.md`):
+   ```bash
+   kubectl -n cert-manager create secret generic cloudflare-api-token --from-literal=api-token=XXXXXXXX
+   ```
+4. **La variable `GATEWAY_URL` del repo en GitHub** (Settings → Variables, no Secrets) tiene que decir
+   `https://gateway.sdmer.dpdns.org`. El Pipeline 4 reescribe con `vars.GATEWAY_URL` el `config.yaml` y el
+   `keda-scaledobject.yaml` de los mineros: si quedó la de `sslip.io`, el próximo despliegue de mineros vuelve
+   atrás el cambio de este PR y los mineros dejan de minar sin que nadie toque el repo.
+5. **Borrar el issuer viejo**, que ya no está en el repo (lo tenía `ingress.yaml`):
+   `kubectl delete clusterissuer letsencrypt`.
+6. **Opcional, después de la entrega:** liberar la IP que dejó de usarse,
+   `gcloud compute addresses delete tpi-gateway --region us-central1`. Reservada y sin usar, se factura.
+
+### Cómo aplicarlo
+
+```bash
+K="kubectl --context gke_tp3distribuidos_us-central1-a_tp3"
+
+# 1. El issuer y el Ingress del dominio. `apply` del Ingress reemplaza al viejo (mismo nombre, `tpi`), y
+#    cert-manager pide un certificado nuevo para los dos nombres. El secret `tpi-tls` lo sigue sirviendo
+#    Traefik con el certificado viejo hasta que el nuevo esté listo, así que esto no corta nada.
+$K apply -f pilar3/k8s/https/cluster-issuer.yaml
+$K apply -f pilar3/k8s/https/dominio.yaml
+$K -n tpi get certificate tpi-tls -w      # READY=True en 1-2 min. Si tarda: $K -n tpi describe challenge
+
+# 2. Cerrar el LoadBalancer y prender el redirect. `helm upgrade` de Traefik toca su Service: GKE reescribe la
+#    regla de firewall del balanceador (unos segundos de cortes en los pedidos nuevos).
+helm upgrade --install traefik traefik/traefik -n traefik -f pilar3/k8s/https/traefik-values.yaml
+$K -n traefik get svc traefik -o jsonpath='{.spec.loadBalancerSourceRanges}'   # tienen que estar los 15
+
+# 3. Recién ahora el gateway a ClusterIP: hasta que el dominio sirva, los mineros del k3s siguen entrando por
+#    la IP vieja. Esto borra el LoadBalancer de GCP (la IP reservada queda, sin usar).
+$K apply -f pilar3/k8s/apps/gateway.yaml
+$K apply -f pilar3/k8s/apps/config.yaml && $K -n tpi rollout restart deploy coordinator   # /unirse
+```
+
+El certificado primero y el gateway al final: en ese orden no hay ningún momento en el que los mineros se
+queden sin puerta.
+
+### Verificación (es la que va a correr el profe)
+
+```bash
+curl -sI http://sdmer.dpdns.org/          | head -2    # 301 a https://sdmer.dpdns.org/
+curl -sI http://gateway.sdmer.dpdns.org/  | head -2    # 301
+curl -sI https://sdmer.dpdns.org/status   | head -5    # 200 y `server: cloudflare`
+curl -s   https://sdmer.dpdns.org/status  | head -c 200
+
+# Las tres puertas viejas tienen que fallar (timeout del firewall del LB, no 403 ni 404):
+curl -s --max-time 5 https://35-223-237-60.sslip.io/status ; echo "salida $?"
+curl -s --max-time 5 http://35.223.237.60/                 ; echo "salida $?"
+curl -s --max-time 5 http://34.63.209.225/                 ; echo "salida $?"
+
+# Que no se haya roto nada de lo demás:
+curl -s -o /dev/null -w "%{http_code}\n" https://sdmer.dpdns.org/logs     # 403 (B2.6)
+kubectl -n tpi-miners get scaledobject                                     # READY=True
+kubectl -n tpi-miners logs -l app=miner-cpu --tail=5                       # tareas por el dominio
+```
+
+### La prueba de carga por Cloudflare (Review Focus 2)
+
+Cloudflare Free tiene dos límites que nos pueden pegar: el **body de 100 MB** y los **100 s de respuesta**
+(error 524). El bulk más grande de `matrix.sh` (100.000 tx) puede pasar cualquiera de los dos. Si pasa, la
+alternativa ya no es la IP pelada (no existe más): se corre `bench.py` **desde un pod del cluster** contra
+`http://coordinator.tpi.svc.cluster.local`, que es lo que ya hacía `loadtest/completa/correr.sh` para la
+medición interna, y se anota en los resultados que el bulk grande se midió por adentro y por qué.
+
+### Limitaciones que quedan
+
+- La lista de rangos de Cloudflare está **congelada al 27/11/2026**. Si Cloudflare agrega un rango, el tráfico
+  que entre por ahí se descarta y hay que mirar https://www.cloudflare.com/ips-v4 y hacer `helm upgrade` otra
+  vez. El test del repo no se puede enterar: no sale a Internet.
+- El dominio es gratis y por un año. Si DigitalPlat lo da de baja, se cae el nombre; el cluster sigue vivo pero
+  sin puerta pública hasta que se apunte otro nombre.
+- Con el proxy de Cloudflare adelante, **todos** los pedidos llegan con la IP de Cloudflare. Cualquier límite
+  por IP (el de `/accounts/register`, B1.4) tiene que leer `CF-Connecting-IP`, o todo Internet cuenta como un
+  solo cliente.
+- El `IngressRoute privado-http` cierra `/logs` y `/metrics` por http; con el redirect global, por http ahora
+  sale 301 antes de llegar ahí. Queda igual, como red de seguridad si algún día se saca el redirect.
 
 ## Endurecimiento de Kubernetes (B2, 27/11/2026)
 
