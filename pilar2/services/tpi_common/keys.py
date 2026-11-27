@@ -111,6 +111,12 @@ def quarantine(miner_id: str) -> str:
     return f"quarantine:{miner_id}"
 
 
+def miner_draining(miner_id: str) -> str:
+    """STRING con TTL (C5): el minero avisó que se apaga (release?reason=shutdown). Mientras exista no se le presta
+    nada más, ni por push ni por GET /tasks/next. Se borra si el mismo worker se vuelve a autorizar."""
+    return f"miner:{miner_id}:draining"
+
+
 def worker_trial(miner_id: str) -> str:
     """Worker 'en prueba' (alta pública, punto 4): canarios pasados hasta ahora. Mientras exista, recibe más
     canarios y su trabajo no cobra. No empieza con worker: porque alive_workers escanea worker:*."""

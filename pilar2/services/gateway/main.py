@@ -392,6 +392,7 @@ async def authorize_worker(miner_id: str, pubkey, challenge: str, signature) -> 
     if not await r.set(key, pubkey.lower(), nx=True, ex=WORKER_KEY_TTL) and await r.get(key) != pubkey.lower():
         return "ese worker ya tiene otra clave (si se perdió, dar de alta otro worker)"
     await r.expire(key, WORKER_KEY_TTL)
+    await r.delete(keys.miner_draining(miner_id))  # C5: volvió a arrancar (p. ej. la GPU de la PC tras un Ctrl+C)
     return None
 
 
@@ -451,7 +452,7 @@ async def next_task(miner_id: str, kind: str = "cpu", ident: dict | None = Depen
 async def take_task(miner_id: str, kind: str) -> dict | Response:
     """Presta una tarea al minero (o 204). La usan GET /tasks/next (pull) y el WebSocket (push, mining.notify)."""
     r = state["r"]
-    if await r.exists(keys.quarantine(miner_id)):
+    if await r.exists(keys.quarantine(miner_id), keys.miner_draining(miner_id)):
         return Response(status_code=204)
     # Límite de préstamos abiertos por minero (20/11): sin esto, uno que pide sin parar se lleva la tanda entera y
     # el bloque se demora hasta que vencen sus préstamos. Se reserva el lugar antes de sacar la tarea (Lua), así
@@ -547,12 +548,16 @@ async def release(task_id: str, miner_id: str | None = None, ident: dict | None 
         raise HTTPException(410, "préstamo inexistente o vencido")
     if not lease_owner_ok(json.loads(raw), ident, miner_id):
         raise HTTPException(409, "ese préstamo es de otro minero")
+    apagandose = reason == "shutdown"
+    if apagandose:
+        # Antes de soltar el préstamo: el push loop (en cualquier réplica) le manda otra tarea apenas ve que el
+        # préstamo ya no existe, y esa quedaría colgada en un pod que se está yendo hasta que venza.
+        await r.set(keys.miner_draining(json.loads(raw)["miner_id"]), 1, ex=LEASE_SECONDS)
     raw = await r.getdel(keys.lease(task_id))
     await r.zrem(keys.LEASE_DEADLINES, task_id)
     if raw is None:
         raise HTTPException(410, "préstamo inexistente o vencido")
     lease = json.loads(raw)
-    apagandose = reason == "shutdown"
     RELEASED.labels("shutdown" if apagandose else "falla").inc()
     if not apagandose:
         await count_expired(lease["miner_id"])

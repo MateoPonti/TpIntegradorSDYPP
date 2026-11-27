@@ -397,3 +397,28 @@ def test_tres_shutdown_seguidos_no_mandan_el_rango_a_la_dlq(redis_db, monkeypatc
     publicadas, dlq = asyncio.run(go())
     assert len(publicadas) == 3 and not dlq
     assert [t["attempts"] for t, _ in publicadas] == [0, 0, 0]
+
+
+def test_shutdown_deja_de_prestarle_hasta_que_se_vuelva_a_autorizar(redis_db, monkeypatch):
+    """El push loop le manda otra tarea apenas ve que el préstamo ya no existe: a un minero que avisó que se apaga
+    no se le presta más (si no, la tarea queda colgada en un pod que se fue). Si vuelve a arrancar, sí."""
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from tpi_common import firmas
+    gw = import_gateway()
+    clave = Ed25519PrivateKey.generate()
+    pubkey = clave.public_key().public_bytes_raw().hex()
+
+    async def go():
+        r = redis_db()
+        _state(gw, monkeypatch, r)
+        await _setup(r, gw, task_id="t-ultima")
+        await gw.release("t-ultima", "cpu-a", None, reason="shutdown")
+        apagandose = await gw.take_task("cpu-a", "cpu")
+        firma = clave.sign(firmas.domain(firmas.authorize_message("cpu-a", "desafio"))).hex()
+        motivo = await gw.authorize_worker("cpu-a", pubkey, "desafio", firma)
+        marca = await r.exists(keys.miner_draining("cpu-a"))
+        await r.aclose()
+        return apagandose, motivo, marca
+    apagandose, motivo, marca = asyncio.run(go())
+    assert getattr(apagandose, "status_code", None) == 204
+    assert motivo is None and marca == 0  # volvió a autorizarse: se le puede prestar de nuevo
