@@ -6,17 +6,20 @@ resources:
   - pool.yaml
   - gateway.yaml
   - notifier.yaml
-# Pipeline 3 rewrites these tags with the commit SHA it just pushed.
+# El Pipeline 3 reemplaza `REGISTRY/` de los newName por el registro de verdad y `latest` por el SHA del
+# commit. `name` es la clave de busqueda (tiene que ser igual al `image:` de los Deployments) y `newName` es
+# lo que se despliega: el nombre de la imagen que el pipeline publica, con el prefijo `tpi-`.
+# pilar3/tests/test_pipelines.py comprueba que las dos cosas sigan coincidiendo.
 images:
   - name: REGISTRY/coordinator
-    newName: REGISTRY/coordinator
+    newName: REGISTRY/tpi-coordinator
     newTag: latest
   - name: REGISTRY/pool
-    newName: REGISTRY/pool
+    newName: REGISTRY/tpi-pool
     newTag: latest
   - name: REGISTRY/gateway
-    newName: REGISTRY/gateway
+    newName: REGISTRY/tpi-gateway
     newTag: latest
   - name: REGISTRY/notifier
-    newName: REGISTRY/notifier
+    newName: REGISTRY/tpi-notifier
     newTag: latest
