@@ -115,9 +115,12 @@ metadata:
   name: gateway
   namespace: tpi
 spec:
-  type: LoadBalancer
-  # IP estática reservada (gcloud compute addresses: tpi-gateway)
-  loadBalancerIP: 34.63.209.225
+  # A2 (27/11/2026): era LoadBalancer con la IP estática tpi-gateway (34.63.209.225). Ahora es ClusterIP: los
+  # mineros de afuera (k3s, Colab, la GPU) entran por https://gateway.sdmer.dpdns.org, que es Cloudflare ->
+  # Traefik -> este Service. Mientras hubo una IP pública propia, el gateway tenía dos puertas: una con TLS,
+  # rate limit y WAF de Cloudflare, y otra en claro que las saltaba todas. Con ClusterIP queda una sola.
+  # La IP reservada se puede liberar después de la entrega (gcloud compute addresses delete tpi-gateway).
+  type: ClusterIP
   selector:
     app: gateway
   ports:
