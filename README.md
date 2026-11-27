@@ -65,3 +65,33 @@ curl http://127.0.0.1:18080/status
 ```
 
 Reglas para cualquier IA que use el grupo: [`AGENTS.md`](AGENTS.md).
+
+## Uso de IA
+
+### Justino — Codex (26/11/2026)
+
+Se utilizó Codex para revisar el plan de entrega y asistir en las Tasks 4, 5, 6, 13, 17 y 18: validación
+de montos y bulks, ganadores después de un rearmado, aceptación/rechazo atómicos de compartidas,
+notifier JSON-RPC 2.0 y frontend por eventos, métricas y preparación de la comparación de 4/8 mineros.
+La asistencia incluyó implementación, pruebas de regresión, documentación y revisión de compatibilidad
+con los cambios de Federico. Los commits usan la identidad Git de Justino; la IA se declara aquí.
+
+Validación ejecutada durante la asistencia:
+
+- `pytest -q pilar2/tests pilar3/tests` con Redis real aislado en la base 15. Los tests de sistema que requieren
+  un despliegue no se ejecutaron en esta sesión.
+- Casos de Infinity/NaN y exponentes extremos, bulk con fallo intermedio, ganador tardío y dos réplicas
+  intentando sellar el mismo bloque, y 50 carreras entre aceptar y rechazar una compartida.
+- Errores, suscripciones y eventos JSON-RPC. Ambas páginas en Chromium con API/WS simulados:
+  60 s de reloj controlado sin polling, evento, desconexión, fallback y 60 s sin polling al reconectar.
+- Muestras de Prometheus y dashboard validado localmente. Ejecutor de carga probado con API/Kubernetes
+  simulados, incluyendo restauración ante falla. Esos datos sintéticos son tests, no resultados de entrega.
+
+La rama `justino-merge-final` integra las Tasks 4, 5, 6, 13, 17 y 18 y esta declaración, conservando
+los commits originales de Justino. El 27/11 se integró `main` (`4f15176`) con asistencia de Codex:
+se resolvieron los conflictos manteniendo el dominio nuevo, JSON-RPC, PPLNS/carry y las métricas.
+La combinación pasó 258 tests con Redis real aislado (10 omitidos) y la prueba de las dos páginas en
+Chromium. Esta validación local no sustituye las pruebas del despliegue.
+
+Pendientes: revisión de otro integrante, comprobación de métricas en despliegue y carga real del 03/12
+sobre el sistema congelado. No se modificaron `bench.py`, `matrix.sh` ni `plot.py`.

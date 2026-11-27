@@ -49,7 +49,7 @@ import uuid
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from prometheus_client import Counter, Gauge
+from prometheus_client import Counter, Gauge, Histogram
 
 from tpi_common import firmas, keys, pow, quarantine, rabbit, ratelimit, store, vardiff
 from tpi_common.config import CHAIN_ID, POD_NAME, WORKER_TTL_SECONDS, env_float, env_int, env_str
@@ -93,6 +93,8 @@ EXPIRED = Counter("leases_expired_total", "Préstamos vencidos (el minero no con
 REQUEUED = Counter("tasks_requeued_total", "Préstamos vencidos devueltos a la cola")
 DLQ = Counter("tasks_dlq_total", "Tareas mandadas a la DLQ por agotar intentos")
 RESULTS = Counter("results_forwarded_total", "Resultados publicados", ["found"])
+QUEUE_TO_LEASE = Histogram("task_queue_to_lease_seconds", "Espera desde publicación hasta préstamo",
+                           ["kind"], buckets=(.01, .05, .1, .25, .5, 1, 2, 5, 10, 30, 60, 120))
 KEEPALIVES = Counter("keepalives_total", "Keep-alives recibidos", ["kind"])
 CALIBRATIONS = Counter("calibrations_total", "Tareas de calibración terminadas", ["kind", "class"])
 CANARIES = Counter("canaries_total", "Canarios resueltos", ["result"])
@@ -202,6 +204,7 @@ async def give_back(lease: dict, why: str, count_attempt: bool = True) -> None:
         DLQ.inc()
         log(logger, "tarea a la DLQ", task_id=task["task_id"], attempts=task["attempts"])
     else:
+        task["published_at"] = time.time()
         await state["exchange"].publish(rabbit.message(task), routing_key="task.any")
         REQUEUED.inc()
         log(logger, f"{why}, tarea devuelta", task_id=task["task_id"], attempts=task["attempts"])
@@ -317,7 +320,11 @@ async def lend(task: dict, miner_id: str, kind: str, special: str | None = None,
     await state["r"].set(keys.lease(task["task_id"]), json.dumps(lease))
     await state["r"].zadd(keys.LEASE_DEADLINES, {task["task_id"]: time.time() + LEASE_SECONDS})
     LEASED.labels(kind).inc()
-    return {**task, "lease_seconds": LEASE_SECONDS}
+    published = task.get("published_at")
+    if special is None and isinstance(published, (int, float)) and 0 <= lease["since"] - published < float("inf"):
+        QUEUE_TO_LEASE.labels(kind if kind in ("cpu", "gpu") else "unknown").observe(lease["since"] - published)
+    # Es metadata de observabilidad interna: exponerla permitiría reconocer un canario por su espera nula.
+    return {**{k: v for k, v in task.items() if k != "published_at"}, "lease_seconds": LEASE_SECONDS}
 
 
 def calibration_task(kind: str) -> dict:
@@ -351,7 +358,7 @@ def make_canary(cur: dict, ranges: list[dict], miner_id: str,
     v, sp, known = random.choice(options)
     task = {"v": 1, "task_id": uuid.uuid4().hex, "block_id": cur["block_id"], "base": cur["base"],
             "prefix": cur["prefix"], "from": int(v["from"]), "to": int(v["to"]), "attempts": 0,
-            "share_prefix": sp}
+            "share_prefix": sp, "published_at": time.time()}
     return task, known
 
 

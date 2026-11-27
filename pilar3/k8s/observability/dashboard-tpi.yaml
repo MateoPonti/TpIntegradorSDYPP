@@ -548,8 +548,8 @@ data:
                 "type": "prometheus",
                 "uid": "prometheus"
               },
-              "expr": "sum by (status) (rate(results_total{namespace=\"tpi\"}[1m]))",
-              "legendFormat": "{{status}}",
+              "expr": "sum by (status, kind) (rate(results_total{namespace=\"tpi\"}[1m]))",
+              "legendFormat": "{{status}} · {{kind}}",
               "refId": "A"
             }
           ],
@@ -745,6 +745,189 @@ data:
               "placement": "bottom"
             }
           }
+        },
+        {
+          "id": 19,
+          "type": "timeseries",
+          "title": "RabbitMQ → worker p50/p95",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "gridPos": {
+            "x": 0,
+            "y": 48,
+            "w": 12,
+            "h": 8
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "histogram_quantile(0.5, sum by (le, kind) (rate(task_queue_to_lease_seconds_bucket{namespace=\"tpi\"}[10m])))",
+              "legendFormat": "p50 · {{kind}}",
+              "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "histogram_quantile(0.95, sum by (le, kind) (rate(task_queue_to_lease_seconds_bucket{namespace=\"tpi\"}[10m])))",
+              "legendFormat": "p95 · {{kind}}",
+              "refId": "B"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "description": "Espera desde la última publicación hasta el préstamo; excluye calibraciones y canarios."
+        },
+        {
+          "id": 20,
+          "type": "timeseries",
+          "title": "Validación del bloque",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "gridPos": {
+            "x": 12,
+            "y": 48,
+            "w": 12,
+            "h": 8
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "histogram_quantile(0.5, sum by (le) (rate(block_validation_seconds_bucket{namespace=\"tpi\"}[10m])))",
+              "legendFormat": "p50",
+              "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "histogram_quantile(0.95, sum by (le) (rate(block_validation_seconds_bucket{namespace=\"tpi\"}[10m])))",
+              "legendFormat": "p95",
+              "refId": "B"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "description": "PoW, shares y sellado Redis. No incluye publicación del outbox."
+        },
+        {
+          "id": 21,
+          "type": "timeseries",
+          "title": "Éxito CPU vs GPU",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "gridPos": {
+            "x": 0,
+            "y": 56,
+            "w": 12,
+            "h": 8
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "sum by (kind) (rate(results_total{namespace=\"tpi\",status=\"sealed\",kind=~\"cpu|gpu\"}[10m])) / clamp_min(sum by (kind) (rate(results_total{namespace=\"tpi\",kind=~\"cpu|gpu\"}[10m])), 1e-9)",
+              "legendFormat": "{{kind}}",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "description": "Fracción de resultados que sellan un bloque. Depende también de la dificultad, no mide hashrate."
+        },
+        {
+          "id": 22,
+          "type": "timeseries",
+          "title": "Minado por prefijo",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "gridPos": {
+            "x": 12,
+            "y": 56,
+            "w": 12,
+            "h": 8
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "histogram_quantile(0.5, sum by (le, prefix_len) (rate(block_seconds_bucket{namespace=\"tpi\"}[10m])))",
+              "legendFormat": "p50 · {{prefix_len}} ceros",
+              "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "expr": "histogram_quantile(0.95, sum by (le, prefix_len) (rate(block_seconds_bucket{namespace=\"tpi\"}[10m])))",
+              "legendFormat": "p95 · {{prefix_len}} ceros",
+              "refId": "B"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            }
+          },
+          "description": "Desde armado original hasta sellado, agrupado por largo del prefijo final."
         }
       ]
     }

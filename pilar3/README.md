@@ -99,9 +99,22 @@ detrás de Cloudflare que pidió el profe (abajo). El desafío de Let's Encrypt 
 mismo cambio.
 
 **Dashboard:** `k8s/observability/dashboard-tpi.yaml` es un ConfigMap con la etiqueta `grafana_dashboard`; el
-sidecar de Grafana lo carga solo. 14 paneles: altura, pendientes, prefijo, hashrate por tipo y por minero, tiempo
+sidecar de Grafana lo carga solo. 22 paneles: altura, pendientes, prefijo, hashrate por tipo y por minero, tiempo
 por bloque, tx/s, bloques rearmados, cola, vencidos, DLQ, canarios, cuarentena y tx por bloque. Solo lee el
 namespace `tpi`.
+
+Task 17 (26/11): cuatro paneles adicionales, **RabbitMQ → worker p50/p95**, **Validación del bloque**,
+**Éxito CPU vs GPU** y **Minado por prefijo**. `results_total` tiene etiquetas `status,kind` y
+`block_seconds` tiene `prefix_len`. Las consultas agregan réplicas preservando `le` en los histogramas.
+`task_queue_to_lease_seconds{kind}` mide desde la última publicación hasta el préstamo, sin canarios ni
+calibraciones. `published_at` queda en RabbitMQ/Redis y no se envía al minero para no revelar canarios.
+Se reinicia al republicar; tareas anteriores sin timestamp no generan muestras. Un reloj desfasado que dé
+duración negativa tampoco genera muestra. `block_validation_seconds` incluye PoW, shares y sellado Redis,
+antes de publicar el outbox. Ambos hosts deben sincronizar hora para medir espera de cola.
+
+Verificación local: pruebas de muestras Prometheus y sellado real con Redis. **Pendiente de despliegue:**
+comprobar series en Prometheus y adjuntar captura de los cuatro paneles con datos reales; no hay captura
+de producción todavía. No requiere cambios en `monitoring` ni en los node pools.
 
 **Prometheus persistente:** `k8s/observability/prometheus-persistencia.yaml` le agrega al Prometheus de `monitoring`
 un disco de 10 GB (`pd-standard`) y 30 días de retención, con `helm upgrade --reuse-values` (el comando está
@@ -351,6 +364,36 @@ en microsegundos o pocos milisegundos)
   contraseña de cada uno. Hay que decirlo en el informe en lugar de dar por hecho que filtran.
 
 ## Mineros CPU en varias PCs
+
+### Comparación M frente a 2×M (Task 18, preparada para el 03/12)
+
+`loadtest/escalado.sh` compara 4 y 8 mineros CPU con igual carga, prefijo fijo y fragmentación. Sin argumentos
+solo muestra el plan. Con `--run`, pausa KEDA únicamente en el k3s elegido, espera mineros y cola vacía,
+llama al `matrix.sh` original y conserva las tres corridas de `bench.py` por punto. No modifica archivos de
+la cátedra ni el contexto global de kubectl. Al salir restaura dificultad, fragmentación, réplicas y pausa previa.
+
+```bash
+bash pilar3/loadtest/escalado.sh
+BASE_URL=https://DOMINIO K3S_CONTEXT=k3d-tpi-mineros \
+  OUT="$PWD/pilar3/loadtest/resultados/2026-12-03-escalado" \
+  bash pilar3/loadtest/escalado.sh --run
+python pilar3/loadtest/confirmado.py --api https://DOMINIO --desde 1796328000 --hasta 1796331600
+```
+
+Antes de ejecutar: código congelado, GPU desconectada, ninguna otra carga y relojes sincronizados. Usar
+el entorno de `requirements-dev.txt` para generar gráficos. `GKE_CONTEXT` identifica solo los servicios;
+`K3S_CONTEXT` es obligatorio y el script rechaza nodos GCE. Configurar `PREFIX`, `FRAGMENT` y `BULK`
+para elegir el experimento (por defecto, 7 ceros, 10 % y 1000 tx).
+
+`confirmado.py` pagina `/blocks` y obtiene transacciones desde `/blocks/{i}`. Cuenta solo tx de usuario en
+bloques sellados dentro del intervalo, sin génesis ni premios. Throughput confirmado = cantidad / (último
+sello − timestamp de primera tx), incluyendo espera de ventana. Sin datos devuelve 0 y timestamps `null`.
+`medir_corrida.py` envuelve `bench.run` sin alterar su código y guarda `confirmados.csv` y JSON por corrida;
+un conteo distinto al aceptado invalida la corrida. `resumen_escalado.py` produce CSV, PNG y README con
+mediana, mínimo, máximo y speedup contra 2× ideal. La atribución de cuellos de botella requiere métricas.
+
+**Estado:** herramientas y pruebas locales preparadas. Medición real, CSV/PNG de entrega y análisis del
+cluster pendientes para el 03/12; no se generaron resultados de carga ficticios.
 
 Cada PC con un k3s corre el mismo Deployment (`k3s-local/`) contra el mismo gateway y con el **mismo
 `MINER_TOKEN`** (es un solo token para todos los mineros: lo crea quien despliega y está en el secret

@@ -63,15 +63,17 @@ def to_cents(value) -> int:
         raise InvalidTx("monto inválido")
     try:
         d = Decimal(str(value))
+        if not d.is_finite():
+            raise InvalidTx("monto inválido")
+        # Validar antes de multiplicar o convertir a int: un exponente enorme puede desbordar Decimal.
+        if not Decimal("0.01") <= d <= Decimal(MAX_AMOUNT_CENTS) / 100:
+            raise InvalidTx("monto fuera de rango")
+        if d != d.quantize(Decimal("0.01")):
+            raise InvalidTx("monto con más de 2 decimales")
+        cents = d * 100
     except InvalidOperation as exc:
         raise InvalidTx("monto inválido") from exc
-    cents = d * 100
-    if cents != cents.to_integral_value():
-        raise InvalidTx("monto con más de 2 decimales")
-    cents = int(cents)
-    if not 0 < cents <= MAX_AMOUNT_CENTS:
-        raise InvalidTx("monto fuera de rango")
-    return cents
+    return int(cents)
 
 
 def _name(body: dict, field: str) -> str:

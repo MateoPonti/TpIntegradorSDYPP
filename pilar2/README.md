@@ -399,21 +399,31 @@ propio**; (3) copiar el comando para minar con CPU o GPU.
 
 Como dice el Word ampliado del contrato: un servicio **notifier** (2 réplicas) atiende los websockets de los
 navegadores en `/ws` (Traefik lo pasa por HTTPS: `wss://sdmer.dpdns.org/ws`). No decide nada: escucha
-`block.solved` y avisa. El explorador deja de preguntar cada 3 s: con el websocket abierto se actualiza al llegar
-un bloque y pregunta cada 15 s solo lo que no tiene aviso (mineros, tx pendientes); si se corta, vuelve a 3 s.
+`block.solved` y avisa. Desde el 26/11, el protocolo es **JSON-RPC 2.0**. Explorador y cuentas se actualizan por
+avisos o acciones del usuario: con WebSocket conectado no hay polling. Durante un corte hay un solo fallback
+de 15 s por página, que se elimina al reconectar. Las fotos iniciales recuperan el estado vigente.
 
 ```jsonc
 // cliente → notifier
-{"op":"subscribe","id":1,"topic":"blocks"}
-{"op":"subscribe","id":2,"topic":"tx","tx_id":"…"}
-{"op":"subscribe","id":3,"topic":"account","account":"user-2"}
-{"op":"unsubscribe","sub":"s2"}
+{"jsonrpc":"2.0","id":1,"method":"sdmer_subscribe","params":["newBlocks"]}
+{"jsonrpc":"2.0","id":2,"method":"sdmer_subscribe","params":["tx","…"]}
+{"jsonrpc":"2.0","id":3,"method":"sdmer_subscribe","params":["account","user-2"]}
+{"jsonrpc":"2.0","id":4,"method":"sdmer_unsubscribe","params":["0x0123456789abcdef"]}
 // notifier → cliente
-{"type":"subscribed","id":2,"sub":"s2","topic":"tx"}
-{"type":"snapshot","sub":"s2","height":25,"tx_id":"…","status":"pending","block":null}
-{"type":"event","sub":"s2","event":"tx.confirmed","tx_id":"…","index":25,"block_hash":"000000…"}
-{"type":"event","sub":"s3","event":"account.changed","account":"user-2","index":25,"movements":[{"tx_id":"…","dir":"in","other":"user-1","amount":350}],"balance_cents":…,"available_cents":…}
+{"jsonrpc":"2.0","id":2,"result":"0x0123456789abcdef"}
+{"jsonrpc":"2.0","method":"sdmer_subscription","params":{"subscription":"0x0123456789abcdef","result":{"type":"snapshot","height":25,"tx_id":"…","status":"pending","block":null}}}
+{"jsonrpc":"2.0","method":"sdmer_subscription","params":{"subscription":"0x0123456789abcdef","result":{"type":"event","event":"tx.confirmed","tx_id":"…","index":25,"block_hash":"000000…"}}}
+{"jsonrpc":"2.0","id":4,"result":true}
 ```
+
+Errores: `-32700` JSON inválido, `-32600` pedido inválido, `-32601` método inexistente,
+`-32602` parámetros inválidos, `-32603` error interno y `-32000` límite de suscripciones.
+Se aceptan lotes; los pedidos sin `id` no generan respuestas JSON-RPC.
+
+Validación local (26/11): `test_notifier_jsonrpc.py` cubre protocolo, rutas y errores.
+`python pilar2/tests/browser_notifier.py` ejecuta ambas páginas en Chromium con APIs simuladas y reloj
+controlado: 60 s conectado sin polling, actualización por `newBlocks`, fallback de 15 s y otros 60 s sin
+polling tras reconectar. Requiere instalar `playwright` y `python -m playwright install chromium`.
 
 - **Outbox (transactional outbox):** el `SEAL_LUA` guarda el evento en `events:outbox` en el mismo script que sella.
   Después se publica en RabbitMQ y recién ahí se saca del outbox; si el pod o RabbitMQ se caen en el medio, el
@@ -476,8 +486,8 @@ Polkadot: un dueño propone un pago, los demás firman lo mismo y al juntar el m
 - Página: sección "Cuentas compartidas" en `/cuenta` (crear, proponer y firmar desde el navegador de cada dueño). El
   explorador marca las cuentas compartidas y los pagos con sus firmas. El creador se agrega solo como dueño y su
   propuesta ya cuenta como 1 firma. **El saldo de cada compartida llega en vivo por el notifier** (21/11: la página se
-  suscribe al tema `account` de cada una); las firmas de los otros dueños no son bloques y no tienen aviso, así que
-  esa parte pregunta cada 5 s.
+  suscribe al tema `account` de cada una). Sin polling desde el 26/11: firmas e invitaciones ajenas se recargan
+  con el siguiente aviso de cuenta/bloque o al recargar la página; las acciones propias refrescan al terminar.
 - Probado en compose (20/11): crear 2 de 3; crearla de nuevo 409; gastar directo 400; propuesta pendiente sin
   reservar; firma sobre otro destino rechazada; firmar dos veces no suma; con 2 firmas se admitió y se confirmó en el
   bloque; la 3.ª firma no cobró de nuevo; misma propuesta 409; propuesta sin saldo rechazada; saldo final

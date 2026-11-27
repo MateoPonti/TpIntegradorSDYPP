@@ -80,7 +80,8 @@ async def lifespan(app: FastAPI):
     loop = asyncio.create_task(leader_loop(chain, store.Leader(r, keys.COORD_LEADER, POD_NAME)))
     state.update(r=r, conn=conn, chain=chain, reserve=r.register_script(ledger.RESERVE_LUA),
                  sign=r.register_script(multisig.SIGN_LUA), cf_start=r.register_script(crowdfund.START_LUA),
-                 accept=r.register_script(multisig.ACCEPT_LUA), retry=r.register_script(multisig.RETRY_LUA))
+                 accept=r.register_script(multisig.ACCEPT_LUA), reject=r.register_script(multisig.REJECT_LUA),
+                 retry=r.register_script(multisig.RETRY_LUA))
     log(logger, "coordinator listo", pod=POD_NAME)
     yield
     loop.cancel()
@@ -191,7 +192,14 @@ async def post_bulk(request: Request):
     items = await _json(request)
     if not isinstance(items, list) or len(items) > MAX_BULK:
         raise HTTPException(400, f"se esperaba una lista de hasta {MAX_BULK} tx")
-    results = [await _submit(it) for it in items]
+    results = []
+    for index, item in enumerate(items):
+        try:
+            results.append(await _submit(item))
+        except Exception:
+            logger.exception("fallo al procesar tx del bulk", extra={"bulk_index": index})
+            TX_REJECTED.labels("error interno").inc()
+            results.append((400, {"error": "error interno con esta tx"}))
     accepted = sum(1 for code, _ in results if code == 202)
     return JSONResponse({"accepted": accepted, "rejected": len(results) - accepted,
                          "results": [b for _, b in results]}, status_code=202)
@@ -416,12 +424,13 @@ async def reject_multisig(account: str, request: Request):
         raise HTTPException(400, f"{owner} no es dueño de {account}")
     if not cuentas.verify(await _owner_key(owner), multisig.reject_message(account), body.get("signature")):
         raise HTTPException(400, firmas.INVALID)
-    r = state["r"]
     if await _ms_status(account) != "pendiente":
         raise HTTPException(409, "solo se puede rechazar mientras está pendiente")
-    await r.set(multisig.status_key(account), "rechazada")
-    for o in d["owners"]:
-        await r.srem(multisig.invites_index(o), account)
+    status = await state["reject"](
+        keys=[multisig.status_key(account), *(multisig.invites_index(o) for o in d["owners"])],
+        args=[account])
+    if status != "rechazada":
+        raise HTTPException(409, "solo se puede rechazar mientras está pendiente")
     log(logger, "cuenta compartida rechazada", account=account, owner=owner)
     return d | await _ms_state(account, d)
 
