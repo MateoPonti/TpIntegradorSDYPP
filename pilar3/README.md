@@ -227,6 +227,14 @@ medición interna, y se anota en los resultados que el bulk grande se midió por
   solo cliente.
 - El `IngressRoute privado-http` cierra `/logs` y `/metrics` por http; con el redirect global, por http ahora
   sale 301 antes de llegar ahí. Queda igual, como red de seguridad si algún día se saca el redirect.
+- **El "Browser Integrity Check" de Cloudflare quedó apagado en toda la zona** (27/11). Estaba prendido por
+  defecto y contestaba **error 1010** a los mineros, a `bench.py` y a las herramientas de `pilar2/tools/`:
+  todos hablan con `urllib`, y el User-Agent `Python-urllib/3.x` le alcanza para considerarlos sospechosos. Sin
+  apagarlo no hay prueba de carga ni mineros de afuera. Lo que se pierde es un filtro de bots de bajo esfuerzo;
+  el resto (TLS, el LoadBalancer cerrado a los rangos de Cloudflare, el corte de `/logs` y `/metrics`) no se
+  toca. Lo más fino sería una **configuration rule** que lo apague solo en `gateway.sdmer.dpdns.org` y en
+  `POST /transactions`, y dejarlo prendido en el front; si hay tiempo antes de la entrega, se cambia por eso.
+  "Bot Fight Mode" ya estaba apagado: no hizo falta tocarlo.
 
 ## Endurecimiento de Kubernetes (B2, 27/11/2026)
 
