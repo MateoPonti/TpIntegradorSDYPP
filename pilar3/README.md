@@ -15,7 +15,7 @@
 
 En los comandos de abajo, todo lo que dice `infra/terraform`, `k8s/` o `k3s-local/` está dentro de `pilar3/`.
 
-## Cómo está desplegado hoy (13/11/2026)
+## Cómo está desplegado hoy (actualizado el 27/11/2026)
 
 El TPI corre en el **cluster GKE del TP3** (proyecto `tp3distribuidos`, cluster `tp3`, zona `us-central1-a`),
 en su propio namespace **`tpi`**. El 17/11/2026 se sacó el TP3 del cluster (namespace `tp3`, su IP
@@ -104,11 +104,11 @@ Diferencias con el starter, para que entre en ese cluster:
 ```bash
 K="kubectl --context gke_tp3distribuidos_us-central1-a_tp3"
 R=us-central1-docker.pkg.dev/tp3distribuidos/tp3; T=$(git rev-parse --short HEAD)
-for s in coordinator pool gateway; do
+for s in coordinator pool gateway notifier; do
   docker build -f pilar2/services/Dockerfile --build-arg SERVICE=$s -t $R/tpi-$s:$T . && docker push $R/tpi-$s:$T
 done
 $K apply -k pilar3/k8s/base && $K apply -k pilar3/k8s/infra         # namespace, RabbitMQ y Redis
-$K kustomize pilar3/k8s/apps | sed -E "s#REGISTRY/(coordinator|pool|gateway):latest#$R/tpi-\1:$T#" | $K apply -f -
+$K kustomize pilar3/k8s/apps | sed -E "s#REGISTRY/(coordinator|pool|gateway|notifier):latest#$R/tpi-\1:$T#" | $K apply -f -
 $K apply -k pilar3/k8s/observability                                  # PodMonitors y alertas
 ```
 
@@ -500,7 +500,7 @@ infra/terraform/     provider.tf, variables.tf, main.tf, outputs.tf (estructura 
                      Workload Identity Federation para GitHub Actions
 k8s/base             namespace tpi (GKE)
 k8s/infra            RabbitMQ y Redis (con persistencia) en el pool infra, sin exponer
-k8s/apps             coordinator y gateway (con HPA y LoadBalancer público) y pool, en el pool apps
+k8s/apps             coordinator, gateway (con HPA, ClusterIP detrás de Traefik), pool y notifier, en el pool apps
 k3s-local/           mineros CPU en SU k3s local: Deployment + KEDA (lee GET /scaling del gateway)
 .github/workflows    ci (gitleaks + tests) y los Pipelines 1 a 4 del enunciado
 loadtest/            bench.py, matrix.sh y plot.py para la sección 3.3

@@ -23,7 +23,7 @@ coordinator las agrupa en bloques y los mineros (CPU y GPU con CUDA) buscan el n
 | **PC del grupo** (GTX 1050 Ti) o Colab | minero GPU: `agent.py` + el binario CUDA | `pilar2/services/miners/gpu` · binario: `pilar1/gpu` |
 
 **Ningún minero corre en Google Cloud**: la prueba gratuita prohíbe minar y no tiene GPUs. Los
-mineros están afuera y solo hablan con el gateway por HTTPS (piden tareas, mandan resultados y
+mineros están afuera y solo hablan con el gateway por HTTPS y WebSocket (reciben las tareas, mandan resultados y
 avisan que están vivos), con un token. Cualquiera se puede sumar desde `/unirse`: crea su cuenta con claves
 Ed25519 y recibe un token propio para su worker. RabbitMQ y Redis no se exponen.
 
