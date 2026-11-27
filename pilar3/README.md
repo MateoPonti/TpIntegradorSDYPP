@@ -226,6 +226,35 @@ Escalado: KEDA consulta `GET /scaling` del gateway y fija las réplicas en `desi
 (0 mientras haya un minero GPU vivo). Si prefieren no instalar KEDA, saquen
 `keda-scaledobject.yaml` de la kustomization y corran `examples/local_autoscaler.py`.
 
+### Bajar a 0 mineros CPU: quién decide los 60 s (A3-h)
+
+En la revisión del 21/11 el apagado tardaba ~180 s y el contrato decía 60 s. Eran **dos esperas
+sumadas**, no una:
+
+| Quién espera | Cuánto | Dónde está |
+|---|---|---|
+| El pool, antes de informar `desired_cpu_miners = 0` | `CPU_IDLE_SECONDS` = 60 s | `pool/main.py` → `decision.desired_cpu_miners` |
+| KEDA, después de ver el 0, antes de escalar a cero | `cooldownPeriod` = 120 s | `k3s-local/keda-scaledobject.yaml` |
+
+La decisión queda en **un solo lugar, el pool**: `cooldownPeriod` baja a **5 s** (un
+`pollingInterval`), así KEDA escala apenas ve el 0 y el tiempo total es el que decide el pool.
+Para cambiar ese tiempo se toca `CPU_IDLE_SECONDS`, no el ScaledObject.
+
+**Medición** (en el k3s local, con el gateway en GKE):
+
+```bash
+export KUBECONFIG=~/.kube/k3s.yaml
+bash k3s-local/medir-escalado-a-cero.sh https://<dominio>        # manda 1 tx y cronometra
+```
+
+El script manda una transacción, espera a que el bloque se selle y cronometra desde el último
+resultado entregado hasta que `kubectl -n tpi-miners get deploy miner-cpu` muestra 0 réplicas.
+Criterio del contrato: **≤ 70 s** (60 s del pool + el `pollingInterval` de 5 s + el apagado del pod).
+
+| Fecha y hora | Antes (`cooldownPeriod: 120`) | Después (`cooldownPeriod: 5`) |
+|---|---|---|
+| _(completar con la corrida)_ | ~180 s (lo que midió el profe el 21/11) | _(completar: tiene que dar ≤ 70 s)_ |
+
 ## Contrato mínimo que el starter espera de sus servicios
 
 - Puerto HTTP `8080` con `GET /health` (lo usan las probes).
