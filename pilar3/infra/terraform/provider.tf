@@ -10,11 +10,22 @@ terraform {
 
   # Remote state is mandatory once the pipeline runs this code: two runners
   # applying against a local state file is how clusters get duplicated.
-  # Create the bucket once by hand (see README) and uncomment.
-  # backend "gcs" {
-  #   bucket = "CHANGE_ME-tfstate"
-  #   prefix = "tpi/pilar3"
-  # }
+  #
+  # B3 (27/11/2026): está en un bucket de GCS y no en el disco del que corre el pipeline. El bucket **no** va
+  # acá: es una configuración parcial y el nombre entra por `-backend-config`, porque un bucket es global en
+  # todo GCP y su nombre es, de hecho, el proyecto donde vive el estado. Queda en el secret TF_STATE_BUCKET.
+  #
+  #   gcloud storage buckets create gs://<proyecto>-tfstate \
+  #     --location=us-central1 --uniform-bucket-level-access --public-access-prevention
+  #   gcloud storage buckets update gs://<proyecto>-tfstate --versioning   # un apply mal no borra el estado
+  #   cd pilar3/infra/terraform
+  #   tofu init -backend-config="bucket=<proyecto>-tfstate" -migrate-state
+  #
+  # El estado tiene las IP, los nombres de las service accounts y los ids del Workload Identity: nunca se
+  # commitea (está en .gitignore).
+  backend "gcs" {
+    prefix = "tpi/pilar3"
+  }
 }
 
 provider "google" {

@@ -123,7 +123,7 @@ en el archivo).
 **Otra cuenta de GCP:** `infra/terraform` crea un cluster propio con los mismos node pools, discos de 30 GB
 `pd-standard` (para que la cuota de SSD no frene al autoscaler), el registry `tpi`, la identidad de GitHub
 y las dos IPs fijas (`tofu output static_ips`). La IP va a ser otra: hay que ponerla en
-`loadBalancerIP` de `k8s/https/traefik-values.yaml` y en los registros A de Cloudflare (desde el 27/11 los
+`loadBalancerIP` de `k8s/platform/traefik-values.yaml` y en los registros A de Cloudflare (desde el 27/11 los
 Services de las apps no piden IP pública, así que no hay nada que cambiar en `k8s/apps/`). La IP de
 `tpi-gateway` quedó sin uso.
 
@@ -144,7 +144,7 @@ reescribe: el commit queda como está y este párrafo es la corrección.
 | Dominio `sdmer.dpdns.org` | DigitalPlat FreeDomain, con los nameservers de Cloudflare | Gratis y es un dominio de verdad: Let's Encrypt lo firma y Cloudflare lo puede proxear. No se compró ninguno |
 | Ingress de los dos nombres | `k8s/https/dominio.yaml` (reemplaza a `ingress.yaml`) | `sdmer.dpdns.org` → coordinator, `/ws` → notifier, `gateway.sdmer.dpdns.org` → gateway. **Sin regla sin host**: la que había servía la IP pelada a cualquiera |
 | Certificado por DNS-01 | `k8s/https/cluster-issuer.yaml` (`letsencrypt-dns`) | Con el proxy de Cloudflare adelante y el redirect global a https, el desafío HTTP-01 depende de demasiadas cosas. DNS-01 solo necesita escribir un TXT |
-| Solo Cloudflare entra al LB | `k8s/https/traefik-values.yaml` (`loadBalancerSourceRanges`, 15 rangos; la Task 16 mueve este archivo a `k8s/platform/`) | Es lo que convierte al dominio en el único camino. Sin esto el resto es decoración |
+| Solo Cloudflare entra al LB | `k8s/platform/traefik-values.yaml` (`loadBalancerSourceRanges`, 15 rangos) | Es lo que convierte al dominio en el único camino. Sin esto el resto es decoración |
 | Todo http redirige a https | el mismo `traefik-values.yaml` (`ports.web.redirections`) | 301 para cualquier nombre y cualquier ruta, así que el redirect no delata qué rutas existen |
 | El gateway sin IP propia | `k8s/apps/gateway.yaml` (`type: ClusterIP`) | Tenía dos puertas: una con TLS y rate limit, y otra en claro que las salteaba |
 
@@ -189,7 +189,7 @@ $K -n tpi get certificate tpi-tls -w      # READY=True en 1-2 min. Si tarda: $K 
 
 # 2. Cerrar el LoadBalancer y prender el redirect. `helm upgrade` de Traefik toca su Service: GKE reescribe la
 #    regla de firewall del balanceador (unos segundos de cortes en los pedidos nuevos).
-helm upgrade --install traefik traefik/traefik -n traefik -f pilar3/k8s/https/traefik-values.yaml
+helm upgrade --install traefik traefik/traefik -n traefik --version 42.4.0 -f pilar3/k8s/platform/traefik-values.yaml
 $K -n traefik get svc traefik -o jsonpath='{.spec.loadBalancerSourceRanges}'   # tienen que estar los 15
 
 # 3. Recién ahora el gateway a ClusterIP: hasta que el dominio sirva, los mineros del k3s siguen entrando por
@@ -464,8 +464,19 @@ tofu apply
 
 Después:
 
-1. Creen un bucket para el estado remoto, descomenten el bloque `backend "gcs"` de `provider.tf`
-   y corran `tofu init -migrate-state`.
+1. Creen el bucket del estado remoto y migren el estado local (B3; el bloque `backend "gcs"` ya está
+   activo en `provider.tf`, con el bucket por fuera porque un nombre de bucket es global en todo GCP):
+
+   ```bash
+   gcloud storage buckets create gs://tp3distribuidos-tfstate      --location=us-central1 --uniform-bucket-level-access --public-access-prevention
+   gcloud storage buckets update gs://tp3distribuidos-tfstate --versioning   # un apply mal no borra el estado
+   cd pilar3/infra/terraform
+   tofu init -backend-config="bucket=tp3distribuidos-tfstate" -migrate-state
+   ```
+
+   Y en GitHub, el secret **`TF_STATE_BUCKET`** con ese nombre: es el que le pasa el Pipeline 1 al
+   `tofu init`. El estado **no se commitea** (tiene las IP, las service accounts y los ids del Workload
+   Identity; está en `.gitignore`).
 2. En GitHub, *Settings > Secrets and variables > Actions*, carguen:
    - **Variables**: `GCP_PROJECT_ID`, `GCP_REGION`, `GKE_CLUSTER` (`tpi-gke`), `GKE_ZONE`,
      `GCP_WIF_PROVIDER`, `GCP_DEPLOYER_SA`, `GCP_INFRA_SA` (salen de `tofu output`) y,
@@ -485,6 +496,53 @@ No hay ni una clave JSON de service account en todo el flujo. Si en algún momen
 | 2 | `2-base-services.yml` | Secrets de Kubernetes (incluido el token del gateway), RabbitMQ y Redis |
 | 3 | `3-apps.yml` | build + push de coordinator, pool y gateway con tag = SHA del commit, `kubectl apply -k` y `rollout status` |
 | 4 | `4-miners.yml` | build + push de `miner-cpu` a ghcr.io; opcional: despliegue en el k3s con un runner self-hosted |
+
+### El cluster en vivo se armó a mano (B3, 27/11/2026)
+
+El profe marcó que los pipelines no desplegaban lo que estaba corriendo. Es cierto, y el motivo es que el
+cluster se armó **desde la terminal** (`tofu apply` y `kubectl apply`), no con los pipelines:
+
+- El cluster es el que **venía del TP3** (`tp3`, en `tp3distribuidos`), con sus node pools y su
+  `monitoring`. Los pipelines están escritos para crear un cluster nuevo (`tpi-gke`) y correrlos contra uno
+  que ya tenía datos era arriesgado sin tiempo para probarlo.
+- Los créditos de la prueba gratuita no daban para tener dos clusters prendidos a la vez.
+
+Los pipelines están y hacen lo mismo, pero había tres cosas desalineadas, que es lo que se arregló:
+
+| Qué estaba mal | Qué pasaba | Cómo quedó |
+|---|---|---|
+| El Pipeline 3 publicaba en el repositorio `tpi` de Artifact Registry | Las que corren están en `tp3/tpi-<servicio>`: correr el pipeline habría desplegado imágenes de otro repositorio | El pipeline publica y despliega en `tp3/tpi-<servicio>`, lo que corre. `pilar3/tests/test_pipelines.py` compara el `docker build`, el `images:` del kustomization y el `image:` de cada Deployment |
+| `provider.tf` tenía el `backend "gcs"` comentado | El estado de tofu quedaba en el disco del runner, que se tira al terminar el job: dos corridas podían duplicar el cluster | Backend de GCS activo, con el bucket por `-backend-config` desde el secret `TF_STATE_BUCKET` |
+| Traefik, cert-manager y `kube-prometheus-stack` se instalaron con Helm a mano | Con qué values quedaron instalados no estaba en ningún lado: el cluster no se podía rearmar igual | `pilar3/k8s/platform/`, con los values y un script que los compara contra el cluster |
+
+**El Artifact Registry `tpi` que crea OpenTofu quedó sin usar**, porque las imágenes viven en el `tp3` que
+heredamos. Se deja creado (es gratis si está vacío y lo necesita un cluster nuevo armado desde cero con el
+Pipeline 1), pero el pipeline de aplicaciones no lo usa.
+
+### VMs externas: no hay pipeline, y no puede haberlo
+
+No hay un pipeline que cree máquinas para los mineros, y no es un olvido: **ningún minero puede correr en
+GCP**, porque la prueba gratuita prohíbe minar y además no da GPUs. Lo que lo reemplaza:
+
+- Los **mineros CPU** corren en el **k3s local** del grupo, escalados por KEDA. El `4-miners.yml` construye y
+  publica la imagen `miner-cpu` en ghcr.io; el despliegue en el k3s se hace con `kubectl apply -k
+  pilar3/k3s-local` (o por el mismo pipeline, si se levanta un runner self-hosted en esa máquina, porque el
+  k3s no es alcanzable desde los runners de GitHub).
+- El **minero GPU** corre en la PC con la 1050 Ti y en InferHive, arrancado a mano con `agent.py`.
+
+### Values de lo que se instaló con Helm
+
+En `pilar3/k8s/platform/` están los values de Traefik, cert-manager y `kube-prometheus-stack`, con un script
+que los vuelve a sacar del cluster:
+
+```bash
+sh pilar3/k8s/platform/exportar-values.sh
+git diff pilar3/k8s/platform     # si hay diferencias, alguien tocó el cluster y no lo commiteó
+```
+
+Hay que correrlo una vez con el kubeconfig de GKE y commitear el resultado: los de cert-manager y
+observabilidad están marcados como **pendientes de exportar**, con lo único que estaba registrado del comando
+de instalación. Detalle en `pilar3/k8s/platform/README.md`.
 
 ## Mineros CPU en el k3s local
 
