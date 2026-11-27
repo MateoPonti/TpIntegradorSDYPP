@@ -219,6 +219,11 @@ estén y ninguno sea `0.0.0.0/0`, y que ningún Service nuestro vuelva a pedir u
 2. **Cloudflare, SSL/TLS:** modo **Full (strict)**, "Always Use HTTPS" activado y WebSockets activados (vienen
    así; son los que hacen andar `/ws`). En Flexible, Cloudflare hablaría http con Traefik y el redirect global
    lo manda de vuelta a https: bucle de redirecciones.
+   **Security → Settings: Browser Integrity Check apagado**, y Bot Fight Mode apagado. Viene prendido y
+   contesta **403 (error 1010)** a cualquier cliente con `User-Agent: Python-urllib`: el agente de los mineros,
+   `tools/cuenta.py` y `bench.py` (que no se puede tocar). Pasó el 27/11: los 8 pods del k3s subieron y no
+   minaron nada, mientras que `curl` y el navegador andaban. Lo que protege de verdad sigue estando (token de
+   los mineros, firmas, rate limit del gateway y el LoadBalancer cerrado a Cloudflare).
 3. **El token de la API** con permisos `Zone:DNS:Edit` y `Zone:Zone:Read`, **solo** sobre esta zona, cargado a
    mano una vez. El de lectura hace falta porque cert-manager primero busca el ID de la zona y recién después
    escribe el TXT; sin eso falla con "zone not found" y el certificado nunca sale. **No se commitea** (regla 5
@@ -287,6 +292,20 @@ Cloudflare Free tiene dos límites que nos pueden pegar: el **body de 100 MB** y
 alternativa ya no es la IP pelada (no existe más): se corre `bench.py` **desde un pod del cluster** contra
 `http://coordinator.tpi.svc.cluster.local`, que es lo que ya hacía `loadtest/completa/correr.sh` para la
 medición interna, y se anota en los resultados que el bulk grande se midió por adentro y por qué.
+
+**Medido el 27/11/2026 (13:00 a 13:13), por `https://sdmer.dpdns.org`, desde una PC con 32 hilos:**
+
+| Bulk | Aceptadas (202) | Errores | Envío | Ingesta | p50 / p95 / p99 |
+|---:|---:|---:|---:|---:|---|
+| 10.000 | 10.000 | 0 | 82,8 s | 120,8 tx/s | 259 / 293 / 374 ms |
+| 100.000 | 99.972 | 28 (0,03 %) | 804,5 s | 124,3 tx/s | 252 / 286 / 354 ms |
+
+No pegó ningún límite de Cloudflare: `bench.py` manda **una tx por pedido** (32 en paralelo), así que cada
+body es de unos 80 bytes y cada respuesta tarda ~250 ms. Los 100 MB y los 100 s serían un problema solo con
+`POST /transactions/bulk`, que `bench.py` no usa. Los 28 errores **no** los rechazó el coordinator
+(`tx_rejected_total` no subió en ninguna réplica), así que se cortaron antes de llegar; coinciden con el HPA
+subiendo el coordinator de 2 a 5 réplicas y no se pudo saber más porque `bench.py` no guarda el motivo.
+La ingesta es la misma que en la carga del 20/11 por la IP directa, así que Cloudflare no agrega un cuello.
 
 ### Limitaciones que quedan
 
@@ -598,7 +617,7 @@ Criterio del contrato: **≤ 70 s** (60 s del pool + el `pollingInterval` de 5 s
 
 | Fecha y hora | Antes (`cooldownPeriod: 120`) | Después (`cooldownPeriod: 5`) |
 |---|---|---|
-| _(completar con la corrida)_ | ~180 s (lo que midió el profe el 21/11) | _(completar: tiene que dar ≤ 70 s)_ |
+| 27/11/2026 12:54, 12:56 y 12:57 (bloques 612, 615 y 616, 8 pods, por `sdmer.dpdns.org`) | ~180 s (lo que midió el profe el 21/11) | **71 s, 60 s y 65 s → mediana 65 s** ✓. La de 71 s fue la primera, con los pods arrancando en frío |
 
 ## Contrato mínimo que el starter espera de sus servicios
 
