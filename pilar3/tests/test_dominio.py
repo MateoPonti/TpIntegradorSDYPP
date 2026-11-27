@@ -28,25 +28,30 @@ GATEWAY = f"gateway.{DOMINIO}"
 ANCLAS_DE_CLOUDFLARE = {"104.16.0.0/13", "172.64.0.0/13"}
 
 # URLs que se dejaron de usar el 27/11. Se busca el patrón de URL (con esquema) y no el nombre suelto, porque
-# los comentarios que explican el cambio nombran lo viejo a propósito.
+# en los comentarios el nombre viejo aparece a propósito, explicando el cambio.
 URLS_VIEJAS = re.compile(r"https?://[^\s\"'`)\]]*(?:sslip\.io|34\.63\.209\.225|35\.223\.237\.60)")
 
-# Dónde sí puede quedar una URL vieja: el plan de la entrega (es el plan, no configuración) y los resultados de
-# las pruebas de carga, que son el registro de una medición del 20/11. Un registro no se reescribe.
-PERDONADOS = ("docs/", "pilar3/loadtest/resultados/")
+# Se revisa **lo que lee el sistema**: valores de los YAML y código. Quedan afuera los `.md` (ahí las URLs
+# viejas tienen que estar: la verificación del profe es justamente pedirles a las tres y que fallen) y el plan
+# de la entrega. Los README se revisan a ojo en el PR.
+CODIGO = ("*.yaml", "*.yml", "*.py", "*.sh", "*.html")
+COMENTARIO = re.compile(r"(?:^|\s)#")          # yaml, sh y python: el resto de la línea es comentario
 
 
-def archivos_de_texto() -> list[Path]:
+def archivos_de_codigo() -> list[Path]:
     out = []
-    for patron in ("*.yaml", "*.yml", "*.py", "*.sh", "*.md", "*.html", "*.json"):
+    for patron in CODIGO:
         for f in REPO.rglob(patron):
             rel = f.relative_to(REPO).as_posix()
-            if rel.startswith((".venv/", ".git/")) or "__pycache__" in rel:
-                continue
-            if rel.startswith(PERDONADOS):
+            if rel.startswith((".venv/", ".git/", "docs/")) or "__pycache__" in rel:
                 continue
             out.append(f)
     return sorted(out)
+
+
+def sin_comentarios(linea: str) -> str:
+    corte = COMENTARIO.search(linea)
+    return linea[:corte.start()] if corte else linea
 
 
 def docs_de(archivo: Path) -> list[dict]:
@@ -71,12 +76,12 @@ TODOS_LOS_DOCS = [(a, d)
 SERVICES = [(a, d) for a, d in TODOS_LOS_DOCS if d["kind"] == "Service"]
 
 
-def test_no_queda_ninguna_url_vieja():
+def test_ninguna_configuracion_usa_las_urls_viejas():
     """sslip.io y las dos IPs fijas: si sobrevive una, algo del sistema sigue entrando sin pasar por Cloudflare."""
     encontradas = []
-    for f in archivos_de_texto():
+    for f in archivos_de_codigo():
         for n, linea in enumerate(f.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
-            if URLS_VIEJAS.search(linea):
+            if URLS_VIEJAS.search(sin_comentarios(linea)):
                 encontradas.append(f"{f.relative_to(REPO).as_posix()}:{n}: {linea.strip()}")
     assert not encontradas, encontradas
 
