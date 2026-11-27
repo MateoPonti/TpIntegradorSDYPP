@@ -24,6 +24,19 @@ def wait_ready(api, cpu, prefix, timeout=180):
         time.sleep(2)
 
 
+def wait_sealed(api, timeout=600):
+    """bench.py termina cuando pending_transactions llega a 0, pero una tx deja de estar pendiente al entrar en el
+    bloque que se está minando, no al sellarse: con prefijos largos el último bloque se sella después."""
+    deadline = time.monotonic() + timeout
+    while True:
+        state = confirmado.get_json(api, "/status")
+        if state.get("pending_transactions") == 0 and not state.get("mining"):
+            return
+        if time.monotonic() >= deadline:
+            raise RuntimeError("el último bloque no se selló a tiempo")
+        time.sleep(1)
+
+
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     script, *args = argv
@@ -40,6 +53,7 @@ def main(argv=None):
         run_number += 1
         since = time.time()
         result = original(options, bulk)
+        wait_sealed(options.base_url)
         until = time.time()
         if result.submit_errors or result.confirm_seconds is None:
             raise RuntimeError("corrida inválida: hubo errores de ingesta o timeout de confirmación")

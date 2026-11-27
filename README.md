@@ -109,6 +109,30 @@ Cómo validé lo generado:
 Lo que corregí o decidí yo: las decisiones de diseño las tomamos en grupo y están en `docs/decisiones.docx`
 con su fecha; la IA proponía opciones. _(Completar: qué cambiaste a mano de lo que propuso.)_
 
+### Federico — Claude Code (Opus 5.5), 26/11/2026
+
+Usó Claude Code para armar el plan de la entrega a partir del PDF del profe
+(`docs/superpowers/plans/2026-11-26-ajustes-entrega-final.md`, PR #1) y en sus Tasks: 8 (tests de los Lua y del
+reaper con Redis real, PR #2), 1 (génesis, PR #3), 2 (id de cadena, PR #4/#8), 10 (canarios indistinguibles,
+préstamos con dueño y límite de altas, PR #5), 11 (hashrate medido con shares y Vardiff, PR #6) y 14 (el gateway
+empuja el trabajo y `authorize` firmado, PR #7).
+
+Cómo validó: tests primero en cada Task (que fallaran sin el cambio y pasaran con él), `pytest -q pilar2/tests
+pilar3/tests` en verde en cada PR (128 al cerrar la Task 14), tests del Lua contra un Redis real en el CI, la
+firma de `claves.js` corrida en Node y verificada con `firmas.verify`, y la integración contra el compose
+(`TPI_E2E_URL`, con la verificación de A1 del profe).
+
+### María Agustina — Claude Code, 26 y 27/11/2026
+
+Usó Claude Code en sus Tasks: 3 (KEDA a 0 a los ~60 s, PR #10), 7 (SIGTERM del minero y colectas, PR #11), 12
+(PPLNS y `reward:carry`, PR #13), 15 (endurecimiento de Kubernetes, PR #14), 16 (pipelines, PR #15) y 9
+(dominio en Cloudflare, PR #17), además de las decisiones del 27/11 en `docs/decisiones.docx` (PR #19).
+
+Cómo validó: tests nuevos que revisan el repo (`test_manifiestos.py`, `test_pipelines.py`, `test_dominio.py`)
+comprobando que fallan sin el cambio, la suite completa en verde (200 tests al cerrar la Task 9) y, en el cluster,
+que todos los pods vuelvan a `Running` y se selle un bloque después de aplicar el endurecimiento. La
+configuración de Cloudflare (registros, SSL y Browser Integrity Check) la hizo a mano en el panel.
+
 ### Justino — Codex (26/11/2026)
 
 Se utilizó Codex para revisar el plan de entrega y asistir en las Tasks 4, 5, 6, 13, 17 y 18: validación

@@ -108,7 +108,7 @@ for s in coordinator pool gateway notifier; do
   docker build -f pilar2/services/Dockerfile --build-arg SERVICE=$s -t $R/tpi-$s:$T . && docker push $R/tpi-$s:$T
 done
 $K apply -k pilar3/k8s/base && $K apply -k pilar3/k8s/infra         # namespace, RabbitMQ y Redis
-$K kustomize pilar3/k8s/apps | sed -E "s#REGISTRY/(coordinator|pool|gateway|notifier):latest#$R/tpi-\1:$T#" | $K apply -f -
+$K kustomize pilar3/k8s/apps | sed -E "s#REGISTRY/tpi-(coordinator|pool|gateway|notifier):latest#$R/tpi-\1:$T#" | $K apply -f -
 $K apply -k pilar3/k8s/observability                                  # PodMonitors y alertas
 ```
 
@@ -318,9 +318,9 @@ el proxy se notan enteros. No es un límite del sistema: subir `--concurrency` o
   vez. El test del repo no se puede enterar: no sale a Internet.
 - El dominio es gratis y por un año. Si DigitalPlat lo da de baja, se cae el nombre; el cluster sigue vivo pero
   sin puerta pública hasta que se apunte otro nombre.
-- Con el proxy de Cloudflare adelante, **todos** los pedidos llegan con la IP de Cloudflare. Cualquier límite
-  por IP (el de `/accounts/register`, B1.4) tiene que leer `CF-Connecting-IP`, o todo Internet cuenta como un
-  solo cliente.
+- Con el proxy de Cloudflare adelante, **todos** los pedidos llegan con la IP de Cloudflare. Por eso el límite
+  por IP (el de `/accounts/register`, B1.4) lee `CF-Connecting-IP` primero (`tpi_common/ratelimit.client_ip`).
+  Ese header no se puede falsificar porque al LoadBalancer solo llega Cloudflare, que lo pisa.
 - El `IngressRoute privado-http` cierra `/logs` y `/metrics` por http; con el redirect global, por http ahora
   sale 301 antes de llegar ahí. Queda igual, como red de seguridad si algún día se saca el redirect.
 
