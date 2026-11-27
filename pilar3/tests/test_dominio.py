@@ -64,10 +64,20 @@ def valores(archivo: Path) -> dict:
         return yaml.safe_load(fh)
 
 
+def values_de_traefik() -> dict:
+    """La Task 16 mueve los values de Helm de `k8s/https/` a `k8s/platform/`. Se buscan en los dos lugares
+    para que el test no dependa de en qué orden se mergean las ramas."""
+    for candidato in (PILAR3 / "k8s" / "platform" / "traefik-values.yaml",
+                      PILAR3 / "k8s" / "https" / "traefik-values.yaml"):
+        if candidato.exists():
+            return valores(candidato)
+    raise AssertionError("no aparece traefik-values.yaml ni en k8s/platform ni en k8s/https")
+
+
 HTTPS = PILAR3 / "k8s" / "https"
 INGRESS = next(d for d in docs_de(HTTPS / "dominio.yaml") if d["kind"] == "Ingress")
 ISSUERS = {d["metadata"]["name"]: d for d in docs_de(HTTPS / "cluster-issuer.yaml")}
-TRAEFIK = valores(HTTPS / "traefik-values.yaml")
+TRAEFIK = values_de_traefik()
 
 TODOS_LOS_DOCS = [(a, d)
                   for a in sorted((PILAR3 / "k8s").rglob("*.yaml")) + sorted((PILAR3 / "k3s-local").rglob("*.yaml"))
