@@ -40,7 +40,7 @@ metadata:
 spec:
   # Los dos entrypoints: por http no alcanza con que redirija a https, porque la respuesta del redirect ya
   # confirmaría que la ruta existe, y el objetivo es que no se llegue ni por una ni por la otra.
-  entryPoints: [web, websecure]
+  entryPoints: [websecure]
   routes:
     # Sin Host: vale para el dominio, para el host del gateway y para la IP pelada, que es justo por donde se
     # intentaría entrar. `priority` alta para ganarle a la regla `/` del Ingress del front: Traefik, cuando no
@@ -55,3 +55,21 @@ spec:
   # Sin `secretName`: usa el certificado que ya tiene Traefik para ese nombre (el de cert-manager). Si no
   # estuviera este bloque, por websecure no entraría en el router TLS y la regla no se evaluaría.
   tls: {}
+---
+# Lo mismo por http (entrypoint web). La regla de arriba tiene `tls: {}`, y con eso Traefik la arma como router
+# TLS: solo la evalúa en los pedidos https, así que por http://<ip>/logs se seguía contestando 200 (27/11).
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: privado-http
+  namespace: tpi
+spec:
+  entryPoints: [web]
+  routes:
+    - match: PathPrefix(`/logs`) || PathPrefix(`/metrics`)
+      priority: 1000
+      middlewares:
+        - name: solo-interno
+      services:
+        - name: coordinator
+          port: http
