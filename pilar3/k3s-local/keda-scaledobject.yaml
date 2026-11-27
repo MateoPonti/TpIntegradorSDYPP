@@ -18,7 +18,13 @@ spec:
   minReplicaCount: 0
   maxReplicaCount: 8
   pollingInterval: 5   # cada 5 s: la primera tx sin pods arranca en ~15-20 s
-  cooldownPeriod: 120
+  # A3-h (26/11): quién decide cuándo bajar a 0 es el pool, no KEDA. El pool ya espera
+  # CPU_IDLE_SECONDS (60 s) sin trabajo antes de informar desired_cpu_miners = 0
+  # (pool/decision.py, desired_cpu_miners). Con cooldownPeriod: 120 el apagado tardaba
+  # 60 + 120 = ~180 s, que es lo que midió el profe. Acá queda en un pollingInterval:
+  # KEDA baja apenas ve el 0 y el tiempo total es el del pool (~60 s, medido ≤ 70 s).
+  # Si hay que cambiar ese tiempo, se cambia CPU_IDLE_SECONDS del pool, no esto.
+  cooldownPeriod: 5
   triggers:
     - type: metrics-api
       metadata:

@@ -380,3 +380,65 @@ def test_carry_se_calcula_desde_el_lote_que_se_sella(redis_db):
     sin_premio, con_premio = run(go())
     assert sin_premio == (5010, 0)   # no se pagó: se acumula el premio del bloque 1
     assert con_premio == (0, 700)    # se pagó de más que reward_cents(1): esos 700 salieron del carry
+
+
+# ---- C6: una colecta trabada no frena a las demás (Task 7) ----
+
+async def _colecta_cerrada(r, cid: str, aporte: int, goal: int, saldo: int, cierre: float) -> None:
+    """Deja una colecta ya vencida y lista para liquidar, con `saldo` en su cuenta."""
+    await r.hset(crowdfund.key(cid), mapping={"id": cid, "status": "abierta", "goal": goal,
+                                              "beneficiary": f"benef-{cid}", "deadline": cierre})
+    await r.hset(crowdfund.contrib_key(cid), "ana", aporte)
+    await r.zadd(crowdfund.OPEN_INDEX, {cid: cierre})
+    if saldo:
+        await r.set(keys.balance(crowdfund.account(cid)), saldo)
+
+
+def test_colecta_sin_saldo_no_frena_las_demas(redis_db, monkeypatch):
+    """La primera colecta no tiene plata en su cuenta (un aporte que nunca entró, por ejemplo).
+    Antes eso hacía `return` y cortaba el recorrido: la segunda no se liquidaba nunca."""
+    from coordinator import main as co
+
+    async def go():
+        r = redis_db()
+        now = time.time()
+        cierre = now - crowdfund.GRACE - 60
+        await _colecta_cerrada(r, "sin-plata", aporte=100, goal=100, saldo=0, cierre=cierre)
+        await _colecta_cerrada(r, "con-plata", aporte=100, goal=100, saldo=100, cierre=cierre + 1)
+        monkeypatch.setattr(co, "state", {"r": r, "cf_start": r.register_script(crowdfund.START_LUA),
+                                          "reserve": r.register_script(ledger.RESERVE_LUA)})
+        await co.settle_crowdfunds()
+        estados = {cid: await r.hget(crowdfund.key(cid), "status") for cid in ("sin-plata", "con-plata")}
+        pendientes = await r.zrange(crowdfund.OPEN_INDEX, 0, -1)
+        pagos = [json.loads(x)["receiver"] for x in await r.lrange(keys.TX_PENDING, 0, -1)]
+        await r.aclose()
+        return estados, pendientes, pagos
+    estados, pendientes, pagos = run(go())
+    assert estados["con-plata"] == "exitosa"       # la segunda se liquidó igual
+    assert pagos == ["benef-con-plata"]
+    assert estados["sin-plata"] == "liquidando"    # la primera queda para la vuelta siguiente
+    assert pendientes == ["sin-plata"]             # y sigue en el índice de las que falta liquidar
+
+
+def test_colecta_que_explota_no_frena_las_demas(redis_db, monkeypatch):
+    """Lo mismo con un error de verdad (Redis, un Lua, un dato roto): se cuenta y se sigue."""
+    from coordinator import main as co
+
+    async def go():
+        r = redis_db()
+        now = time.time()
+        cierre = now - crowdfund.GRACE - 60
+        await _colecta_cerrada(r, "rota", aporte=100, goal=100, saldo=100, cierre=cierre)
+        await _colecta_cerrada(r, "sana", aporte=100, goal=100, saldo=100, cierre=cierre + 1)
+        await r.hset(crowdfund.key("rota"), "goal", "no-es-un-numero")  # int() revienta
+        monkeypatch.setattr(co, "state", {"r": r, "cf_start": r.register_script(crowdfund.START_LUA),
+                                          "reserve": r.register_script(ledger.RESERVE_LUA)})
+        antes = co.CF_SETTLE_ERRORS._value.get()
+        await co.settle_crowdfunds()
+        estados = {cid: await r.hget(crowdfund.key(cid), "status") for cid in ("rota", "sana")}
+        await r.aclose()
+        return estados, co.CF_SETTLE_ERRORS._value.get() - antes
+    estados, errores = run(go())
+    assert estados["sana"] == "exitosa"
+    assert estados["rota"] == "abierta"  # no se la pudo tocar, pero no frenó a la otra
+    assert errores == 1

@@ -612,3 +612,72 @@ def test_verify_chain_acepta_el_premio_acumulado():
     de_menos = reward.reward_txs(2, {"mateo": 5020}, ts=1.0)   # se "olvida" lo acumulado
     errores, _ = verify_chain.check_rewards({"transactions": de_menos}, prev2, 5010)
     assert errores and "acumulado" in errores[0]
+
+
+# ---- C5: SIGTERM del minero (Task 7) ----
+
+def _miner_de_prueba(tasks=()):
+    """Un Miner con un gateway falso: guarda las llamadas en vez de salir a la red."""
+    import agent
+
+    class FakeGateway:
+        url, token = "http://gw", "t"
+
+        def __init__(self):
+            self.calls = []
+
+        def call(self, method, path, body=None):
+            self.calls.append((method, path))
+            return 200, {}
+
+    gw = FakeGateway()
+    m = agent.Miner(gw, ["motor"], "cpu-1", "cpu", chunk=10, keepalive=5)
+    for t in tasks:
+        m.pushed.put(t)
+    return m, gw
+
+
+def test_agente_libera_leases_al_sigterm():
+    import signal
+
+    m, gw = _miner_de_prueba(tasks=[{"task_id": "empujada-1"}, {"task_id": "empujada-2"}])
+    m.task_id = "en-curso"
+    m.handle_signal(signal.SIGTERM, None)
+    assert m.stopping and m.wake.is_set()  # el handler solo marca: no hace red ni mata el motor
+    assert m.release_pending("shutdown") == 3
+    # La que estaba minando y las dos que el gateway ya había empujado (y por lo tanto prestado).
+    assert [p for _, p in gw.calls] == [
+        "/tasks/en-curso/release?miner_id=cpu-1&reason=shutdown",
+        "/tasks/empujada-1/release?miner_id=cpu-1&reason=shutdown",
+        "/tasks/empujada-2/release?miner_id=cpu-1&reason=shutdown",
+    ]
+
+
+def test_agente_corta_el_rango_a_mitad_y_lo_devuelve():
+    """Con el tramo terminado y SIGTERM puesto, el resto del rango se devuelve y no se entrega resultado."""
+    m, gw = _miner_de_prueba()
+    tramos = []
+
+    def motor(base, prefix, lo, hi, share="", max_shares=0):
+        tramos.append((lo, hi))
+        m.stopping = True  # llega la señal mientras corría este tramo
+        return {"found": False, "hashes": hi - lo + 1, "seconds": 0.01}
+
+    m.run_engine = motor
+    assert m.mine({"task_id": "t1", "block_id": "b1", "base": "x", "prefix": "0", "from": 0, "to": 99}) == "shutdown"
+    assert tramos == [(0, 9)]  # termina el tramo que ya había arrancado y no sigue con el resto
+    assert m.task_id is None
+    assert [p for _, p in gw.calls] == ["/tasks/t1/release?miner_id=cpu-1&reason=shutdown"]
+
+
+def test_agente_entrega_el_nonce_aunque_se_este_apagando():
+    """Si el tramo encontró el nonce, se entrega igual: no se tira un bloque resuelto."""
+    m, gw = _miner_de_prueba()
+
+    def motor(base, prefix, lo, hi, share="", max_shares=0):
+        m.stopping = True
+        return {"found": True, "nonce": 7, "hash": "00ab", "hashes": 10, "seconds": 0.01}
+
+    m.run_engine = motor
+    assert m.mine({"task_id": "t1", "block_id": "b1", "base": "x", "prefix": "00", "from": 0, "to": 99}) == "found"
+    assert [p for _, p in gw.calls] == ["/results"]
