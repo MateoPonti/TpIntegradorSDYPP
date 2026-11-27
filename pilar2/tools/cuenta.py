@@ -3,8 +3,8 @@
 manda tx firmadas. La clave privada queda en un archivo local y nunca se manda al servidor.
 
     python pilar2/tools/cuenta.py claves  --archivo mateo.key
-    python pilar2/tools/cuenta.py registrar --url http://35.223.237.60 --cuenta mateo --archivo mateo.key
-    python pilar2/tools/cuenta.py enviar --url http://35.223.237.60 --cuenta mateo --archivo mateo.key --a user-3 --monto 10.50
+    python pilar2/tools/cuenta.py registrar --url https://sdmer.dpdns.org --cuenta mateo --archivo mateo.key
+    python pilar2/tools/cuenta.py enviar --url https://sdmer.dpdns.org --cuenta mateo --archivo mateo.key --a user-3 --monto 10.50
 
 Colectas (punto 2): crear una y aportar (aportar = enviar a colecta:<id>).
     python pilar2/tools/cuenta.py colecta --cuenta mateo --archivo mateo.key --id viaje --meta 500 --horas 24 [--a centro]

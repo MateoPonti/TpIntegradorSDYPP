@@ -2,7 +2,7 @@
 al gateway (el agente CPU de la PC, el k3s o la GPU), porque esperan que las tx se confirmen.
 
     TPI_E2E_URL=http://127.0.0.1:18080 python -m pytest -v pilar2/tests/test_sistema.py -k doble     # compose
-    TPI_E2E_URL=http://35.223.237.60 TPI_K8S_CONTEXT=gke_tp3distribuidos_us-central1-a_tp3 \
+    TPI_E2E_URL=https://sdmer.dpdns.org TPI_K8S_CONTEXT=gke_tp3distribuidos_us-central1-a_tp3 \
       python -m pytest -v pilar2/tests/test_sistema.py -k caida
 
 Actualizadas el 21/11: las cuentas de prueba se registran con clave Ed25519 y gastan firmando con su seq, y el

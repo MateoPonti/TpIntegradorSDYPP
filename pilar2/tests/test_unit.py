@@ -299,9 +299,9 @@ def test_notifier_routes_only_what_each_client_asked():
 def test_notifier_origin_and_subscription_checks():
     from notifier import main as notifier
 
-    assert notifier.origin_ok(None, "x.sslip.io", set())  # no es un navegador
-    assert notifier.origin_ok("https://x.sslip.io", "x.sslip.io", set())
-    assert not notifier.origin_ok("https://malo.com", "x.sslip.io", set())
+    assert notifier.origin_ok(None, "sdmer.dpdns.org", set())  # no es un navegador
+    assert notifier.origin_ok("https://sdmer.dpdns.org", "sdmer.dpdns.org", set())
+    assert not notifier.origin_ok("https://malo.com", "sdmer.dpdns.org", set())
     assert notifier.origin_ok("http://127.0.0.1:18080", "127.0.0.1:18280", {"http://127.0.0.1:18080"})
     assert notifier.parse_subscription({"topic": "tx", "tx_id": "t1"}) == ("tx", "t1")
     for bad in ({"topic": "saldos"}, {"topic": "account"}, {"topic": "tx", "tx_id": "x" * 200}):
