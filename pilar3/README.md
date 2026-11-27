@@ -146,8 +146,10 @@ estén y ninguno sea `0.0.0.0/0`, y que ningún Service nuestro vuelva a pedir u
 2. **Cloudflare, SSL/TLS:** modo **Full (strict)**, "Always Use HTTPS" activado y WebSockets activados (vienen
    así; son los que hacen andar `/ws`). En Flexible, Cloudflare hablaría http con Traefik y el redirect global
    lo manda de vuelta a https: bucle de redirecciones.
-3. **El token de la API** con permiso `Zone:DNS:Edit` **solo** sobre esta zona, cargado a mano una vez. **No se
-   commitea** (regla 5 de `AGENTS.md`):
+3. **El token de la API** con permisos `Zone:DNS:Edit` y `Zone:Zone:Read`, **solo** sobre esta zona, cargado a
+   mano una vez. El de lectura hace falta porque cert-manager primero busca el ID de la zona y recién después
+   escribe el TXT; sin eso falla con "zone not found" y el certificado nunca sale. **No se commitea** (regla 5
+   de `AGENTS.md`):
    ```bash
    kubectl -n cert-manager create secret generic cloudflare-api-token --from-literal=api-token=XXXXXXXX
    ```
