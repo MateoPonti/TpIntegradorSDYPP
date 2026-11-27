@@ -475,8 +475,9 @@ sello − timestamp de primera tx), incluyendo espera de ventana. Sin datos devu
 un conteo distinto al aceptado invalida la corrida. `resumen_escalado.py` produce CSV, PNG y README con
 mediana, mínimo, máximo y speedup contra 2× ideal. La atribución de cuellos de botella requiere métricas.
 
-**Estado:** herramientas y pruebas locales preparadas. Medición real, CSV/PNG de entrega y análisis del
-cluster pendientes para el 03/12; no se generaron resultados de carga ficticios.
+**Estado:** medido el 27/11 (`loadtest/resultados/2026-11-27-escalado/`, con CSV, PNG y análisis). Mediana
+confirmada 6,6 tx/s con 4 pods y 20,0 con 8; el 3× es suerte del minado con 3 corridas, no un speedup real (ver el
+README de resultados). `CPU_POINTS=8` repite un solo punto.
 
 Cada PC con un k3s corre el mismo Deployment (`k3s-local/`) contra el mismo gateway y con el **mismo
 `MINER_TOKEN`** (es un solo token para todos los mineros: lo crea quien despliega y está en el secret

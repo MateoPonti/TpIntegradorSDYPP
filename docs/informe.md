@@ -158,7 +158,19 @@ la IP directa el 20/11 (~240 tx/s, p50 ~110 ms): con 32 pedidos en paralelo, la 
 32 ÷ latencia, y el proxy agrega ~140 ms. `throughput_tx_per_s` de `bench.py` mide **ingesta** (los 202), no
 confirmación.
 
-**4 contra 8 mineros CPU (Task 18, A6):** _(se completa con `pilar3/loadtest/resultados/2026-11-27-escalado/`)._
+**4 contra 8 mineros CPU (Task 18, A6),** 1.000 tx con prefijo fijo 7, 3 corridas por punto
+(`pilar3/loadtest/resultados/2026-11-27-escalado/`):
+
+| Mineros CPU | Confirmado (tx/s) por corrida | Mediana | Ingesta |
+|---:|---|---:|---:|
+| 4 | 6,8 · 6,6 · 4,7 | 6,6 | 119 |
+| 8 | 6,7 · 20,0 · 28,3 | 20,0 | 119 |
+
+La mediana da 3×, pero no es un speedup real: los 8 pods comparten los 6 núcleos de una PC (~12 MH/s contra
+~6,4), así que lo esperable es menos de 2×. Con prefijo 7 el tiempo hasta encontrar el nonce es exponencial y con
+3 corridas la suerte pesa más que el hashrate; el mínimo de 8 pods (6,7) cae dentro del rango de 4. Lo que sí se
+puede afirmar es que 8 confirman más rápido en mediana y que la ingesta (119 tx/s) no depende de los mineros, la
+limita Cloudflare. Para cuantificar el speedup harían falta muchas más corridas.
 
 ---
 

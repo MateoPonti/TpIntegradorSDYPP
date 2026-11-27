@@ -1,0 +1,14 @@
+{
+  "cpu_miners": 8,
+  "run": 1,
+  "bulk": 1000,
+  "difficulty": "0000000",
+  "fragment_percent": 10.0,
+  "desde": 1795798067.953396,
+  "hasta": 1795798217.7337537,
+  "throughput_ingesta_tx_s": 119.1,
+  "tx_confirmadas": 1000,
+  "primera_tx_ts": 1795798068.616,
+  "ultimo_sello_ts": 1795798216.9013271,
+  "throughput_confirmado_tx_s": 6.743755561717893
+}

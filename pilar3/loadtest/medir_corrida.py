@@ -8,6 +8,10 @@ import time
 
 import confirmado
 
+# El sellado guarda su hora un instante después de que /status deja de mostrar el bloque en minado (27/11: el
+# bloque 811 quedó 0,5 s después del cierre). La corrida siguiente no sella nada antes de 10 s, así que no se mezclan.
+CLOCK_SLACK = 2.0
+
 
 def wait_ready(api, cpu, prefix, timeout=180):
     deadline = time.monotonic() + timeout
@@ -60,7 +64,7 @@ def main(argv=None):
         status = confirmado.get_json(options.base_url, "/status")
         if status["miners"]["gpu"] or status["miners"]["cpu"] != options.cpu_miners:
             raise RuntimeError("cambió la cantidad de mineros durante la corrida")
-        confirmed = confirmado.measure(options.base_url, since, until)
+        confirmed = confirmado.measure(options.base_url, since, until + CLOCK_SLACK)
         row = {"cpu_miners": options.cpu_miners, "run": run_number, "bulk": bulk,
                "difficulty": options.difficulty, "fragment_percent": options.fragment,
                "desde": since, "hasta": until, "throughput_ingesta_tx_s": result.throughput_tx_per_s,
