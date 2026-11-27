@@ -18,9 +18,16 @@ coordinator las agrupa en bloques y los mineros (CPU y GPU con CUDA) buscan el n
 |---|---|---|
 | **GKE (Google Cloud)**, node pool `apps` | coordinator ×2–5, pool ×2, gateway ×2–6 y notifier ×2, detrás de Traefik con HTTPS (**`https://35-223-237-60.sslip.io`**; el dominio de Cloudflare está en camino, Task 9) | código: `pilar2/services/{coordinator,pool,gateway,notifier}` · manifiestos: `pilar3/k8s/apps` y `pilar3/k8s/https` |
 | **GKE**, node pool `infra` | RabbitMQ ×3 (colas quorum con Raft) y Redis (AOF, 1 principal + 2 réplicas + 3 Sentinel), sin IP pública | `pilar3/k8s/infra` |
-| **GKE**, el cluster en sí | red, cluster, 2 node pools, Artifact Registry, Workload Identity | `pilar3/infra/terraform` (OpenTofu) · pipelines 1, 2 y 3 |
+| **GKE**, el cluster en sí | red, cluster, 2 node pools, Artifact Registry, Workload Identity | `pilar3/infra/terraform` (OpenTofu) · pipelines 1, 2 y 3 (ver la nota de abajo) |
 | **k3s local** | mineros CPU, de 0 a N réplicas, escalados por KEDA | imagen: `pilar2/services/miners/cpu` · despliegue: `pilar3/k3s-local` · pipeline 4 |
 | **PC del grupo** (GTX 1050 Ti) o Colab | minero GPU: `agent.py` + el binario CUDA | `pilar2/services/miners/gpu` · binario: `pilar1/gpu` |
+
+> **El cluster en vivo se armó a mano** (`tofu apply` y `kubectl apply` desde la terminal), no con los
+> pipelines: es el cluster que venía del TP3, con datos y con un `monitoring` compartido, y los créditos no
+> daban para levantar un segundo cluster para probar los pipelines contra algo descartable. Los pipelines
+> están y hacen lo mismo; el 27/11 se alinearon con lo que corre (el repositorio y el nombre de las imágenes,
+> el estado de OpenTofu en GCS y los values de lo que se instaló con Helm). Está explicado en
+> [`pilar3/README.md`](pilar3/README.md#el-cluster-en-vivo-se-armó-a-mano-b3-27112026).
 
 **Ningún minero corre en Google Cloud**: la prueba gratuita prohíbe minar y no tiene GPUs. Los
 mineros están afuera y solo hablan con el gateway por HTTPS (piden tareas, mandan resultados y
