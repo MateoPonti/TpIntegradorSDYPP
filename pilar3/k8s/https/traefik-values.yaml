@@ -34,11 +34,12 @@ service:
 # atendería en claro. Como el 301 sale para cualquier ruta, no delata qué rutas existen.
 ports:
   web:
-    redirections:
-      entryPoint:
-        to: websecure
-        scheme: https
-        permanent: true
+    http:
+      redirections:
+        entryPoint:
+          to: websecure
+          scheme: https
+          permanent: true
 nodeSelector:
   pool: apps
 resources:

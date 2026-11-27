@@ -141,7 +141,7 @@ def test_al_balanceador_solo_entra_cloudflare():
 
 
 def test_lo_que_entra_por_http_se_va_a_https():
-    redirect = TRAEFIK["ports"]["web"]["redirections"]["entryPoint"]
+    redirect = TRAEFIK["ports"]["web"]["http"]["redirections"]["entryPoint"]
     assert redirect["to"] == "websecure" and redirect["scheme"] == "https"
     assert redirect["permanent"] is True      # 301, que es lo que espera la verificación del profe
 
