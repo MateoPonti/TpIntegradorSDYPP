@@ -110,7 +110,7 @@ en el archivo).
 **Otra cuenta de GCP:** `infra/terraform` crea un cluster propio con los mismos node pools, discos de 30 GB
 `pd-standard` (para que la cuota de SSD no frene al autoscaler), el registry `tpi`, la identidad de GitHub
 y las dos IPs fijas (`tofu output static_ips`). La IP va a ser otra: hay que ponerla en
-`loadBalancerIP` de `k8s/https/traefik-values.yaml` y en los registros A de Cloudflare (desde el 27/11 los
+`loadBalancerIP` de `k8s/platform/traefik-values.yaml` y en los registros A de Cloudflare (desde el 27/11 los
 Services de las apps no piden IP pública, así que no hay nada que cambiar en `k8s/apps/`). La IP de
 `tpi-gateway` quedó sin uso.
 
@@ -131,7 +131,7 @@ reescribe: el commit queda como está y este párrafo es la corrección.
 | Dominio `sdmer.dpdns.org` | DigitalPlat FreeDomain, con los nameservers de Cloudflare | Gratis y es un dominio de verdad: Let's Encrypt lo firma y Cloudflare lo puede proxear. No se compró ninguno |
 | Ingress de los dos nombres | `k8s/https/dominio.yaml` (reemplaza a `ingress.yaml`) | `sdmer.dpdns.org` → coordinator, `/ws` → notifier, `gateway.sdmer.dpdns.org` → gateway. **Sin regla sin host**: la que había servía la IP pelada a cualquiera |
 | Certificado por DNS-01 | `k8s/https/cluster-issuer.yaml` (`letsencrypt-dns`) | Con el proxy de Cloudflare adelante y el redirect global a https, el desafío HTTP-01 depende de demasiadas cosas. DNS-01 solo necesita escribir un TXT |
-| Solo Cloudflare entra al LB | `k8s/https/traefik-values.yaml` (`loadBalancerSourceRanges`, 15 rangos; la Task 16 mueve este archivo a `k8s/platform/`) | Es lo que convierte al dominio en el único camino. Sin esto el resto es decoración |
+| Solo Cloudflare entra al LB | `k8s/platform/traefik-values.yaml` (`loadBalancerSourceRanges`, 15 rangos) | Es lo que convierte al dominio en el único camino. Sin esto el resto es decoración |
 | Todo http redirige a https | el mismo `traefik-values.yaml` (`ports.web.redirections`) | 301 para cualquier nombre y cualquier ruta, así que el redirect no delata qué rutas existen |
 | El gateway sin IP propia | `k8s/apps/gateway.yaml` (`type: ClusterIP`) | Tenía dos puertas: una con TLS y rate limit, y otra en claro que las salteaba |
 
@@ -176,7 +176,7 @@ $K -n tpi get certificate tpi-tls -w      # READY=True en 1-2 min. Si tarda: $K 
 
 # 2. Cerrar el LoadBalancer y prender el redirect. `helm upgrade` de Traefik toca su Service: GKE reescribe la
 #    regla de firewall del balanceador (unos segundos de cortes en los pedidos nuevos).
-helm upgrade --install traefik traefik/traefik -n traefik -f pilar3/k8s/https/traefik-values.yaml
+helm upgrade --install traefik traefik/traefik -n traefik --version 42.4.0 -f pilar3/k8s/platform/traefik-values.yaml
 $K -n traefik get svc traefik -o jsonpath='{.spec.loadBalancerSourceRanges}'   # tienen que estar los 15
 
 # 3. Recién ahora el gateway a ClusterIP: hasta que el dominio sirva, los mineros del k3s siguen entrando por
