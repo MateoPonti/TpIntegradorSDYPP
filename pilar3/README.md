@@ -132,7 +132,7 @@ reescribe: el commit queda como está y este párrafo es la corrección.
 | Ingress de los dos nombres | `k8s/https/dominio.yaml` (reemplaza a `ingress.yaml`) | `sdmer.dpdns.org` → coordinator, `/ws` → notifier, `gateway.sdmer.dpdns.org` → gateway. **Sin regla sin host**: la que había servía la IP pelada a cualquiera |
 | Certificado por DNS-01 | `k8s/https/cluster-issuer.yaml` (`letsencrypt-dns`) | Con el proxy de Cloudflare adelante y el redirect global a https, el desafío HTTP-01 depende de demasiadas cosas. DNS-01 solo necesita escribir un TXT |
 | Solo Cloudflare entra al LB | `k8s/https/traefik-values.yaml` (`loadBalancerSourceRanges`, 15 rangos; la Task 16 mueve este archivo a `k8s/platform/`) | Es lo que convierte al dominio en el único camino. Sin esto el resto es decoración |
-| Todo http redirige a https | el mismo `traefik-values.yaml` (`ports.web.redirections`) | 301 para cualquier nombre y cualquier ruta, así que el redirect no delata qué rutas existen |
+| Todo http redirige a https | el mismo `traefik-values.yaml` (`ports.web.http.redirections`) | 301 para cualquier nombre y cualquier ruta, así que el redirect no delata qué rutas existen |
 | El gateway sin IP propia | `k8s/apps/gateway.yaml` (`type: ClusterIP`) | Tenía dos puertas: una con TLS y rate limit, y otra en claro que las salteaba |
 
 Lo revisa `pilar3/tests/test_dominio.py` (sin cluster): que no quede ninguna URL vieja en el repo, que el
