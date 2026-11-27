@@ -28,6 +28,11 @@ spec:
       containers:
         - name: miner
           image: MINER_IMAGE
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           envFrom:
             - configMapRef:
                 name: miners-config
@@ -58,3 +63,23 @@ spec:
             limits:
               cpu: "1"
               memory: 256Mi
+          volumeMounts:
+            # Con la raíz de solo lectura, el agente necesita /tmp: ahí van los logs rotativos
+            # (LOG_DIR=/tmp/logs) y la clave Ed25519 del worker (/tmp/sdmer/<miner_id>.key, porque el HOME de
+            # la imagen no es escribible). La clave se pierde al reiniciarse el pod y el worker se da de alta
+            # de nuevo en su primer authorize, que es lo que ya pasaba antes de este cambio.
+            - name: tmp
+              mountPath: /tmp
+      # B2 (27/11): van al final del pod spec para no pisar el bloque de arriba, que lo cambia la Task 7.
+      serviceAccountName: miner-cpu
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+        - name: tmp
+          emptyDir: {}

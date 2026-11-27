@@ -67,6 +67,20 @@ spec:
       labels:
         app: redis
     spec:
+      serviceAccountName: redis
+      automountServiceAccountToken: false
+      # B2 (27/11): corre como el usuario `redis` de la imagen (uid 999, gid 1000; verificado con
+      # `docker run --rm --entrypoint sh redis:7.4-alpine -c 'id redis'`). Hasta ahora arrancaba como root:
+      # el entrypoint de la imagen solo baja a `redis` cuando el comando es `redis-server`, y acá el comando es
+      # `sh /scripts/redis.sh`, así que nunca bajaba. fsGroup deja el PVC y el emptyDir escribibles para ese
+      # grupo (Kubernetes le pone el grupo y g+rwX al montarlo, también a los archivos AOF que ya están).
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
       nodeSelector:
         pool: infra
       tolerations:
@@ -86,6 +100,18 @@ spec:
       containers:
         - name: redis
           image: redis:7.4-alpine
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            # Única excepción del endurecimiento (la lista está en pilar3/tests/test_manifiestos.py):
+            # estas imágenes escriben fuera de su PVC durante el arranque —RabbitMQ instala la cookie de
+            # Erlang y arma su config, Sentinel reescribe la suya— y no las escribimos nosotros, así que no
+            # sabemos todo lo que tocan. Probar la raíz de solo lectura acá significa probarlo en el cluster
+            # que tiene la cadena, y a 5 días de la entrega no es el momento. Queda en "Limitaciones" del
+            # README del Pilar 3 con el riesgo real: es el contenedor con más superficie, pero igual no
+            # corre como root, no puede escalar privilegios y no tiene ninguna capability.
+            readOnlyRootFilesystem: false
           command: ["sh", "/scripts/redis.sh"]
           env:
             - name: REDIS_PASSWORD
@@ -105,6 +131,7 @@ spec:
               cpu: 100m
               memory: 256Mi
             limits:
+              cpu: "1"
               memory: 512Mi
           volumeMounts:
             - name: data
@@ -113,6 +140,18 @@ spec:
               mountPath: /scripts
         - name: sentinel
           image: redis:7.4-alpine
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            # Única excepción del endurecimiento (la lista está en pilar3/tests/test_manifiestos.py):
+            # estas imágenes escriben fuera de su PVC durante el arranque —RabbitMQ instala la cookie de
+            # Erlang y arma su config, Sentinel reescribe la suya— y no las escribimos nosotros, así que no
+            # sabemos todo lo que tocan. Probar la raíz de solo lectura acá significa probarlo en el cluster
+            # que tiene la cadena, y a 5 días de la entrega no es el momento. Queda en "Limitaciones" del
+            # README del Pilar 3 con el riesgo real: es el contenedor con más superficie, pero igual no
+            # corre como root, no puede escalar privilegios y no tiene ninguna capability.
+            readOnlyRootFilesystem: false
           command: ["sh", "/scripts/sentinel.sh"]
           env:
             - name: REDIS_PASSWORD
@@ -132,6 +171,7 @@ spec:
               cpu: 20m
               memory: 32Mi
             limits:
+              cpu: "200m"
               memory: 64Mi
           volumeMounts:
             - name: sentinel
