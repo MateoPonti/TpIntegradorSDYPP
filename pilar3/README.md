@@ -15,7 +15,7 @@
 
 En los comandos de abajo, todo lo que dice `infra/terraform`, `k8s/` o `k3s-local/` está dentro de `pilar3/`.
 
-## Cómo está desplegado hoy (13/11/2026)
+## Cómo está desplegado hoy (actualizado el 27/11/2026)
 
 El TPI corre en el **cluster GKE del TP3** (proyecto `tp3distribuidos`, cluster `tp3`, zona `us-central1-a`),
 en su propio namespace **`tpi`**. El 17/11/2026 se sacó el TP3 del cluster (namespace `tp3`, su IP
@@ -33,6 +33,66 @@ en su propio namespace **`tpi`**. El 17/11/2026 se sacó el TP3 del cluster (nam
 | Prometheus, Grafana y Loki | Los que instaló el TP3 (namespace `monitoring`, siguen ahí). Leen nuestros pods con `k8s/observability/` |
 | Grafana | `http://136.80.214.178`, dashboard **TPI Blockchain** (usuario y clave en el secret `grafana-admin` de `monitoring`) |
 
+### Diagrama de la infraestructura (C8)
+
+```mermaid
+flowchart LR
+  subgraph afuera[Internet]
+    U[navegadores y bench.py]
+    GPU[PC con la GTX 1050 Ti<br/>y la RTX 4060 de InferHive]
+  end
+
+  CF[Cloudflare<br/>sdmer.dpdns.org y gateway.sdmer.dpdns.org<br/>proxy, TLS Full strict]
+
+  subgraph gke[GKE: cluster tp3, proyecto tp3distribuidos]
+    LB[LoadBalancer 35.223.237.60<br/>solo los 15 rangos de Cloudflare]
+    subgraph ns_traefik[namespace traefik]
+      T[Traefik<br/>http a https, /logs y /metrics 403]
+    end
+    CM[cert-manager<br/>Let's Encrypt por DNS-01]
+    subgraph apps[node pool apps: namespace tpi]
+      CO[coordinator x2, HPA<br/>líder coord:leader]
+      NO[notifier x2<br/>JSON-RPC por /ws]
+      GW[gateway x2, HPA<br/>préstamos y reaper]
+      PO[pool x2<br/>líder pool:leader]
+    end
+    subgraph infra[node pool infra: namespace tpi]
+      R[(Redis 1 principal + 2 réplicas<br/>Sentinel, AOF, PVC)]
+      MQ[(RabbitMQ x3<br/>colas quorum)]
+    end
+    subgraph mon[namespace monitoring]
+      P[Prometheus + Grafana<br/>Loki + Fluent Bit]
+    end
+  end
+
+  subgraph local[PC del grupo: k3d]
+    K[KEDA<br/>lee /scaling cada 5 s]
+    M[miner-cpu 0 u 8 pods]
+  end
+
+  U --> CF
+  GPU -->|HTTPS + WS, Bearer| CF
+  M -->|HTTPS + WS, Bearer| CF
+  K -->|GET /scaling| CF
+  K -.escala.-> M
+  CF --> LB --> T
+  T -->|sdmer.dpdns.org| CO
+  T -->|/ws| NO
+  T -->|gateway.sdmer.dpdns.org| GW
+  CM -.TXT _acme-challenge.-> CF
+  CO --- R
+  PO --- R
+  GW --- R
+  CO --- MQ
+  GW --- MQ
+  NO --- MQ
+  P -.scrapea /metrics por el Service.-> apps
+```
+
+Ningún minero corre en GCP: los CPU están en el k3d de una PC y las GPU en las PCs que las tienen, y todos
+entran por el mismo nombre que cualquiera (`gateway.sdmer.dpdns.org`). RabbitMQ y Redis son `ClusterIP` y las
+NetworkPolicies (B2) solo dejan llegar a las apps y a Prometheus.
+
 Diferencias con el starter, para que entre en ese cluster:
 - Los nodos tienen la etiqueta `pool=infra` / `pool=apps` y el taint `pool=infra` (no `role` / `dedicated`).
 - Los pods de las apps llevan `enableServiceLinks: false`: si no, Kubernetes inyecta `REDIS_PORT=tcp://…`
@@ -44,11 +104,11 @@ Diferencias con el starter, para que entre en ese cluster:
 ```bash
 K="kubectl --context gke_tp3distribuidos_us-central1-a_tp3"
 R=us-central1-docker.pkg.dev/tp3distribuidos/tp3; T=$(git rev-parse --short HEAD)
-for s in coordinator pool gateway; do
+for s in coordinator pool gateway notifier; do
   docker build -f pilar2/services/Dockerfile --build-arg SERVICE=$s -t $R/tpi-$s:$T . && docker push $R/tpi-$s:$T
 done
 $K apply -k pilar3/k8s/base && $K apply -k pilar3/k8s/infra         # namespace, RabbitMQ y Redis
-$K kustomize pilar3/k8s/apps | sed -E "s#REGISTRY/(coordinator|pool|gateway):latest#$R/tpi-\1:$T#" | $K apply -f -
+$K kustomize pilar3/k8s/apps | sed -E "s#REGISTRY/(coordinator|pool|gateway|notifier):latest#$R/tpi-\1:$T#" | $K apply -f -
 $K apply -k pilar3/k8s/observability                                  # PodMonitors y alertas
 ```
 
@@ -159,6 +219,11 @@ estén y ninguno sea `0.0.0.0/0`, y que ningún Service nuestro vuelva a pedir u
 2. **Cloudflare, SSL/TLS:** modo **Full (strict)**, "Always Use HTTPS" activado y WebSockets activados (vienen
    así; son los que hacen andar `/ws`). En Flexible, Cloudflare hablaría http con Traefik y el redirect global
    lo manda de vuelta a https: bucle de redirecciones.
+   **Security → Settings: Browser Integrity Check apagado**, y Bot Fight Mode apagado. Viene prendido y
+   contesta **403 (error 1010)** a cualquier cliente con `User-Agent: Python-urllib`: el agente de los mineros,
+   `tools/cuenta.py` y `bench.py` (que no se puede tocar). Pasó el 27/11: los 8 pods del k3s subieron y no
+   minaron nada, mientras que `curl` y el navegador andaban. Lo que protege de verdad sigue estando (token de
+   los mineros, firmas, rate limit del gateway y el LoadBalancer cerrado a Cloudflare).
 3. **El token de la API** con permisos `Zone:DNS:Edit` y `Zone:Zone:Read`, **solo** sobre esta zona, cargado a
    mano una vez. El de lectura hace falta porque cert-manager primero busca el ID de la zona y recién después
    escribe el TXT; sin eso falla con "zone not found" y el certificado nunca sale. **No se commitea** (regla 5
@@ -227,6 +292,24 @@ Cloudflare Free tiene dos límites que nos pueden pegar: el **body de 100 MB** y
 alternativa ya no es la IP pelada (no existe más): se corre `bench.py` **desde un pod del cluster** contra
 `http://coordinator.tpi.svc.cluster.local`, que es lo que ya hacía `loadtest/completa/correr.sh` para la
 medición interna, y se anota en los resultados que el bulk grande se midió por adentro y por qué.
+
+**Medido el 27/11/2026 (13:00 a 13:13), por `https://sdmer.dpdns.org`, desde una PC con 32 hilos:**
+
+| Bulk | Aceptadas (202) | Errores | Envío | Ingesta | p50 / p95 / p99 |
+|---:|---:|---:|---:|---:|---|
+| 10.000 | 10.000 | 0 | 82,8 s | 120,8 tx/s | 259 / 293 / 374 ms |
+| 100.000 | 99.972 | 28 (0,03 %) | 804,5 s | 124,3 tx/s | 252 / 286 / 354 ms |
+
+No pegó ningún límite de Cloudflare: `bench.py` manda **una tx por pedido** (32 en paralelo), así que cada
+body es de unos 80 bytes y cada respuesta tarda ~250 ms. Los 100 MB y los 100 s serían un problema solo con
+`POST /transactions/bulk`, que `bench.py` no usa. Los 28 errores **no** los rechazó el coordinator
+(`tx_rejected_total` no subió en ninguna réplica), así que se cortaron antes de llegar; coinciden con el HPA
+subiendo el coordinator de 2 a 5 réplicas y no se pudo saber más porque `bench.py` no guarda el motivo.
+**Cloudflare sí baja la ingesta a la mitad:** el 20/11, por la IP directa, el mismo bulk daba ~240 tx/s con p50
+de ~110 ms (`resultados/2026-11-20-completa/bulks_cpu.csv`); ahora da ~124 tx/s con p50 de ~250 ms. Con 32
+pedidos en paralelo la ingesta es más o menos 32 ÷ latencia, así que los ~140 ms que agrega el ida y vuelta por
+el proxy se notan enteros. No es un límite del sistema: subir `--concurrency` o medir desde un pod del cluster
+(`loadtest/completa/correr.sh`) lo esquiva. Para comparar con el 20/11 hay que medir igual que entonces.
 
 ### Limitaciones que quedan
 
@@ -440,7 +523,7 @@ infra/terraform/     provider.tf, variables.tf, main.tf, outputs.tf (estructura 
                      Workload Identity Federation para GitHub Actions
 k8s/base             namespace tpi (GKE)
 k8s/infra            RabbitMQ y Redis (con persistencia) en el pool infra, sin exponer
-k8s/apps             coordinator y gateway (con HPA y LoadBalancer público) y pool, en el pool apps
+k8s/apps             coordinator, gateway (con HPA, ClusterIP detrás de Traefik), pool y notifier, en el pool apps
 k3s-local/           mineros CPU en SU k3s local: Deployment + KEDA (lee GET /scaling del gateway)
 .github/workflows    ci (gitleaks + tests) y los Pipelines 1 a 4 del enunciado
 loadtest/            bench.py, matrix.sh y plot.py para la sección 3.3
@@ -596,7 +679,7 @@ Criterio del contrato: **≤ 70 s** (60 s del pool + el `pollingInterval` de 5 s
 
 | Fecha y hora | Antes (`cooldownPeriod: 120`) | Después (`cooldownPeriod: 5`) |
 |---|---|---|
-| _(completar con la corrida)_ | ~180 s (lo que midió el profe el 21/11) | _(completar: tiene que dar ≤ 70 s)_ |
+| 27/11/2026 12:54, 12:56 y 12:57 (bloques 612, 615 y 616, 8 pods, por `sdmer.dpdns.org`) | ~180 s (lo que midió el profe el 21/11) | **71 s, 60 s y 65 s → mediana 65 s** ✓. La de 71 s fue la primera, con los pods arrancando en frío |
 
 ## Contrato mínimo que el starter espera de sus servicios
 

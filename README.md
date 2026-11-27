@@ -2,7 +2,7 @@
 
 Sistemas Distribuidos y Programación Paralela · UNLu · Mercedes 2C 2026.
 Grupo: Mateo Ponti, María Agustina Ortiz, Federico Kasparian, Justino Bernal.
-Entrega: **viernes 27/11/2026**.
+Entrega: **viernes 04/12/2026** (se movió del 27/11).
 
 Una blockchain con Proof of Work (MD5) en la que varios mineros trabajan juntos sobre el mismo
 bloque, cada uno en un rango de nonces distinto. Los usuarios mandan transferencias, el
@@ -30,7 +30,7 @@ coordinator las agrupa en bloques y los mineros (CPU y GPU con CUDA) buscan el n
 > [`pilar3/README.md`](pilar3/README.md#el-cluster-en-vivo-se-armó-a-mano-b3-27112026).
 
 **Ningún minero corre en Google Cloud**: la prueba gratuita prohíbe minar y no tiene GPUs. Los
-mineros están afuera y solo hablan con el gateway por HTTPS (piden tareas, mandan resultados y
+mineros están afuera y solo hablan con el gateway por HTTPS y WebSocket (reciben las tareas, mandan resultados y
 avisan que están vivos), con un token. Cualquiera se puede sumar desde `/unirse`: crea su cuenta con claves
 Ed25519 y recibe un token propio para su worker. RabbitMQ y Redis no se exponen.
 
@@ -74,6 +74,40 @@ curl http://127.0.0.1:18080/status
 Reglas para cualquier IA que use el grupo: [`AGENTS.md`](AGENTS.md).
 
 ## Uso de IA
+
+### Mateo — Claude Code (Opus 5.5), del 06/11 al 27/11/2026
+
+Usé Claude Code (CLI, modelo Claude Opus 5.5) durante todo el TP, con `AGENTS.md` como reglas fijas: cada
+regla dice si sale del enunciado, del kit o del grupo, y la IA no podía decidir las dudas abiertas por su
+cuenta, solo proponer opciones.
+
+Para qué partes:
+
+- **Pilar 1:** los 3 TODO del kernel (`pilar1/gpu/miner_gpu.cu`: MD5 de varios bloques, grid-stride en
+  `uint64_t` y corte temprano con `atomicCAS`), las mediciones CPU contra GPU y las de la RTX 4060 de InferHive
+  (PR #12).
+- **Pilar 2:** cuentas con clave Ed25519 y billetera `/cuenta`, notifier por websocket (punto 3), cuenta
+  compartida, `/unirse` y alta pública de workers, halving y comisión, y el hashrate real del pool.
+- **Pilar 3:** RabbitMQ con 3 nodos y Redis con Sentinel en el cluster del TP3, HTTPS con Traefik y
+  cert-manager, las pruebas de carga del 20/11 (CPU y GPU), sacar DuckDNS (PR #9) y, el 27/11, aplicar el
+  dominio de Cloudflare de la Task 9 en el cluster (secret del token, issuer DNS-01, Traefik solo para
+  Cloudflare y gateway a `ClusterIP`).
+- **Documentación:** `docs/decisiones.docx`, `docs/componentes.docx`, `docs/contrato-1.md`, los diagramas
+  (`docs/diagrama-completo.excalidraw`) y, en la Task 19, el diagrama Mermaid del Pilar 3 y la fila i del
+  contrato.
+
+Cómo validé lo generado:
+
+- **Pilar 1:** `make test`, `make check-oracle` y `make check` (17/17) antes de dar el kernel por terminado,
+  y las mediciones con la mediana de 5 corridas y las mismas bases y rangos en CPU y GPU.
+- **Servicios:** `pytest -q pilar2/tests pilar3/tests` y el CI (tests + gitleaks) en cada PR.
+- **Cluster:** después de cada cambio, verificar en vivo: `/status`, que se selle un bloque y, en el dominio,
+  el 301 de http, el 403 de `/logs` y `/metrics` y el timeout de sslip.io y de las IPs viejas.
+- Le pedí a la IA que dijera cada comando de `kubectl`, `helm`, `tofu` o `gcloud` antes de correrlo, y los
+  que borraban o publicaban algo los aprobé uno por uno.
+
+Lo que corregí o decidí yo: las decisiones de diseño las tomamos en grupo y están en `docs/decisiones.docx`
+con su fecha; la IA proponía opciones. _(Completar: qué cambiaste a mano de lo que propuso.)_
 
 ### Justino — Codex (26/11/2026)
 

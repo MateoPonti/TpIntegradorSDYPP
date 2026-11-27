@@ -204,16 +204,8 @@ async function showBlock(i, scroll) {
     ["Premio", b.reward_cents == null ? "—" : `${money(b.reward_cents)}${b.subsidy_cents != null
       ? ` = ${money(b.subsidy_cents)} de subsidio + ${money(b.fees_cents)} de comisiones` : ""} (se paga en el bloque ${b.index + 1})`],
     ["Rearmado", b.rearmed ? `sí, ${b.rearmed} vez/veces (se fue hashrate)` : "no"],
-    ["Comprobación", '<span id="verif" class="muted">recalculando…</span>'],
   ];
   $("blockInfo").innerHTML = rows.map(([k, v]) => `<tr><th>${k}</th><td>${v}</td></tr>`).join("");
-  // 21/11: se recalcula de verdad (GET /blocks/<i>/verify) en vez de mostrar la fórmula como texto fijo
-  get(`/blocks/${b.index}/verify`).then((v) => {
-    const nombres = { tx_digest: "SHA-256 de las tx", md5: "md5(hash anterior + tx_digest + nonce) = hash", prefijo: "empieza con el prefijo", enlace: "enlace con el bloque anterior", genesis: "génesis" };
-    if ($("verif")) $("verif").innerHTML = Object.entries(v.checks).map(([k, ok]) =>
-      `<span class="tag ${ok ? "ok" : "bad"}">${ok ? "✓" : "✗"} ${nombres[k] || k}</span>`).join(" ") +
-      ' <span class="muted">(desde afuera: pilar2/tools/verify_chain.py)</span>';
-  }).catch(() => { if ($("verif")) $("verif").textContent = "no se pudo recalcular"; });
   $("txTitle").textContent = `Transacciones (${b.transactions.length - rewards.length} de usuarios, ${rewards.length} de premio)`;
   $("blockTxs").innerHTML = "<tr><th>#</th><th>tx_id</th><th>Tipo</th><th>De</th><th>Para</th><th class=\"num\">Monto</th><th class=\"num\">Comisión</th></tr>" +
     b.transactions.map((t, n) => `<tr><td>${n + 1}</td><td class="mono">${esc(t.tx_id)}</td>

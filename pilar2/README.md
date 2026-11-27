@@ -117,13 +117,13 @@ flowchart LR
   C -->|task.any| X{{exchange blockchain}}
   X --> T[(mining.tasks)]
   T -->|basic_get + lease| G[gateway 2 a 6, HPA<br/>reaper]
-  G -->|HTTP pull + Bearer| M1[miner-cpu<br/>k3s local]
-  G -->|HTTP pull + Bearer| M2[wrapper + miner_gpu<br/>PC 1050 Ti]
+  G -->|WSS mining.notify + Bearer| M1[miner-cpu<br/>k3s local]
+  G -->|WSS mining.notify + Bearer| M2[agente + miner_gpu<br/>PC 1050 Ti]
   M1 & M2 -->|POST /results| G
   G -->|result.*| X --> R[(mining.results)] --> C
   C -->|block.solved<br/>outbox| X --> E[(block.events.pod)] --> G
   E --> NT[notifier 2 fijas]
-  NT -->|WSS /ws: avisos| N
+  NT -->|WSS /ws: JSON-RPC 2.0| N
   T -.3 intentos.-> D[(mining.dlq)]
   C & G & P[pool 2 fijas<br/>líder: pool:leader] --- RD[(Redis AOF<br/>principal + 2 réplicas<br/>3 Sentinel)]
   P -->|pool:plan / pool:scaling| RD
@@ -568,6 +568,10 @@ cobra lo mismo que el que estuvo desde el principio. Con **PPLNS** lo que cuenta
 
 ### WebSocket de los mineros (punto 4 del Contrato SDMER, 20/11/2026)
 
+> Desde el 26/11 (A3-c y A3-f, Task 14) esto quedó viejo: el worker firma un desafío y el gateway le **empuja**
+> las tareas con `mining.notify`; pedir por HTTP queda solo de respaldo si se corta el WebSocket. El protocolo
+> actual está en la tabla de endpoints (`WS /ws/miners`). Lo de abajo es cómo era el 20/11.
+
 `WS /ws/miners` en el gateway, con el mismo `Authorization: Bearer`. Solo avisa:
 - `{"type": "tareas"}` cada `WS_NOTICE_SECONDS` (1 s) mientras haya tareas en la cola. Sin tarea, el agente espera el
   aviso en vez de preguntar cada 1 s (igual pregunta cada `IDLE_WS_SECONDS`, 15 s, por si se perdió uno).
@@ -632,6 +636,6 @@ en "admitiendo").
   `pilar3/loadtest/resultados/2026-11-20-completa/README.md`.
 - **Limitación conocida:** perder el `.key` es perder la cuenta. No hay recuperación ni cambio de clave (decidido
   el 20/11: como en Bitcoin).
-- **Limitación conocida:** la calibración confía en los `hashes` y `engine_seconds` que informa el minero. Uno
+- **Limitación conocida (acotada el 26/11):** la calibración confía en los `hashes` y `engine_seconds` que informa el minero. Desde B1.2 el hashrate que usan el pool y Vardiff sale de las **shares verificadas**, así que esto solo pesa hasta que el worker entrega sus primeras shares. Uno
   que mienta puede inflar su hashrate inicial hasta que lo atrapa un canario (en la prueba local, en su primera
   tarea real).
