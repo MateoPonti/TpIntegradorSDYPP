@@ -113,6 +113,10 @@ pregunte cada segundo.
 medio / lento, hashrate real por resultados entregados, premio proporcional a los nonces completados. **Falta el
 websocket**, y la verificación hoy es por muestreo (1 de cada 20 tareas).
 
+> Al 27/11 esto ya quedó viejo: el WebSocket empuja el trabajo (c), la verificación es continua con shares (B1.2),
+> Vardiff le pone a cada worker su largo de share (d) y el premio se reparte con **PPLNS** (e). El detalle de cada
+> punto está en la tabla de "Cambios respecto de la v1".
+
 **Protocolo de referencia: Stratum**, el protocolo que usan todos los pools de minería reales. Tiene cada pieza de
 este punto:
 
@@ -122,7 +126,7 @@ este punto:
 | **`mining.notify`** | El **pool le empuja** el trabajo nuevo por la conexión abierta (no hay que preguntar) | Hoy: `GET /tasks/next` cada 1 s |
 | **`mining.submit` de "shares"** | El worker manda hashes que cumplen una dificultad **más fácil** que la del bloque. Cada share **prueba** que trabajó: el pool la verifica con un hash | Hoy: canarios por muestreo |
 | **`mining.set_difficulty` (vardiff)** | El pool le ajusta a **cada worker** su dificultad de shares según su potencia, para que mande una cada pocos segundos | Calibración + clase |
-| Pago por shares: **PPS, PPLNS, FPPS** | Se reparte según las shares de cada worker | Premio proporcional a los nonces completados |
+| Pago por shares: **PPS, PPLNS, FPPS** | Se reparte según las shares de cada worker | **PPLNS** con ventana de 2 bloques de trabajo (27/11, Task 12) |
 
 **Stratum V2** (la versión nueva) suma cifrado de la conexión (protocolo Noise) y mensajes binarios más chicos.
 
@@ -134,8 +138,10 @@ este punto:
   quedan como control extra.
 - **Vardiff para la clasificación**: la dificultad de shares de cada worker sale de su hashrate, y su clase
   queda a la vista.
-- **PPLNS para la recompensa**: el premio se reparte según las shares de los últimos N bloques, lo que premia a
-  los que minan seguido.
+- **PPLNS para la recompensa**: el premio se reparte según las shares de la última ventana de trabajo, lo que
+  premia a los que minan seguido. **Implementado el 27/11** (punto e de la tabla de cambios): la ventana se mide en
+  trabajo (`N × 16^largo del prefijo`, N = 2) y no en cantidad de bloques, porque con prefijo automático dos
+  bloques pueden costar 16 veces distinto.
 
 ---
 
@@ -163,7 +169,7 @@ se corrige el texto explicando por qué cambió. Cada fila se completa en el PR 
 | b | El frontend deja de hacer polling | En curso (Task 13) | |
 | c | El gateway empuja el trabajo (`mining.notify`) | **Implementado.** Con el WebSocket autorizado, el gateway le manda cada tarea al worker con `mining.notify` (una a la vez por conexión; la siguiente apenas cierra el préstamo de la anterior). El agente ya no pide; si el WebSocket se corta, vuelve a pedir por HTTP. La entrega sigue por HTTP (`POST /results`), porque ya tiene préstamo, dueño y reintentos. | 26/11, Task 14 |
 | d | Vardiff (dificultad de shares por worker) | **Implementado.** El gateway le pone a cada tarea el largo de share del worker según su hashrate **medido con shares verificadas** (B1.2), para ~10 shares por segundo, con 8 a 256 shares por tarea. El peso de cada share (16^largo) compensa, así que el premio no cambia. Limitación: el prefijo es hex, así que cada paso es 16 veces más difícil y no es una dificultad continua como la de Stratum. | 26/11, Task 11 |
-| e | Recompensa PPLNS | En curso (Task 12) | |
+| e | Recompensa PPLNS | **Implementado.** El premio ya no se reparte entre los que trabajaron en ese bloque (PROP) sino entre las últimas `PPLNS_N` veces el trabajo que cuesta un bloque (`N × 16^largo del prefijo`, con **N = 2**), sin importar en qué bloque se hizo: con PROP a un worker le convenía entrar recién cuando el bloque estaba por salir y cobrar lo mismo que el que estuvo desde el principio (*pool hopping*), y con PPLNS esa jugada no paga. La ventana es una lista en Redis (`pplns:window`, hasta 100.000 entradas) donde cada resultado verificado deja `<cuenta>|<peso>|<minero>`; se recorre de lo más nuevo a lo más viejo y la entrada con la que se llega al tope se cuenta **parcial**. Si un bloque no tiene a quién pagarle, su premio **no se pierde**: queda en `reward:carry` y lo paga el primer bloque con reparto (C4). Los mineros en cuarentena quedan afuera de la ventana, como antes quedaban afuera del reparto del bloque. **Cambio respecto de la v1:** la v1 decía "los últimos N bloques"; la ventana se mide en **trabajo**, no en cantidad de bloques, porque con prefijo automático dos bloques pueden costar 16 veces distinto y "N bloques" no sería una medida estable. | 27/11, Task 12 |
 | f | `authorize` firmado con desafío y resultados firmados | **Implementado.** Cada conexión trae un desafío al azar (`mining.challenge`) y el worker lo firma con su clave Ed25519 (`mining.authorize`). La clave queda atada al worker la primera vez (TOFU, como `known_hosts`). Cada resultado va firmado (tarea, nonce y hash de las shares) y sin firma válida da `401`. **Cambio respecto de la v1:** la clave del worker no se registra en el alta (`/unirse`) sino en su primer `authorize`, así sirve igual para los pods del k3s. | 26/11, Task 14 |
 | g | Nonce + id de cadena (EIP-155) | **Implementado.** Todo lo que se firma (registro, tx, alta de workers, cuentas compartidas, propuestas, colectas) lleva adelante `sdmer:<CHAIN_ID>:`, con `CHAIN_ID = 2026` (variable de entorno). El servidor lo agrega en un solo lugar (`firmas.verify`) y el navegador también (`firmar` en `claves.js`), así ningún mensaje queda sin él. El front y `tools/cuenta.py` lo leen de `GET /chain-id`. Una firma de otra red, o una de antes del cambio, da `400`. El nonce por cuenta ya estaba (`seq`). | 26/11, Task 2 |
 | h | KEDA: 0 mineros CPU a los 60 s | En curso (Task 3) | |
