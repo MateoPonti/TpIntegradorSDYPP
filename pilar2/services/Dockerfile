@@ -9,6 +9,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY pilar2/services/tpi_common ./tpi_common
 COPY pilar2/services/${SERVICE} ./${SERVICE}
 ENV PYTHONUNBUFFERED=1 LOG_DIR=/tmp/logs SERVICE=${SERVICE}
-USER 1000
+# B2 (27/11): 10001, el mismo uid que el securityContext de los manifiestos. Por encima de
+# 10000 para no pisar un usuario del host si alguna vez se monta un volumen compartido.
+USER 10001
 EXPOSE 8080
 CMD ["sh", "-c", "exec uvicorn ${SERVICE}.main:app --host 0.0.0.0 --port 8080 --no-access-log"]

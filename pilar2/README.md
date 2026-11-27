@@ -56,7 +56,7 @@ REDIS_URL=redis://localhost:6379/15 python -m pytest -q pilar2/tests/test_lua.py
 TPI_E2E_URL=http://127.0.0.1:18080 python -m pytest -q pilar2/tests     # + integración y doble gasto (compose levantado)
 # Caídas en GKE (mata un pod de cada servicio y verifica la cadena). Necesita un minero conectado.
 # 13/11: 6/6 (doble gasto + coordinator, pool, gateway, RabbitMQ y Redis).
-TPI_E2E_URL=http://35.223.237.60 TPI_K8S_CONTEXT=gke_tp3distribuidos_us-central1-a_tp3 \
+TPI_E2E_URL=https://sdmer.dpdns.org TPI_K8S_CONTEXT=gke_tp3distribuidos_us-central1-a_tp3 \
   python -m pytest -v pilar2/tests/test_sistema.py
 ```
 
@@ -103,7 +103,7 @@ GKE no se volvieron a correr después de este cambio (la última, 6/6, es del 13
   completa los movimientos.
 - **Grafana.** El panel "Altura de la cadena" sumaba `blocks_sealed_total`, que vuelve a 0 al reemplazar un pod.
   Ahora usa `chain_height`, la altura que guarda Redis.
-- **Mineros del k3s.** Van por HTTPS (`https://gateway.35-223-237-60.sslip.io`), KEDA usa un `scaling-token` propio
+- **Mineros del k3s.** Van por HTTPS (`https://gateway.sdmer.dpdns.org`, A2 del 27/11), KEDA usa un `scaling-token` propio
   en vez del token de los mineros, y el pipeline 4 reemplaza la URL que haya (antes buscaba un marcador que ya no
   estaba).
 
@@ -277,9 +277,11 @@ prefijo y enlace) · `GET /chain` · `GET /status` (con Redis caído responde ig
   - Un minero **zombie** (keep-alive sin entregar trabajo) no cuenta como vivo: si es una GPU colgada, el pool
     pide mineros CPU apenas le vence la tarea, sin esperar a la cuarentena.
   - Si se le rompe el motor, el agente no se muere: devuelve la tarea con `release` y sigue.
-- **Premio proporcional** (13/11): `BLOCK_REWARD_CENTS` por bloque, repartido según el trabajo de cada minero
-  antes del sellado. Desde el 20/11 el trabajo se mide con **shares** verificadas (ver "Shares" más abajo); antes
-  era el tamaño de los rangos que decía haber recorrido.
+- **Premio PPLNS** (27/11, A3-e; de 13/11 al 26/11 era proporcional al trabajo de ese bloque, PROP):
+  `BLOCK_REWARD_CENTS` por bloque, repartido entre las últimas `PPLNS_N` (2) veces el trabajo que cuesta un
+  bloque (`N × 16^largo del prefijo`), **sin importar en qué bloque se hizo ese trabajo**. El trabajo se mide con
+  **shares** verificadas (ver "Shares" y "Premio PPLNS" más abajo); antes del 20/11 era el tamaño de los rangos
+  que el minero decía haber recorrido.
   Se paga con tx `sender="recompensa"` → la **cuenta de cobro** del minero al principio del bloque siguiente; el
   resto del redondeo va al que encontró el nonce. La cuenta de cobro es `MINER_ACCOUNT` del agente (por defecto
   `miner:<id>`): los 8 pods de KEDA de una PC y su GPU, con `MINER_ACCOUNT=mateo`, suman sus partes y cobran
@@ -396,7 +398,7 @@ propio**; (3) copiar el comando para minar con CPU o GPU.
 ### Notificaciones por websocket (punto 3 del Contrato SDMER, 20/11/2026)
 
 Como dice el Word ampliado del contrato: un servicio **notifier** (2 réplicas) atiende los websockets de los
-navegadores en `/ws` (Traefik lo pasa por HTTPS: `wss://35-223-237-60.sslip.io/ws`). No decide nada: escucha
+navegadores en `/ws` (Traefik lo pasa por HTTPS: `wss://sdmer.dpdns.org/ws`). No decide nada: escucha
 `block.solved` y avisa. Desde el 26/11, el protocolo es **JSON-RPC 2.0**. Explorador y cuentas se actualizan por
 avisos o acciones del usuario: con WebSocket conectado no hay polling. Durante un corte hay un solo fallback
 de 15 s por página, que se elimina al reconectar. Las fotos iniciales recuperan el estado vigente.
@@ -527,7 +529,7 @@ los nonces de su rango cuyo hash empieza con ese prefijo (como las shares de Str
 - El largo se elige para que salgan unas `SHARES_PER_TASK` (32) por tarea: `round(log16(rango / 32))`, entre 1 y el
   largo del prefijo del bloque. Con tareas GPU de 1.000 M y prefijo de 8 ceros sale `000000` (~60 shares).
 - Cada share **pesa 16^largo**, lo que cuesta encontrarla en promedio (ponderada por dificultad, como P2Pool). Así
-  da igual el largo: lo que se cobra en promedio es lo que se minó. El reparto sigue siendo **PROP**.
+  da igual el largo: lo que se cobra en promedio es lo que se minó.
 - El coordinator recalcula el MD5 de cada share (a lo sumo 256 por resultado: es barato), las que no cumplen o están
   fuera del rango no cuentan y la misma share no se paga dos veces en un bloque (`block:<i>:sharenonces`).
 - Un minero que contesta "no encontré" sin minar no tiene shares y **no cobra**. Los canarios siguen: las shares
@@ -535,6 +537,34 @@ los nonces de su rango cuyo hash empieza con ese prefijo (como las shares de Str
 - Motores: `miner_gpu --share-prefix <hex> --max-shares N` y lo mismo en `miner_cpu.py`. Sin el flag la salida es
   la del kit (`make check` 17/17). En la GPU cuesta ~5 % (0,93 s contra 0,88 s por 1.000 M).
 - Un agente viejo, sin shares, mina pero no cobra: hay que actualizar la imagen `miner-cpu` del k3s.
+
+### Premio PPLNS (punto e del contrato, 27/11/2026)
+
+Hasta el 26/11 el premio de un bloque se repartía entre los que habían trabajado **en ese bloque** (PROP). El
+problema de PROP es el *pool hopping*: a un worker le conviene entrar recién cuando el bloque está por salir y
+cobra lo mismo que el que estuvo desde el principio. Con **PPLNS** lo que cuenta es el trabajo sostenido.
+
+- **La ventana se mide en trabajo, no en bloques.** Es `PPLNS_N × 16^largo del prefijo` del bloque que se paga,
+  con `PPLNS_N = 2`. La v1 del contrato decía "los últimos N bloques", pero con prefijo automático dos bloques
+  pueden costar 16 veces distinto, así que "N bloques" no es una medida estable.
+- **Dónde vive:** `pplns:window`, una lista de Redis con la entrada más nueva primero. Cada resultado con shares
+  verificadas deja una entrada `<cuenta>|<peso>|<minero>` (`SHARES_LUA`, el mismo script que ya sumaba el trabajo
+  del bloque). Se recorta a `PPLNS_MAX_ENTRIES` (100.000) para que no crezca para siempre, y **no** se borra al
+  sellar: justamente tiene que sobrevivir de un bloque al siguiente.
+- **La cuenta se resuelve al trabajar, no al pagar.** Lo trabajado se cobra en la cuenta que el minero tenía
+  declarada mientras trabajaba; cambiar `MINER_ACCOUNT` no se lleva lo viejo.
+- **La entrada del borde se cuenta parcial.** Al llegar al tope de la ventana, de la última entrada entra solo el
+  peso que falta. Si no, una entrada grande justo en el corte cobraría de más y el reparto dependería de dónde
+  cae el límite.
+- **Los mineros en cuarentena quedan afuera.** Con PROP, poner a un minero en cuarentena le borraba el trabajo
+  del bloque y así no cobraba (`quarantine.penalize`); la ventana no puede ser la puerta de atrás para que cobre
+  igual. Al pagar se saltean sus entradas (un `EXISTS` por minero distinto, no por entrada).
+- **Un premio nunca desaparece (C4).** Si en la ventana no hay nadie a quien pagarle —la cadena recién arranca,
+  o el bloque lo resolvió un worker en prueba, o todo el trabajo es de mineros en cuarentena— el bloque **no**
+  emite transacciones de premio y su `reward_cents` queda en `reward:carry`. El primer bloque con reparto paga
+  `reward_cents + carry` y deja el carry en 0. Las dos cosas las hace `SEAL_LUA`, en el mismo script atómico que
+  escribe el bloque, y los centavos se calculan desde las transacciones que **de verdad** quedaron en el lote que
+  se sella: si el líder se cae entre armar y sellar, el premio no se duplica ni se pierde.
 
 ### WebSocket de los mineros (punto 4 del Contrato SDMER, 20/11/2026)
 

@@ -21,7 +21,8 @@ from tpi_common.config import DIFFICULTY_PREFIX, env_float, env_int, env_str
 from tpi_common.logs import log
 from tpi_common.store import alive_workers
 
-from .reward import REWARD_SENDER, block_subsidy, miner_account, reward_transactions, shares_by_account
+from .reward import (REWARD_SENDER, block_subsidy, miner_account, pplns_split, pplns_window_weight,
+                     reward_txs)
 
 MAX_TX_PER_BLOCK = env_int("MAX_TX_PER_BLOCK", 1000)
 BLOCK_WINDOW = env_float("BLOCK_WINDOW_SECONDS", 10)
@@ -36,6 +37,9 @@ QUARANTINE_MAX_SECONDS = env_int("QUARANTINE_MAX_SECONDS", 3600)
 DEFAULT_RANGE_SIZE = env_int("DEFAULT_RANGE_SIZE", 1_000_000)  # si todavía no hay pool:plan
 TASKS_PER_MINER = env_int("TASKS_PER_MINER_BATCH", 2)  # tamaño de tanda = mineros vivos x esto
 SHARES_PER_TASK = env_int("SHARES_PER_TASK", 32)  # el prefijo de las shares se elige para que salgan ~tantas
+PPLNS_N = env_int("PPLNS_N", 2)                   # la ventana es N veces el trabajo que cuesta un bloque
+PPLNS_MAX_ENTRIES = env_int("PPLNS_MAX_ENTRIES", 100_000)  # tope de la lista, para que no crezca para siempre
+PPLNS_PAGE = 2000  # la ventana se lee por páginas: se corta en cuanto junta el peso, no lee las 100.000
 GENESIS_USERS = env_int("GENESIS_USERS", 97)  # user-0..user-96, como bench.py
 GENESIS_BALANCE_CENTS = env_int("GENESIS_BALANCE_CENTS", 100_000_000)
 NONCE_LIMIT = 2**63 - 1  # INCRBY de Redis es int64 con signo
@@ -86,10 +90,14 @@ return 1
 """
 
 # KEYS: chain:tip, mining:current, chain, block:<i>, hash:<h>, tx:inflight:<i>, tx:status, block:<i>:next_from,
-#       block:<i-1>:shares (ya pagado en este bloque), events:outbox, block:<i-1>:sharenonces
-# ARGV: prev_hash, block_id, block_json, block_hash, index, evento block.solved (JSON)
+#       block:<i-1>:shares (ya pagado en este bloque), events:outbox, block:<i-1>:sharenonces, reward:carry
+# ARGV: prev_hash, block_id, block_json, block_hash, index, evento block.solved (JSON),
+#       centavos a sumar al carry, centavos a sacarle
 # El evento se guarda en el outbox en el mismo script que sella (transactional outbox): si el pod muere antes
 # de publicarlo en RabbitMQ, el bloque y su evento quedan los dos, y otro lo publica después.
+# El carry (C4) se mueve acá y no al armar el bloque: lo que vale es el lote que se sella. Si el líder se cae
+# entre armar y sellar, el premio no se duplica ni se pierde, porque la plata se suma o se resta en el mismo
+# script atómico que escribe el bloque.
 SEAL_LUA = """
 if redis.call('GET', KEYS[1]) ~= ARGV[1] then return -1 end
 local cur = redis.call('GET', KEYS[2])
@@ -116,21 +124,30 @@ for _, raw in ipairs(txs) do
   redis.call('HSET', KEYS[7], tx['tx_id'], ARGV[5])
 end
 redis.call('DEL', KEYS[6], KEYS[2], KEYS[8], KEYS[9], KEYS[11])
+if tonumber(ARGV[7]) > 0 then redis.call('INCRBY', KEYS[12], ARGV[7]) end
+if tonumber(ARGV[8]) > 0 then redis.call('DECRBY', KEYS[12], ARGV[8]) end
 redis.call('RPUSH', KEYS[10], ARGV[6])
 return #txs
 """
 SEAL_ERRORS = {-1: "tip cambió", -2: "bloque viejo", -3: "hash repetido"}
 
-# KEYS: block:<i>:sharenonces, block:<i>:shares   ARGV: minero, peso, nonces...
+# KEYS: block:<i>:sharenonces, block:<i>:shares, pplns:window   ARGV: minero, peso, cuenta, tope, nonces...
 # Suma el peso de cada share que todavía no se había pagado en ese bloque (la misma share no cobra dos veces).
 # Sin vencimiento (21/11): son el derecho a cobrar el premio, que se paga al armar el bloque siguiente, y ese bloque
 # puede salir mucho después (sin tx no hay bloques). Se borran en SEAL_LUA del bloque siguiente, ya pagadas.
+# El hash por bloque queda como registro de quién trabajó en cada uno (lo usa quarantine.penalize); lo que decide
+# el premio desde el 27/11 es la ventana PPLNS, que es una sola para toda la cadena y no se borra al sellar.
 SHARES_LUA = """
 local n = 0
-for i = 3, #ARGV do
+for i = 5, #ARGV do
   if redis.call('SADD', KEYS[1], ARGV[i]) == 1 then n = n + 1 end
 end
-if n > 0 then redis.call('HINCRBY', KEYS[2], ARGV[1], n * tonumber(ARGV[2])) end
+if n > 0 then
+  local peso = n * tonumber(ARGV[2])
+  redis.call('HINCRBY', KEYS[2], ARGV[1], peso)
+  redis.call('LPUSH', KEYS[3], ARGV[3] .. '|' .. peso .. '|' .. ARGV[1])
+  redis.call('LTRIM', KEYS[3], 0, tonumber(ARGV[4]) - 1)
+end
 return n
 """
 
@@ -243,20 +260,64 @@ class Chain:
             await self._publish_batch(cur)
 
     async def _rewards(self, index: int) -> list[dict]:
-        """Premio del bloque anterior (subsidio + comisiones, su `reward_cents`), repartido según los nonces que
-        completó cada minero."""
+        """Premio del bloque anterior (subsidio + comisiones, su `reward_cents`), repartido con PPLNS: entre las
+        últimas `PPLNS_N` veces el trabajo que cuesta un bloque, sin importar en qué bloque se hizo.
+
+        Si la ventana no tiene a nadie a quien pagarle, no se emite ninguna tx de premio y la plata queda para el
+        bloque siguiente (C4). El movimiento del carry lo hace SEAL_LUA al sellar, no esta función."""
         prev_index = index - 1
         if prev_index < 1:
             return []
-        shares = await self.r.hgetall(keys.block_shares(prev_index))
         raw = await self.r.get(keys.block(prev_index))
         prev = json.loads(raw) if raw else {}
         finder = prev.get("miner")
-        miners = list(shares) + ([finder] if finder else [])
-        accounts = {m: a for m in miners if (a := await self.r.get(keys.miner_account(m)))}
-        finder_account = (accounts.get(finder) or miner_account(finder)) if finder else None
-        return reward_transactions(prev_index, shares_by_account(shares, accounts),
-                                   int(prev.get("reward_cents", BLOCK_REWARD_CENTS)), finder_account, round(time.time(), 3))
+        finder_account = None
+        if finder:
+            finder_account = await self.r.get(keys.miner_account(finder)) or miner_account(finder)
+        reward_cents = int(prev.get("reward_cents", BLOCK_REWARD_CENTS))
+        carry = int(await self.r.get(keys.REWARD_CARRY) or 0)
+        window = pplns_window_weight(len(prev.get("prefix") or ""), PPLNS_N)
+        split = pplns_split(await self._pplns_entries(window), window, reward_cents + carry, finder_account)
+        if not split:
+            log(self.logger, "premio sin a quién pagarle: queda acumulado", index=prev_index,
+                cents=reward_cents, carry=carry)
+            return []
+        return reward_txs(prev_index, split, round(time.time(), 3))
+
+    async def _pplns_entries(self, window_weight: int) -> list[tuple[str, int]]:
+        """Entradas de la ventana, de la más nueva a la más vieja, hasta juntar `window_weight`.
+
+        Se lee por páginas y se corta en cuanto alcanza: la lista puede tener PPLNS_MAX_ENTRIES entradas y no
+        hace falta leerlas todas para pagar un bloque.
+
+        Se saltean las de los mineros en cuarentena: con PROP, `quarantine.penalize` les borraba el trabajo del
+        bloque y así no cobraban, y la ventana no puede ser la puerta de atrás para que un tramposo cobre igual.
+        Como es un puñado de mineros distintos, alcanza con un EXISTS por minero."""
+        entries: list[tuple[str, int]] = []
+        total, start, quarantined = 0, 0, {}
+        while total < window_weight:
+            page = await self.r.lrange(keys.PPLNS_WINDOW, start, start + PPLNS_PAGE - 1)
+            if not page:
+                return entries
+            start += len(page)
+            for item in page:
+                account, _, rest = item.partition("|")
+                raw_weight, _, worker = rest.partition("|")
+                try:
+                    weight = int(raw_weight)
+                except ValueError:
+                    continue  # entrada rota: mejor no cobrarla que repartir mal
+                if worker not in quarantined:
+                    quarantined[worker] = bool(await self.r.exists(keys.quarantine(worker)))
+                if weight <= 0 or quarantined[worker]:
+                    continue
+                entries.append((account, weight))
+                total += weight
+                if total >= window_weight:
+                    return entries
+            if len(page) < PPLNS_PAGE:
+                return entries
+        return entries
 
     async def _assemble(self) -> dict | None:
         index = await self.r.llen(keys.CHAIN)  # el génesis es el 0
@@ -418,8 +479,39 @@ class Chain:
             await self.r.expire(vkey, 3600)
         if not good or await self.r.exists(keys.worker_trial(worker)):
             return 0
-        return await self._shares(keys=[keys.block_share_nonces(cur["index"]), keys.block_shares(cur["index"])],
-                                  args=[worker, pow.share_weight(sp), *good])
+        # La cuenta de cobro se resuelve acá, cuando se hace el trabajo, y queda guardada en la entrada de la
+        # ventana: lo trabajado se cobra en la cuenta que el minero declaró mientras trabajaba, y un cambio de
+        # MINER_ACCOUNT no se lleva lo viejo. El '|' separa los campos de la entrada, así que un nombre que lo
+        # tenga (no lo permite ACCOUNT_NAME, pero el miner_id del token compartido lo manda el agente) no entra.
+        account = await self.r.get(keys.miner_account(worker)) or miner_account(worker)
+        if "|" in account or "|" in worker:
+            log(self.logger, "minero o cuenta con | en el nombre: no entra en la ventana PPLNS", worker=worker)
+            return 0
+        return await self._shares(keys=[keys.block_share_nonces(cur["index"]), keys.block_shares(cur["index"]),
+                                        keys.PPLNS_WINDOW],
+                                  args=[worker, pow.share_weight(sp), account, PPLNS_MAX_ENTRIES, *good])
+
+    async def _carry_move(self, index: int, txs: list[dict]) -> tuple[int, int]:
+        """Cuánto hay que sumarle y cuánto sacarle a `reward:carry` al sellar el bloque `index` (C4).
+
+        Se calcula desde las tx de premio que **de verdad** quedaron en el lote, no desde lo que se decidió al
+        armar: si el líder se cayó entre armar y sellar, el lote en vuelo es el que vale y es el que se sella.
+
+          * el lote no trae premio del bloque anterior -> no había a quién pagarle: su premio se acumula;
+          * el lote trae premio -> lo que se pagó de más que el `reward_cents` de ese bloque salió del carry.
+        """
+        prev_index = index - 1
+        if prev_index < 1:
+            return 0, 0
+        raw = await self.r.get(keys.block(prev_index))
+        if raw is None:
+            return 0, 0
+        reward_cents = int(json.loads(raw).get("reward_cents", BLOCK_REWARD_CENTS))
+        paid = sum(int(t["amount"]) for t in txs
+                   if t["sender"] == REWARD_SENDER and t.get("reward_for") == prev_index)
+        if paid == 0:
+            return reward_cents, 0
+        return 0, max(0, paid - reward_cents)
 
     async def _seal_block(self, cur: dict, res: dict, nonce: int, validation_started: float | None = None) -> str:
         index = cur["index"]
@@ -431,12 +523,14 @@ class Chain:
                  "block_hash": res["hash"], "timestamp": time.time(), "miner": res.get("worker"),
                  "subsidy_cents": subsidy, "fees_cents": fees, "reward_cents": subsidy + fees,
                  "rearmed": cur.get("rearmed", 0)}
+        carry_add, carry_sub = await self._carry_move(index, txs)
         rc = await self._seal(
             keys=[keys.CHAIN_TIP, keys.MINING_CURRENT, keys.CHAIN, keys.block(index), keys.hash_key(res["hash"]),
                   keys.tx_inflight(index), keys.TX_STATUS, keys.block_next_from(index),
-                  keys.block_shares(index - 1), keys.EVENTS_OUTBOX, keys.block_share_nonces(index - 1)],
+                  keys.block_shares(index - 1), keys.EVENTS_OUTBOX, keys.block_share_nonces(index - 1),
+                  keys.REWARD_CARRY],
             args=[cur["previous_hash"], cur["block_id"], pow.canonical_json(block), res["hash"], index,
-                  json.dumps(solved_event(block, cur["block_id"]))])
+                  json.dumps(solved_event(block, cur["block_id"])), carry_add, carry_sub])
         if validation_started is not None:
             BLOCK_VALIDATION_SECONDS.observe(time.perf_counter() - validation_started)
         if rc < 0:

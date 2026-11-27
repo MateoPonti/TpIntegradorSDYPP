@@ -262,3 +262,183 @@ def test_reaper_una_sola_replica_por_vuelta(redis_db, monkeypatch):
         return counts, len(ex.published)
     counts, published = run(go())
     assert sum(counts) == 5 and published == 5  # ningún rango se re-publica dos veces
+
+
+# ---- A3-e + C4: ventana PPLNS y premio que no desaparece (Task 12) ----
+
+def _chain(r):
+    """Chain con un exchange falso: alcanza para sellar y para leer/mover el carry."""
+    import logging
+
+    from coordinator import blocks
+    return blocks.Chain(r, FakeExchange(), None, logging.getLogger("test-pplns"))
+
+
+async def _trabajar(chain, r, index: int, worker: str, cuenta: str, nonces: list[int], peso: int = 16) -> int:
+    """Shares verificadas de `worker` en el bloque `index`, por el camino real (SHARES_LUA)."""
+    from coordinator import blocks
+    return await chain._shares(
+        keys=[keys.block_share_nonces(index), keys.block_shares(index), keys.PPLNS_WINDOW],
+        args=[worker, peso, cuenta, blocks.PPLNS_MAX_ENTRIES, *nonces])
+
+
+async def _sellar(chain, r, index: int, prev_hash: str, block_hash: str, txs: list[dict]) -> str:
+    cur = {"v": 1, "block_id": f"{index}-aa", "index": index, "previous_hash": prev_hash,
+           "tx_digest": "d" * 64, "base": prev_hash + "d" * 64, "prefix": "00", "range_size": 4096,
+           "created": time.time(), "assembled": time.time()}
+    await r.set(keys.CHAIN_TIP, prev_hash)
+    await r.set(keys.MINING_CURRENT, json.dumps(cur))
+    await r.delete(keys.tx_inflight(index))
+    for t in txs:
+        await r.rpush(keys.tx_inflight(index), json.dumps(t))
+    return await chain._seal_block(cur, {"hash": block_hash, "worker": "ganador", "from": 0, "to": 10,
+                                         "found": True}, nonce=1)
+
+
+def _tx(tx_id: str, fee: int) -> dict:
+    return {"tx_id": tx_id, "sender": "user-1", "receiver": "user-2", "amount": 100, "fee": fee, "ts": 1.0}
+
+
+def test_shares_lua_carga_la_ventana_pplns(redis_db):
+    """Cada resultado deja una entrada '<cuenta>|<peso>|<minero>', con la más nueva primero."""
+    async def go():
+        r = redis_db()
+        chain = _chain(r)
+        n1 = await _trabajar(chain, r, 5, "m1", "mateo", [1, 2, 3])
+        n2 = await _trabajar(chain, r, 5, "m1", "mateo", [3, 4])      # el 3 ya estaba: no se paga dos veces
+        n3 = await _trabajar(chain, r, 5, "m2", "miner:m2", [9])
+        ventana = await r.lrange(keys.PPLNS_WINDOW, 0, -1)
+        por_bloque = await r.hgetall(keys.block_shares(5))
+        await r.aclose()
+        return (n1, n2, n3), ventana, por_bloque
+    (n1, n2, n3), ventana, por_bloque = run(go())
+    assert (n1, n2, n3) == (3, 1, 1)
+    assert ventana == ["miner:m2|16|m2", "mateo|16|m1", "mateo|48|m1"]  # la más nueva primero
+    assert por_bloque == {"m1": "64", "m2": "16"}  # el hash por bloque sigue existiendo como registro
+
+
+def test_pplns_saltea_a_los_mineros_en_cuarentena(redis_db):
+    """Con PROP, al poner a un minero en cuarentena se le borraba el trabajo del bloque y no cobraba.
+    La ventana no puede ser la puerta de atrás para que cobre igual."""
+    async def go():
+        r = redis_db()
+        chain = _chain(r)
+        await _trabajar(chain, r, 5, "tramposo", "cuenta-mala", [1, 2], peso=16)
+        await _trabajar(chain, r, 5, "honesto", "cuenta-buena", [3, 4], peso=16)
+        todas = await chain._pplns_entries(10**9)
+        await r.set(keys.quarantine("tramposo"), "1", ex=300)
+        sin_tramposo = await chain._pplns_entries(10**9)
+        await r.aclose()
+        return todas, sin_tramposo
+    todas, sin_tramposo = run(go())
+    assert sorted(todas) == [("cuenta-buena", 32), ("cuenta-mala", 32)]
+    assert sin_tramposo == [("cuenta-buena", 32)]
+
+
+def test_bloque_sin_shares_acumula_carry(redis_db):
+    """Review Focus 5. El bloque 1 lo resuelve alguien que no cobra (un worker en prueba): su premio no se
+    pierde ni se divide por cero, queda en reward:carry y lo paga el primer bloque con reparto."""
+    async def go():
+        r = redis_db()
+        chain = _chain(r)
+        await _sellar(chain, r, 1, "0" * 32, "h1", [_tx("t1", fee=10)])          # reward_cents(1) = 5000 + 10
+        premio1 = await chain._rewards(2)                                        # ventana vacía: no paga nada
+        await _sellar(chain, r, 2, "h1", "h2", premio1 + [_tx("t2", fee=20)])    # reward_cents(2) = 5000 + 20
+        carry_tras_2 = int(await r.get(keys.REWARD_CARRY) or 0)
+
+        await _trabajar(chain, r, 2, "m1", "mateo", [1, 2])                      # ahora sí hay quién cobre
+        premio2 = await chain._rewards(3)
+        await _sellar(chain, r, 3, "h2", "h3", premio2 + [_tx("t3", fee=0)])
+        carry_tras_3 = int(await r.get(keys.REWARD_CARRY) or 0)
+        saldo = int(await r.get(keys.balance("mateo")) or 0)
+        await r.aclose()
+        return premio1, carry_tras_2, premio2, carry_tras_3, saldo
+    premio1, carry_tras_2, premio2, carry_tras_3, saldo = run(go())
+    assert premio1 == []                       # nadie a quien pagarle
+    assert carry_tras_2 == 5010                # el premio del bloque 1 quedó acumulado
+    assert [(t["receiver"], t["amount"]) for t in premio2] == [("mateo", 10030)]  # 5020 del 2 + 5010 del 1
+    assert all(t["reward_for"] == 2 for t in premio2)
+    assert carry_tras_3 == 0                   # y el carry se consumió
+    assert saldo == 10030                      # la plata llegó a la cuenta, no se perdió ninguna
+
+
+def test_carry_se_calcula_desde_el_lote_que_se_sella(redis_db):
+    """Si el líder se cae entre armar y sellar, otra réplica retoma el lote en vuelo tal cual. El carry sale
+    de las tx de premio que de verdad están en ese lote, así que no se duplica ni se pierde."""
+    async def go():
+        r = redis_db()
+        chain = _chain(r)
+        await _sellar(chain, r, 1, "0" * 32, "h1", [_tx("t1", fee=10)])
+        # Lote ya armado y guardado, sin premio (la ventana estaba vacía cuando se armó).
+        suma, resta = await chain._carry_move(2, [_tx("t2", fee=20)])
+        # El mismo lote, pero con el premio adentro (la ventana tenía trabajo).
+        pagado = [{"tx_id": "reward-1-mateo", "sender": "recompensa", "receiver": "mateo",
+                   "amount": 5010 + 700, "ts": 1.0, "reward_for": 1}]
+        suma2, resta2 = await chain._carry_move(2, pagado)
+        await r.aclose()
+        return (suma, resta), (suma2, resta2)
+    sin_premio, con_premio = run(go())
+    assert sin_premio == (5010, 0)   # no se pagó: se acumula el premio del bloque 1
+    assert con_premio == (0, 700)    # se pagó de más que reward_cents(1): esos 700 salieron del carry
+
+
+# ---- C6: una colecta trabada no frena a las demás (Task 7) ----
+
+async def _colecta_cerrada(r, cid: str, aporte: int, goal: int, saldo: int, cierre: float) -> None:
+    """Deja una colecta ya vencida y lista para liquidar, con `saldo` en su cuenta."""
+    await r.hset(crowdfund.key(cid), mapping={"id": cid, "status": "abierta", "goal": goal,
+                                              "beneficiary": f"benef-{cid}", "deadline": cierre})
+    await r.hset(crowdfund.contrib_key(cid), "ana", aporte)
+    await r.zadd(crowdfund.OPEN_INDEX, {cid: cierre})
+    if saldo:
+        await r.set(keys.balance(crowdfund.account(cid)), saldo)
+
+
+def test_colecta_sin_saldo_no_frena_las_demas(redis_db, monkeypatch):
+    """La primera colecta no tiene plata en su cuenta (un aporte que nunca entró, por ejemplo).
+    Antes eso hacía `return` y cortaba el recorrido: la segunda no se liquidaba nunca."""
+    from coordinator import main as co
+
+    async def go():
+        r = redis_db()
+        now = time.time()
+        cierre = now - crowdfund.GRACE - 60
+        await _colecta_cerrada(r, "sin-plata", aporte=100, goal=100, saldo=0, cierre=cierre)
+        await _colecta_cerrada(r, "con-plata", aporte=100, goal=100, saldo=100, cierre=cierre + 1)
+        monkeypatch.setattr(co, "state", {"r": r, "cf_start": r.register_script(crowdfund.START_LUA),
+                                          "reserve": r.register_script(ledger.RESERVE_LUA)})
+        await co.settle_crowdfunds()
+        estados = {cid: await r.hget(crowdfund.key(cid), "status") for cid in ("sin-plata", "con-plata")}
+        pendientes = await r.zrange(crowdfund.OPEN_INDEX, 0, -1)
+        pagos = [json.loads(x)["receiver"] for x in await r.lrange(keys.TX_PENDING, 0, -1)]
+        await r.aclose()
+        return estados, pendientes, pagos
+    estados, pendientes, pagos = run(go())
+    assert estados["con-plata"] == "exitosa"       # la segunda se liquidó igual
+    assert pagos == ["benef-con-plata"]
+    assert estados["sin-plata"] == "liquidando"    # la primera queda para la vuelta siguiente
+    assert pendientes == ["sin-plata"]             # y sigue en el índice de las que falta liquidar
+
+
+def test_colecta_que_explota_no_frena_las_demas(redis_db, monkeypatch):
+    """Lo mismo con un error de verdad (Redis, un Lua, un dato roto): se cuenta y se sigue."""
+    from coordinator import main as co
+
+    async def go():
+        r = redis_db()
+        now = time.time()
+        cierre = now - crowdfund.GRACE - 60
+        await _colecta_cerrada(r, "rota", aporte=100, goal=100, saldo=100, cierre=cierre)
+        await _colecta_cerrada(r, "sana", aporte=100, goal=100, saldo=100, cierre=cierre + 1)
+        await r.hset(crowdfund.key("rota"), "goal", "no-es-un-numero")  # int() revienta
+        monkeypatch.setattr(co, "state", {"r": r, "cf_start": r.register_script(crowdfund.START_LUA),
+                                          "reserve": r.register_script(ledger.RESERVE_LUA)})
+        antes = co.CF_SETTLE_ERRORS._value.get()
+        await co.settle_crowdfunds()
+        estados = {cid: await r.hget(crowdfund.key(cid), "status") for cid in ("rota", "sana")}
+        await r.aclose()
+        return estados, co.CF_SETTLE_ERRORS._value.get() - antes
+    estados, errores = run(go())
+    assert estados["sana"] == "exitosa"
+    assert estados["rota"] == "abierta"  # no se la pudo tocar, pero no frenó a la otra
+    assert errores == 1

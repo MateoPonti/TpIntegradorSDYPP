@@ -22,9 +22,24 @@ spec:
       enableServiceLinks: false
       nodeSelector:
         pool: apps
+      serviceAccountName: coordinator
+      automountServiceAccountToken: false   # no le habla a la API de Kubernetes (B2)
+      securityContext:
+        # Corre como 10001, el mismo usuario que el Dockerfile: ni el pod ni la imagen asumen root.
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: coordinator
           image: REGISTRY/coordinator:latest
+          securityContext:
+            allowPrivilegeEscalation: false   # ni con un binario setuid se gana root
+            readOnlyRootFilesystem: true      # el único lugar donde escribe es /tmp (emptyDir)
+            capabilities:
+              drop: ["ALL"]
           ports:
             - name: http
               containerPort: 8080
@@ -64,7 +79,16 @@ spec:
               cpu: 50m
               memory: 128Mi
             limits:
+              cpu: "1"
               memory: 256Mi
+          volumeMounts:
+            # Con la raíz de solo lectura hay que darle un lugar donde escribir: los logs rotativos van a
+            # LOG_DIR=/tmp/logs (lo fija el Dockerfile) y ahí también escriben uvicorn y Python.
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: Service

@@ -65,3 +65,47 @@ Tiempo esperado por bloque (16^n / hashrate del motor):
 - GPU (17/11): **1.104 MH/s** de motor, 1.013 MH/s efectivo. Con eso `MIN_RANGE_GPU`, `CALIB_RANGE_GPU` y el
   `MINER_CHUNK` del agente pasaron a 1.000 M. El barrido de parámetros (`barrido.py`) y la comparativa CPU vs
   GPU de los Hits #6 y #7 (`comparativa.py`) están en `pilar1/README.md`.
+
+## GPU prestada: RTX 4060 en InferHive (22/11/2026)
+
+Medido en el namespace del grupo en InferHive (node `knode06`, RTX 4060 8 GB, `sm_89`, driver 595.99),
+con la reserva GPU-NBDS, dentro del mismo pod del minero (`ghcr.io/mateoponti/tpi-miner-gpu`, que ya trae
+`/app/miner_gpu`). Ahí no hay motor CPU, así que `gpu_remota.py` corre solo la parte GPU de `hashrate.py` y
+`comparativa.py` con **las mismas bases y los mismos rangos** que la corrida del 17/11 (el rango con solución
+del Hit #7 sale del nonce de esa corrida), y se compara contra la mejor CPU (12 procesos) ya medida.
+Calentamiento + mediana de 5, como siempre. Los CSV están en `inferhive/`.
+
+```bash
+. ~/Downloads/connect.sh ~/Downloads/<alumno>.kubeconfig          # dentro de la franja reservada
+kubectl cp pilar1/rendimiento/<script>.py <pod>:/tmp/rend/          # hashrate, comparativa, gpu_remota, barrido
+kubectl exec <pod> -- sh -c 'cd /tmp/rend && python3 gpu_remota.py --nombre gpu-rtx4060 -- /app/miner_gpu'
+```
+
+**Hashrate** (rango de 10.000 M nonces): **4.970 MH/s** de motor, 4.465 MH/s efectivo. Es **4,5 veces** la
+1050 Ti (1.104 MH/s) y **616 veces** la mejor CPU (8,07 MH/s).
+
+**Hit #6 y #7** (segundos del motor, mediana de 5):
+
+| Caso | CPU 12 procesos | GTX 1050 Ti | RTX 4060 | 4060 vs CPU | 4060 vs 1050 Ti |
+|---|---|---|---|---|---|
+| Prefijo 4 | 0,1869 | 0,0019 | 0,0005 | ×402 | ×4,1 |
+| Prefijo 5 | 0,3030 | 0,0054 | 0,0024 | ×127 | ×2,3 |
+| Prefijo 6 | 3,5636 | 0,0210 | 0,0095 | ×376 | ×2,2 |
+| Prefijo 7 | 11,3572 | 0,0437 | 0,0156 | ×730 | ×2,8 |
+| Prefijo 8 | — | 8,1744 | 1,7099 | — | ×4,8 |
+| Hit #7 con solución | 5,6510 | 0,0316 | 0,0063 | ×894 | ×5,0 |
+| Hit #7 sin solución | 11,7490 | 0,0980 | 0,0201 | ×586 | ×4,9 |
+
+Con prefijos de 1 a 3 la solución aparece en los primeros cientos de nonces y todo tarda menos de 1 ms: lo que
+se mide es el arranque del kernel, no el hashrate. Con prefijos cortos la ventaja de la 4060 es menor (×2 a ×3)
+por lo mismo; con 8, o con el rango entero del Hit #7, se acerca al ×4,5 del hashrate.
+
+**Barrido** (`barrido.py`, 10.000 M nonces): con `--threads` entre 64 y 1024 da de 4.940 a 5.320 MH/s (el
+mejor, 512, solo un 8 % arriba de 256), y `--blocks` entre 48 y 768 da de 4.910 a 5.150 MH/s. Quedan los
+valores por defecto: la diferencia es chica y la imagen tiene que andar igual en las otras GPUs. Un corte del
+túnel hizo que dos barridos de bloques se pisaran en la GPU; esas cuatro filas (la mitad del hashrate) se
+sacaron del CSV.
+
+**Ojo con la calibración del gateway:** al conectarse, el gateway le midió al minero **12.744 MH/s**, 2,6
+veces lo que da la 4060 medida acá. Sirve para la clase del worker, pero el pool elige el prefijo con el
+hashrate **real** (lo que entrega el minero), así que no lo engaña; queda anotado para revisar cómo calibra.

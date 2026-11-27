@@ -16,7 +16,7 @@ coordinator las agrupa en bloques y los mineros (CPU y GPU con CUDA) buscan el n
 
 | Dónde | Qué corre | Carpetas |
 |---|---|---|
-| **GKE (Google Cloud)**, node pool `apps` | coordinator ×2–5, pool ×2, gateway ×2–6 y notifier ×2, detrás de Traefik con HTTPS (**`https://sdmer.duckdns.org`**, también `https://35-223-237-60.sslip.io`) | código: `pilar2/services/{coordinator,pool,gateway,notifier}` · manifiestos: `pilar3/k8s/apps` y `pilar3/k8s/https` |
+| **GKE (Google Cloud)**, node pool `apps` | coordinator ×2–5, pool ×2, gateway ×2–6 y notifier ×2, detrás de Traefik con HTTPS en un dominio propio detrás de Cloudflare (**`https://sdmer.dpdns.org`** y **`https://gateway.sdmer.dpdns.org`**) | código: `pilar2/services/{coordinator,pool,gateway,notifier}` · manifiestos: `pilar3/k8s/apps` y `pilar3/k8s/https` |
 | **GKE**, node pool `infra` | RabbitMQ ×3 (colas quorum con Raft) y Redis (AOF, 1 principal + 2 réplicas + 3 Sentinel), sin IP pública | `pilar3/k8s/infra` |
 | **GKE**, el cluster en sí | red, cluster, 2 node pools, Artifact Registry, Workload Identity | `pilar3/infra/terraform` (OpenTofu) · pipelines 1, 2 y 3 |
 | **k3s local** | mineros CPU, de 0 a N réplicas, escalados por KEDA | imagen: `pilar2/services/miners/cpu` · despliegue: `pilar3/k3s-local` · pipeline 4 |
@@ -87,7 +87,11 @@ Validación ejecutada durante la asistencia:
 - Muestras de Prometheus y dashboard validado localmente. Ejecutor de carga probado con API/Kubernetes
   simulados, incluyendo restauración ante falla. Esos datos sintéticos son tests, no resultados de entrega.
 
-Referencias para revisión: ramas `task-4-montos`, `task-5-rearmado`, `task-6-multisig-atomico`,
-`task-13-jsonrpc-notifier`, `task-17-metricas` y `task-18-carga-confirmada`. Agregar los enlaces a sus PRs
-cuando se publiquen. Pendientes: revisión de otro integrante, comprobación de métricas en despliegue y
-carga real del 03/12 sobre el sistema congelado. No se modificaron `bench.py`, `matrix.sh` ni `plot.py`.
+La rama `justino-merge-final` integra las Tasks 4, 5, 6, 13, 17 y 18 y esta declaración, conservando
+los commits originales de Justino. El 27/11 se integró `main` (`4f15176`) con asistencia de Codex:
+se resolvieron los conflictos manteniendo el dominio nuevo, JSON-RPC, PPLNS/carry y las métricas.
+La combinación pasó 258 tests con Redis real aislado (10 omitidos) y la prueba de las dos páginas en
+Chromium. Esta validación local no sustituye las pruebas del despliegue.
+
+Pendientes: revisión de otro integrante, comprobación de métricas en despliegue y carga real del 03/12
+sobre el sistema congelado. No se modificaron `bench.py`, `matrix.sh` ni `plot.py`.

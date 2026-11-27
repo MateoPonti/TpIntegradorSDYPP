@@ -42,6 +42,8 @@ PENDING = Gauge("pending_transactions", "Tx que todavía no están en un bloque 
 # reemplaza un pod, así que sumarlo daba una altura menor en Grafana; queda como métrica de actividad.
 HEIGHT = Gauge("chain_height", "Altura de la cadena guardada en Redis (incluye el génesis)")
 IS_LEADER = Gauge("coordinator_is_leader", "1 si esta réplica es la líder")
+CF_SETTLE_ERRORS = Counter("crowdfund_settle_errors_total",
+                           "Colectas que no se pudieron liquidar en una vuelta (sin saldo o error)")
 
 state: dict = {}
 
@@ -516,30 +518,49 @@ async def list_multisig(owner: str):
 # ---- Colectas "todo o nada" (punto 2 del contrato) ----
 
 async def settle_crowdfunds() -> None:
-    """Liquida las colectas cerradas (solo el líder, en cada vuelta del loop). Ver coordinator/crowdfund.py."""
+    """Liquida las colectas cerradas (solo el líder, en cada vuelta del loop). Ver coordinator/crowdfund.py.
+
+    C6 (27/11): cada colecta se liquida aislada de las demás. Antes, una colecta sin saldo hacía
+    `return` y cortaba el recorrido entero, así que las que venían después no se liquidaban nunca
+    (y una excepción en una, lo mismo). Ahora una que falla se saltea y se vuelve a intentar en la
+    vuelta siguiente: queda en `liquidando`, que es justamente el estado para retomarla."""
     r, now = state["r"], time.time()
     for cid in await r.zrangebyscore(crowdfund.OPEN_INDEX, 0, now - crowdfund.GRACE):
-        raw = await r.hgetall(crowdfund.key(cid))
-        if raw.get("status") not in ("abierta", "liquidando"):
-            await r.zrem(crowdfund.OPEN_INDEX, cid)
-            continue
-        txs = list(await r.smembers(crowdfund.txs_key(cid)))
-        if txs and "pending" in await r.hmget(keys.TX_STATUS, txs):
-            continue  # falta que algún aporte entre en un bloque: la plata todavía no está en la colecta
-        contrib = await r.hgetall(crowdfund.contrib_key(cid))
-        if not await state["cf_start"](keys=[crowdfund.key(cid)], args=[now, crowdfund.outcome(raw, contrib)]):
-            continue
-        result = await r.hget(crowdfund.key(cid), "result")  # si se retoma una liquidación, el que quedó guardado
-        pays = crowdfund.payments(result, raw, contrib)
-        for receiver, amount in pays:
-            tx = crowdfund.settlement_tx(cid, receiver, amount, result, now)
-            rc = await state["reserve"](keys=ledger.reserve_keys(tx), args=[tx["tx_id"], amount, json.dumps(tx), ""])
-            if rc == -2:
-                log(logger, "colecta sin saldo para liquidar", crowdfund=cid, receiver=receiver)
-                return
-        await r.hset(crowdfund.key(cid), mapping={"status": result, "settled": now})
+        try:
+            await _settle_one(cid, now)
+        except Exception:  # noqa: BLE001 - Redis, un Lua o un dato raro de UNA colecta
+            CF_SETTLE_ERRORS.inc()
+            logger.exception("error liquidando la colecta %s: sigo con las demás", cid)
+
+
+async def _settle_one(cid: str, now: float) -> None:
+    """Liquida una sola colecta. Si no se puede todavía (aportes sin confirmar, sin saldo) vuelve sin
+    tocarla: la próxima vuelta la retoma."""
+    r = state["r"]
+    raw = await r.hgetall(crowdfund.key(cid))
+    if raw.get("status") not in ("abierta", "liquidando"):
         await r.zrem(crowdfund.OPEN_INDEX, cid)
-        log(logger, "colecta liquidada", crowdfund=cid, result=result, txs=len(pays))
+        return
+    txs = list(await r.smembers(crowdfund.txs_key(cid)))
+    if txs and "pending" in await r.hmget(keys.TX_STATUS, txs):
+        return  # falta que algún aporte entre en un bloque: la plata todavía no está en la colecta
+    contrib = await r.hgetall(crowdfund.contrib_key(cid))
+    if not await state["cf_start"](keys=[crowdfund.key(cid)], args=[now, crowdfund.outcome(raw, contrib)]):
+        return
+    result = await r.hget(crowdfund.key(cid), "result")  # si se retoma una liquidación, el que quedó guardado
+    pays = crowdfund.payments(result, raw, contrib)
+    for receiver, amount in pays:
+        tx = crowdfund.settlement_tx(cid, receiver, amount, result, now)
+        rc = await state["reserve"](keys=ledger.reserve_keys(tx), args=[tx["tx_id"], amount, json.dumps(tx), ""])
+        if rc == -2:
+            # Sin saldo: la colecta queda en `liquidando` y se retoma. Los pagos ya reservados no se
+            # repiten, porque el tx_id de cada uno es fijo (colecta-<cid>-<receiver>).
+            CF_SETTLE_ERRORS.inc()
+            log(logger, "colecta sin saldo para liquidar", crowdfund=cid, receiver=receiver)
+            return
+    await r.hset(crowdfund.key(cid), mapping={"status": result, "settled": now})
+    await r.zrem(crowdfund.OPEN_INDEX, cid)
+    log(logger, "colecta liquidada", crowdfund=cid, result=result, txs=len(pays))
 
 
 @app.post("/crowdfunds", status_code=201)
