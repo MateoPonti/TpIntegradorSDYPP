@@ -32,6 +32,9 @@ python plot.py resultados/2026-11-20/results.csv --out resultados/2026-11-20/cha
   Con 100.000 serían ~30 min solo para mandarlas.
 - **Bulks chicos:** el tiempo lo marca la ventana de 10 s (el bloque sale cuando cierra la ventana) más el minado. El
   de 1 tx tardó más (14 s) porque cayó al principio de una ventana.
+- **Nota del 27/11:** la opción (1) ya no existe. El A2 cerró el acceso por IP (todo entra por
+  `https://sdmer.dpdns.org`, detrás de Cloudflare), así que para las pruebas finales queda la (2): `bench.py` en un
+  pod del cluster. Lo de abajo es lo que se escribió ese día y se deja como quedó.
 - Para las pruebas finales conviene: (1) usar `http://35.223.237.60` (sin TLS) o correr `bench.py` en un pod dentro de
   GKE, para medir el sistema y no la conexión de la PC; (2) `DIFFICULTY_MODE=fixed` para los prefijos 1 a 8;
   (3) `--repeat 3` y la mediana; (4) la GPU para los prefijos 7 y 8 y para el experimento de entrada y salida.

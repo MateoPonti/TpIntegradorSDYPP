@@ -1,0 +1,59 @@
+# A2 (27/11/2026): el front, el websocket y el gateway se sirven por un dominio propio detrás de Cloudflare.
+#
+#   kubectl apply -f pilar3/k8s/https/cluster-issuer.yaml
+#   kubectl apply -f pilar3/k8s/https/dominio.yaml
+#
+# Reemplaza a pilar3/k8s/https/ingress.yaml (los nombres de sslip.io y la regla sin host que servía la IP
+# pelada). El dominio es **sdmer.dpdns.org**, gratis de DigitalPlat FreeDomain, con los nameservers de
+# Cloudflare. En Cloudflare, dos registros A **proxied** (la nubecita naranja) a la IP de Traefik
+# (35.223.237.60): `@` y `gateway`. SSL/TLS en **Full (strict)** (Cloudflare valida el certificado de Let's
+# Encrypt que tiene Traefik), "Always Use HTTPS" activado y WebSockets activados (viene así por defecto, es lo
+# que hace andar /ws).
+#
+# Qué sirve cada nombre:
+#   https://sdmer.dpdns.org          -> coordinator (explorador, /status, /unirse, API de tx)
+#   wss://sdmer.dpdns.org/ws         -> notifier (la ruta es más larga que "/", pero igual va primero acá)
+#   https://gateway.sdmer.dpdns.org  -> gateway (la única puerta de los mineros)
+#
+# Ya no hay regla sin host: a la IP del cluster no se llega desde Internet (el LoadBalancer solo acepta los
+# rangos de Cloudflare) y pedirle un nombre que no sea uno de estos dos devuelve 404.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: tpi
+  namespace: tpi
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-dns
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts: [sdmer.dpdns.org, gateway.sdmer.dpdns.org]
+      secretName: tpi-tls
+  rules:
+    - host: sdmer.dpdns.org
+      http:
+        paths:
+          - path: /ws
+            pathType: Prefix
+            backend:
+              service:
+                name: notifier
+                port:
+                  name: http
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: coordinator
+                port:
+                  name: http
+    - host: gateway.sdmer.dpdns.org
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: gateway
+                port:
+                  name: http
