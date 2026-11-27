@@ -2,7 +2,8 @@
 
   GET  /tasks/next             saca una tarea de mining.tasks y se la presta al minero (204 si no hay)
   POST /tasks/{task_id}/renew  "¿sigo?": renueva el préstamo, o 410 si el bloque ya se cerró o está en cuarentena
-  POST /tasks/{task_id}/release "no pude": la tarea vuelve a la cola al instante (se le rompió el motor)
+  POST /tasks/{task_id}/release "no pude": la tarea vuelve a la cola al instante (se le rompió el motor).
+                               Con ?reason=shutdown es un minero apagándose: no cuenta como falla (C5)
   POST /results                publica el resultado en mining.results
   POST /keepalive              SET worker:<id> EX 15 (Redis no se expone a Internet)
   GET  /scaling                señal del pool para KEDA del k3s
@@ -97,7 +98,7 @@ CALIBRATIONS = Counter("calibrations_total", "Tareas de calibración terminadas"
 CANARIES = Counter("canaries_total", "Canarios resueltos", ["result"])
 QUARANTINED = Counter("quarantined_total", "Mineros puestos en cuarentena", ["reason"])
 REPUBLISHED = Counter("tasks_republished_total", "Rangos re-publicados de mineros en cuarentena")
-RELEASED = Counter("tasks_released_total", "Tareas devueltas por el minero (se le rompió el motor)")
+RELEASED = Counter("tasks_released_total", "Tareas devueltas por el minero", ["reason"])
 REVOKED = Counter("tokens_revoked_total", "Tokens de workers revocados", ["reason"])
 LIMITED = Counter("tasks_limited_total", "Pedidos de tarea rechazados porque el minero ya tenía el máximo prestado")
 TRIAL_PASSED = Counter("workers_trial_passed_total", "Workers que pasaron la prueba")
@@ -185,13 +186,17 @@ async def put_in_quarantine(miner_id: str, reason: str, extra: list[tuple[int, i
         await revoke_token(miner_id, "cuarentenas")
 
 
-async def give_back(lease: dict, why: str) -> None:
+async def give_back(lease: dict, why: str, count_attempt: bool = True) -> None:
     """La tarea vuelve a la cola con un intento más (préstamo vencido o devuelta por el minero).
-    Al MAX_ATTEMPTS-ésimo va a la DLQ. Las de calibración y los canarios no vuelven."""
+    Al MAX_ATTEMPTS-ésimo va a la DLQ. Las de calibración y los canarios no vuelven.
+
+    `count_attempt=False` la devuelve sin gastar un intento. Lo usa el release con reason=shutdown
+    (C5): con TASK_MAX_ATTEMPTS=3, tres bajadas de escala sobre el mismo rango lo mandaban a la DLQ
+    —que no se reprocesa sola— sin que ningún minero hubiera fallado, y ese rango no se minaba más."""
     task = lease["task"]
     if lease.get("special") or task["block_id"] != await current_block_id():
         return  # bloque ya sellado o rearmado: no hace falta re-minar ese rango
-    task["attempts"] = task.get("attempts", 0) + 1
+    task["attempts"] = task.get("attempts", 0) + (1 if count_attempt else 0)
     if task["attempts"] >= MAX_ATTEMPTS:
         await state["dlx"].publish(rabbit.message(task), routing_key="dlq")
         DLQ.inc()
@@ -523,9 +528,19 @@ async def renew(task_id: str, miner_id: str | None = None, ident: dict | None = 
 
 
 @app.post("/tasks/{task_id}/release")
-async def release(task_id: str, miner_id: str | None = None, ident: dict | None = Depends(auth)):
-    """El minero devuelve la tarea porque no pudo terminarla (se le rompió el motor). Vuelve a la cola al
-    instante, sin esperar los 60 s del préstamo, y cuenta como una falla (a las 3 seguidas, cuarentena)."""
+async def release(task_id: str, miner_id: str | None = None, ident: dict | None = Depends(auth),
+                  reason: str | None = None):
+    """El minero devuelve la tarea. Vuelve a la cola al instante, sin esperar los 60 s del préstamo.
+
+    Sin `reason` (o con cualquier otro) es "no pude": se le rompió el motor y cuenta como una falla
+    (a las 3 seguidas, cuarentena). Con `reason=shutdown` (C5, 27/11) es un minero que se está
+    apagando porque KEDA bajó las réplicas: devuelve el rango de onda, así que **no** cuenta como
+    falla. Si contara, bajar de 8 a 0 mineros dejaría a los 8 en cuarentena y el próximo bloque
+    arrancaría sin nadie.
+
+    `reason` va último en la firma a propósito, para que las llamadas que ya existían
+    (`release(task_id, miner_id, ident)`) sigan andando por posición. A FastAPI el orden de los
+    parámetros no le importa: lo lee de la query igual."""
     r = state["r"]
     raw = await r.get(keys.lease(task_id))
     if raw is None:
@@ -537,10 +552,13 @@ async def release(task_id: str, miner_id: str | None = None, ident: dict | None 
     if raw is None:
         raise HTTPException(410, "préstamo inexistente o vencido")
     lease = json.loads(raw)
-    RELEASED.inc()
-    await count_expired(lease["miner_id"])
-    await give_back(lease, "tarea devuelta por el minero")
-    return {"released": True}
+    apagandose = reason == "shutdown"
+    RELEASED.labels("shutdown" if apagandose else "falla").inc()
+    if not apagandose:
+        await count_expired(lease["miner_id"])
+    await give_back(lease, "minero apagándose" if apagandose else "tarea devuelta por el minero",
+                    count_attempt=not apagandose)
+    return {"released": True, "reason": reason or "falla"}
 
 
 async def finish_calibration(lease: dict, res: dict) -> None:

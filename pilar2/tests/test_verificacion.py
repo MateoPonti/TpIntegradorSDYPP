@@ -337,3 +337,63 @@ def test_lend_aplica_vardiff_con_hashrate_medido(redis_db, monkeypatch):
     assert task["share_prefix"] == "0" * 8  # la del coordinator: ~32 shares por tarea
     assert lent["share_prefix"] == "0" * 7  # Vardiff: más fáciles para el lento
     assert nuevo is None
+
+
+# ---- C5: release?reason=shutdown no cuenta como falla (Task 7) ----
+
+def test_release_shutdown_no_cuenta_falla(redis_db, monkeypatch):
+    """Un minero que se apaga devuelve su rango: vuelve a la cola, pero sin racha de fallas ni
+    intento gastado. Si contara, bajar de 8 a 0 mineros los dejaría a todos en cuarentena."""
+    gw = import_gateway()
+
+    async def go():
+        r = redis_db()
+        ex = _state(gw, monkeypatch, r)
+        await _setup(r, gw, task_id="t-shutdown")
+        out = await gw.release("t-shutdown", "cpu-a", None, reason="shutdown")
+        racha = await r.get(keys.miner_expired("cpu-a"))
+        cuarentena = await r.exists(keys.quarantine("cpu-a"))
+        await r.aclose()
+        return out, racha, cuarentena, ex.published
+    out, racha, cuarentena, publicadas = asyncio.run(go())
+    assert out["released"] and out["reason"] == "shutdown"
+    assert racha is None and cuarentena == 0   # apagarse no es una falla
+    (task, key), = publicadas                   # el rango vuelve a la cola igual
+    assert key == "task.any" and task["task_id"] == "t-shutdown"
+    assert task["attempts"] == 0                 # y no gasta un intento (si no, 3 bajadas -> DLQ)
+
+
+def test_release_sin_reason_sigue_contando_falla(redis_db, monkeypatch):
+    """El release de siempre ("se me rompió el motor") no cambia: cuenta falla y gasta un intento."""
+    gw = import_gateway()
+
+    async def go():
+        r = redis_db()
+        ex = _state(gw, monkeypatch, r)
+        await _setup(r, gw, task_id="t-falla")
+        out = await gw.release("t-falla", "cpu-a", None)
+        racha = json.loads(await r.get(keys.miner_expired("cpu-a")))
+        await r.aclose()
+        return out, racha, ex.published
+    out, racha, publicadas = asyncio.run(go())
+    assert out["reason"] == "falla" and racha["streak"] == 1
+    (task, _), = publicadas
+    assert task["attempts"] == 1
+
+
+def test_tres_shutdown_seguidos_no_mandan_el_rango_a_la_dlq(redis_db, monkeypatch):
+    """TASK_MAX_ATTEMPTS=3: con el intento gastado, tres bajadas de escala sobre el mismo rango lo
+    sacaban de circulación sin que nadie hubiera fallado."""
+    gw = import_gateway()
+
+    async def go():
+        r = redis_db()
+        ex = _state(gw, monkeypatch, r)
+        for i in range(3):
+            await _setup(r, gw, task_id=f"t{i}")
+            await gw.release(f"t{i}", "cpu-a", None, reason="shutdown")
+        await r.aclose()
+        return ex.published, gw.state["dlx"].published
+    publicadas, dlq = asyncio.run(go())
+    assert len(publicadas) == 3 and not dlq
+    assert [t["attempts"] for t, _ in publicadas] == [0, 0, 0]
