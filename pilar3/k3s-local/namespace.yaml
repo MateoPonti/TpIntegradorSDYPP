@@ -4,3 +4,12 @@ metadata:
   name: tpi-miners
   labels:
     app.kubernetes.io/part-of: tpi-blockchain
+---
+# B2 (27/11): ServiceAccount propia para el minero, por lo mismo que las de GKE. El agente solo habla HTTP con
+# el gateway, así que no necesita el token de la API montado.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: miner-cpu
+  namespace: tpi-miners
+automountServiceAccountToken: false
