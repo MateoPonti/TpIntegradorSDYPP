@@ -72,7 +72,7 @@ export -f kubectl python3
 echo 'Fijando dificultad en tpi; matrix.sh reiniciará coordinator y pool para cada punto.'
 config_changed=1
 kc patch configmap tpi-config --type merge -p '{"data":{"DIFFICULTY_MODE":"fixed"}}'
-for cpu in 4 8; do
+for cpu in ${CPU_POINTS:-4 8}; do  # CPU_POINTS=8 repite un solo punto
   echo "Pausando KEDA y esperando $cpu mineros CPU en $K3S_CONTEXT."
   miners_changed=1
   km annotate scaledobject miner-cpu "autoscaling.keda.sh/paused-replicas=$cpu" --overwrite

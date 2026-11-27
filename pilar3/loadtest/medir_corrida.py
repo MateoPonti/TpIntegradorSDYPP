@@ -8,6 +8,10 @@ import time
 
 import confirmado
 
+# El sellado guarda su hora un instante después de que /status deja de mostrar el bloque en minado (27/11: el
+# bloque 811 quedó 0,5 s después del cierre). La corrida siguiente no sella nada antes de 10 s, así que no se mezclan.
+CLOCK_SLACK = 2.0
+
 
 def wait_ready(api, cpu, prefix, timeout=180):
     deadline = time.monotonic() + timeout
@@ -22,6 +26,19 @@ def wait_ready(api, cpu, prefix, timeout=180):
         if time.monotonic() >= deadline:
             raise RuntimeError("no se estabilizaron mineros, dificultad fija y cola vacía")
         time.sleep(2)
+
+
+def wait_sealed(api, timeout=600):
+    """bench.py termina cuando pending_transactions llega a 0, pero una tx deja de estar pendiente al entrar en el
+    bloque que se está minando, no al sellarse: con prefijos largos el último bloque se sella después."""
+    deadline = time.monotonic() + timeout
+    while True:
+        state = confirmado.get_json(api, "/status")
+        if state.get("pending_transactions") == 0 and not state.get("mining"):
+            return
+        if time.monotonic() >= deadline:
+            raise RuntimeError("el último bloque no se selló a tiempo")
+        time.sleep(1)
 
 
 def main(argv=None):
@@ -40,13 +57,14 @@ def main(argv=None):
         run_number += 1
         since = time.time()
         result = original(options, bulk)
+        wait_sealed(options.base_url)
         until = time.time()
         if result.submit_errors or result.confirm_seconds is None:
             raise RuntimeError("corrida inválida: hubo errores de ingesta o timeout de confirmación")
         status = confirmado.get_json(options.base_url, "/status")
         if status["miners"]["gpu"] or status["miners"]["cpu"] != options.cpu_miners:
             raise RuntimeError("cambió la cantidad de mineros durante la corrida")
-        confirmed = confirmado.measure(options.base_url, since, until)
+        confirmed = confirmado.measure(options.base_url, since, until + CLOCK_SLACK)
         row = {"cpu_miners": options.cpu_miners, "run": run_number, "bulk": bulk,
                "difficulty": options.difficulty, "fragment_percent": options.fragment,
                "desde": since, "hasta": until, "throughput_ingesta_tx_s": result.throughput_tx_per_s,
