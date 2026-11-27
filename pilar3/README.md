@@ -33,6 +33,66 @@ en su propio namespace **`tpi`**. El 17/11/2026 se sacó el TP3 del cluster (nam
 | Prometheus, Grafana y Loki | Los que instaló el TP3 (namespace `monitoring`, siguen ahí). Leen nuestros pods con `k8s/observability/` |
 | Grafana | `http://136.80.214.178`, dashboard **TPI Blockchain** (usuario y clave en el secret `grafana-admin` de `monitoring`) |
 
+### Diagrama de la infraestructura (C8)
+
+```mermaid
+flowchart LR
+  subgraph afuera[Internet]
+    U[navegadores y bench.py]
+    GPU[PC con la GTX 1050 Ti<br/>y la RTX 4060 de InferHive]
+  end
+
+  CF[Cloudflare<br/>sdmer.dpdns.org y gateway.sdmer.dpdns.org<br/>proxy, TLS Full strict]
+
+  subgraph gke[GKE: cluster tp3, proyecto tp3distribuidos]
+    LB[LoadBalancer 35.223.237.60<br/>solo los 15 rangos de Cloudflare]
+    subgraph ns_traefik[namespace traefik]
+      T[Traefik<br/>http a https, /logs y /metrics 403]
+    end
+    CM[cert-manager<br/>Let's Encrypt por DNS-01]
+    subgraph apps[node pool apps: namespace tpi]
+      CO[coordinator x2, HPA<br/>líder coord:leader]
+      NO[notifier x2<br/>JSON-RPC por /ws]
+      GW[gateway x2, HPA<br/>préstamos y reaper]
+      PO[pool x2<br/>líder pool:leader]
+    end
+    subgraph infra[node pool infra: namespace tpi]
+      R[(Redis 1 principal + 2 réplicas<br/>Sentinel, AOF, PVC)]
+      MQ[(RabbitMQ x3<br/>colas quorum)]
+    end
+    subgraph mon[namespace monitoring]
+      P[Prometheus + Grafana<br/>Loki + Fluent Bit]
+    end
+  end
+
+  subgraph local[PC del grupo: k3d]
+    K[KEDA<br/>lee /scaling cada 5 s]
+    M[miner-cpu 0 u 8 pods]
+  end
+
+  U --> CF
+  GPU -->|HTTPS + WS, Bearer| CF
+  M -->|HTTPS + WS, Bearer| CF
+  K -->|GET /scaling| CF
+  K -.escala.-> M
+  CF --> LB --> T
+  T -->|sdmer.dpdns.org| CO
+  T -->|/ws| NO
+  T -->|gateway.sdmer.dpdns.org| GW
+  CM -.TXT _acme-challenge.-> CF
+  CO --- R
+  PO --- R
+  GW --- R
+  CO --- MQ
+  GW --- MQ
+  NO --- MQ
+  P -.scrapea /metrics por el Service.-> apps
+```
+
+Ningún minero corre en GCP: los CPU están en el k3d de una PC y las GPU en las PCs que las tienen, y todos
+entran por el mismo nombre que cualquiera (`gateway.sdmer.dpdns.org`). RabbitMQ y Redis son `ClusterIP` y las
+NetworkPolicies (B2) solo dejan llegar a las apps y a Prometheus.
+
 Diferencias con el starter, para que entre en ese cluster:
 - Los nodos tienen la etiqueta `pool=infra` / `pool=apps` y el taint `pool=infra` (no `role` / `dedicated`).
 - Los pods de las apps llevan `enableServiceLinks: false`: si no, Kubernetes inyecta `REDIS_PORT=tcp://…`
