@@ -23,6 +23,10 @@ Desde el 26/11 (A3-c y A3-f del contrato, como Stratum):
   * Resultados firmados: cada POST /results lleva la firma de la tarea, el nonce y sus shares.
   * Ed25519 con solo stdlib (este agente corre en Colab sin instalar nada): el código de referencia del RFC 8032.
 
+Desde el 27/11 (C5): con SIGTERM (KEDA bajando las réplicas, `kubectl scale`, rolling update) el agente
+termina el tramo que está minando, devuelve lo que tenga prestado con `release?reason=shutdown` —que el
+gateway no cuenta como falla— y sale con 0. Sin eso, el bloque esperaba a que vencieran los préstamos.
+
     GATEWAY_URL=http://<ip> MINER_TOKEN=... MINER_KIND=gpu MINER_ID=pc-mateo MINER_ACCOUNT=mateo \
       python agent.py -- ../../../pilar1/build/miner_gpu
 """
@@ -36,6 +40,7 @@ import logging
 import logging.handlers
 import os
 import queue
+import signal
 import socket
 import ssl
 import struct
@@ -279,15 +284,65 @@ class Miner:
         # Cuenta de cobro del premio: todos los workers de una persona pueden cobrar en la misma.
         self.account = os.getenv("MINER_ACCOUNT") or None
         self.stop = threading.Event()
+        self.stopping = False               # C5: llegó SIGTERM, hay que salir ordenado
         self.wake = threading.Event()       # aviso "hay tareas"
         self.notices: Notices | None = None
         self.block_id: str | None = None    # bloque de la tarea que está minando
+        self.task_id: str | None = None     # tarea prestada que está minando (C5: hay que devolverla)
         self.solved: str | None = None      # último block.solved avisado
         self.proc: subprocess.Popen | None = None
         self.lock = threading.Lock()
         self.key = load_key(miner_id)        # Ed25519 del worker (A3-f)
         self.chain_id = 2026                 # lo confirma el gateway en el desafío
         self.pushed: queue.Queue = queue.Queue()  # tareas empujadas por el WebSocket (A3-c)
+
+    def handle_signal(self, signum, frame) -> None:  # noqa: ARG002 - firma que pide signal.signal
+        """SIGTERM o SIGINT (C5). Kubernetes manda SIGTERM al bajar las réplicas (KEDA a 0, `scale`,
+        rolling update). Acá solo se marca la salida: el handler no hace red ni mata el motor, porque
+        corre en medio de cualquier instrucción. El loop termina el tramo que está minando, devuelve
+        los préstamos abiertos con reason=shutdown y sale con 0.
+
+        Por eso MINER_CHUNK tiene que ser un tramo que termine holgadamente dentro del
+        terminationGracePeriodSeconds del pod (20 s en k3s-local/miner-cpu.yaml); si no, llega el
+        SIGKILL antes del release y la tarea vuelve a la cola recién cuando vence el préstamo."""
+        log.info("señal %s: termino el tramo, devuelvo lo prestado y salgo", signum)
+        self.stopping = True
+        self.wake.set()  # si estaba esperando trabajo, que no agote el timeout
+
+    def release(self, task_id: str, reason: str = "") -> bool:
+        """Devuelve una tarea prestada. `reason=shutdown` no cuenta como falla en el gateway."""
+        query = f"?miner_id={self.id}" + (f"&reason={reason}" if reason else "")
+        try:
+            status, _ = self.gw.call("POST", f"/tasks/{task_id}/release{query}")
+        except OSError as exc:
+            log.warning("no pude devolver la tarea %s: %s (vence el préstamo)", task_id[:8], exc)
+            return False
+        return status == 200
+
+    def release_pending(self, reason: str = "shutdown") -> int:
+        """Devuelve todo lo que el gateway nos prestó y no vamos a minar: la tarea en curso y las que
+        quedaron empujadas en la cola del WebSocket (el gateway las presta al empujarlas, así que si
+        no se devuelven quedan 60 s colgadas aunque el pod ya no exista)."""
+        devueltas = 0
+        for task_id in self.borrowed():
+            if self.release(task_id, reason):
+                devueltas += 1
+        if devueltas:
+            log.info("devolví %d tarea(s) con reason=%s", devueltas, reason)
+        return devueltas
+
+    def borrowed(self) -> list[str]:
+        """Ids de las tareas que tenemos prestadas ahora mismo."""
+        ids = []
+        with self.lock:
+            if self.task_id is not None:
+                ids.append(self.task_id)
+        while True:
+            try:
+                ids.append(self.pushed.get_nowait()["task_id"])
+            except (queue.Empty, KeyError):
+                break
+        return ids
 
     def on_notice(self, msg: dict) -> None:
         """Lo llama el hilo del WebSocket."""
@@ -329,7 +384,7 @@ class Miner:
             self.stop.wait(self.keepalive)
 
     def mine(self, task: dict) -> str:
-        """Recorre [from, to] por tramos. Devuelve found / exhausted / abandoned."""
+        """Recorre [from, to] por tramos. Devuelve found / exhausted / abandoned / shutdown."""
         lo, hi = int(task["from"]), int(task["to"])
         hashes, engine_seconds, t0 = 0, 0.0, time.perf_counter()
         share = task.get("share_prefix") or ""
@@ -337,6 +392,8 @@ class Miner:
         result = {"task_id": task["task_id"], "block_id": task["block_id"], "worker": self.id,
                   "from": lo, "to": hi, "found": False}
         self.block_id = task["block_id"]
+        with self.lock:
+            self.task_id = task["task_id"]
         while lo <= hi:
             end = min(lo + self.chunk - 1, hi)
             try:
@@ -344,6 +401,8 @@ class Miner:
                                       MAX_SHARES - len(shares))
             except Abandoned:
                 self.gw.call("POST", f"/tasks/{task['task_id']}/renew?miner_id={self.id}")  # 410: el gateway borra el préstamo
+                with self.lock:
+                    self.task_id = None
                 return "abandoned"
             shares += out.get("shares") or []
             hashes += int(out["hashes"])
@@ -353,15 +412,27 @@ class Miner:
                 result.update(found=True, nonce=out["nonce"], hash=out["hash"])
                 break
             lo = end + 1
+            if self.stopping and lo <= hi:
+                # C5: el tramo terminó y nos estamos apagando. El resto del rango no lo vamos a
+                # minar, así que se devuelve ya y otro minero lo agarra al instante, en vez de
+                # quedar 60 s esperando que venza el préstamo.
+                with self.lock:
+                    self.task_id = None
+                self.release(task["task_id"], "shutdown")
+                return "shutdown"
             if lo <= hi:
                 status, _ = self.gw.call("POST", f"/tasks/{task['task_id']}/renew?miner_id={self.id}")
                 if status == 410:
+                    with self.lock:
+                        self.task_id = None
                     return "abandoned"
         result.update(hashes=hashes, seconds=round(time.perf_counter() - t0, 3),
                       engine_seconds=round(engine_seconds, 6))
         if share:
             result["shares"] = shares
         result["signature"] = sign_result(self.key, self.chain_id, result)  # A3-f
+        with self.lock:
+            self.task_id = None  # la entrega consume el préstamo: ya no hay nada que devolver
         status, _ = self.gw.call("POST", "/results", result)
         if status == 401:
             log.error("el gateway rechazó la firma del resultado: me vuelvo a autorizar")
@@ -397,10 +468,15 @@ class Miner:
     def next_task(self) -> tuple[int, dict]:
         """Con el WebSocket autorizado, la tarea llega empujada (mining.notify). Sin él, se pide por HTTP."""
         if self.notices and self.notices.authorized:
-            try:
-                return 200, self.pushed.get(timeout=self.idle_ws)
-            except queue.Empty:
-                return 204, {}
+            # Se espera en tramos cortos y no de un saque: así un SIGTERM no tiene que aguantar
+            # los idle_ws segundos enteros antes de que el loop se entere (C5).
+            end = time.monotonic() + self.idle_ws
+            while not self.stopping and time.monotonic() < end:
+                try:
+                    return 200, self.pushed.get(timeout=0.5)
+                except queue.Empty:
+                    continue
+            return 204, {}
         try:
             return 200, self.pushed.get_nowait()  # alguna que llegó antes de que se cortara
         except queue.Empty:
@@ -409,11 +485,13 @@ class Miner:
     def run(self, websocket: bool = True) -> None:
         threading.Thread(target=self.heartbeat_loop, daemon=True).start()
         while not self.authorize_http():
+            if self.stopping:
+                return
             time.sleep(5)
         if websocket:
             self.notices = Notices(self.gw.url, self.gw.token, self)
             self.notices.start()
-        while True:
+        while not self.stopping:
             try:
                 status, task = self.next_task()
             except OSError as exc:
@@ -433,14 +511,21 @@ class Miner:
                 # En vez de morir y dejar la tarea colgada 60 s, la devuelve: vuelve a la cola al instante.
                 # El gateway lo cuenta como falla (a las 3 seguidas, cuarentena).
                 log.error("tarea %s falló: %s", task["task_id"][:8], exc)
-                try:
-                    self.gw.call("POST", f"/tasks/{task['task_id']}/release?miner_id={self.id}")
-                except OSError:
-                    pass  # si tampoco llega al gateway, el préstamo vence solo
-                time.sleep(max(self.idle, 2))
+                with self.lock:
+                    self.task_id = None
+                self.release(task["task_id"])  # sin reason: el gateway lo cuenta como falla, como antes
+                if not self.stopping:
+                    time.sleep(max(self.idle, 2))
                 continue
             if outcome == "abandoned":
                 log.info("tarea %s abandonada: el bloque ya se cerró", task["task_id"][:8])
+            elif outcome == "shutdown":
+                break
+        # Salida ordenada (C5): se devuelve todo lo prestado y se sale con 0, así el bloque no espera
+        # los 60 s del préstamo. Apagarse no es una falla: va con reason=shutdown.
+        self.release_pending("shutdown")
+        self.stop.set()  # corta el keep-alive y el hilo del WebSocket
+        log.info("minero %s apagado", self.id)
 
 
 def setup_logs(miner_id: str) -> None:
@@ -481,7 +566,10 @@ def main() -> int:
     gw = Gateway(os.environ["GATEWAY_URL"], os.environ["MINER_TOKEN"])
     log.info("minero %s (%s) contra %s, cobra en %s, motor=%s", miner_id, kind, gw.url,
              os.getenv("MINER_ACCOUNT") or f"miner:{miner_id}", " ".join(cmd))
-    Miner(gw, cmd, miner_id, kind, a.chunk, a.keepalive, a.idle, a.idle_ws).run(not a.no_websocket)
+    miner = Miner(gw, cmd, miner_id, kind, a.chunk, a.keepalive, a.idle, a.idle_ws)
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(sig, miner.handle_signal)  # C5: KEDA baja las réplicas con SIGTERM
+    miner.run(not a.no_websocket)
     return 0
 
 
